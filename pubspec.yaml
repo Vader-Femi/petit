@@ -50,8 +50,8 @@ dependencies:
   #Image compression
   flutter_image_compress: ^2.4.0
 
-  #Image Picker
-  image_picker: ^1.1.2
+  #File Picker
+  file_picker: ^8.1.7
 
   #Gallery Saver
   gallery_saver_plus: ^3.2.1
