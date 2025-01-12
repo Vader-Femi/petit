@@ -6,8 +6,5 @@ final sl = GetIt.instance;
 
 Future<void> initializeDependencies() async {
 
-  sl.registerSingleton<HomeViewModel>(
-      Super.init(HomeViewModel())
-  );
 
 }

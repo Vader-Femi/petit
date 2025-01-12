@@ -1,8 +1,6 @@
-import 'dart:io';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_image_compress/flutter_image_compress.dart';
-import 'package:gallery_saver_plus/gallery_saver.dart';
+import 'package:flutter_super/flutter_super.dart';
+import 'package:petit/features/home/presentation/state/home_viewmodel.dart';
 
 class HomePage extends StatelessWidget {
   const HomePage({super.key});
@@ -15,97 +13,103 @@ class HomePage extends StatelessWidget {
       ),
       body: Padding(
         padding: EdgeInsets.fromLTRB(10, 0, 10, 15),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Spacer(),
-            Text(
-              "The selected file will show here",
-              style: TextStyle(fontSize: 18),
-            ),
-            Spacer(),
-            ElevatedButton(
-              onPressed: () async {
-                var pickedFile = await _pickSingleFile(context);
-                var compressedFile =
-                    await compressImage(file: pickedFile, quality: 90);
-                if (compressedFile != null) {
-                  _saveLocalImage(
-                      context: context, compressedImage: compressedFile);
-                }
-              },
-              child: const Text('Pick a File'),
-            ),
-          ],
-        ),
+        child: SuperBuilder(builder: (context) {
+          if (getHomeViewModel.result.state != null) {
+            WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text("${getHomeViewModel.result.state}"),
+              ));
+            });
+          }
+
+          return Stack(
+            alignment: Alignment.center,
+            children: [
+              Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Spacer(),
+                  getHomeViewModel.pickedImages.isEmpty
+                      ? const Text(
+                          "The selected images will show here",
+                          style: TextStyle(fontSize: 18),
+                        )
+                      : Expanded(
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            scrollDirection: Axis.horizontal,
+                            itemCount: getHomeViewModel.pickedImages.length,
+                            itemBuilder: (context, index) {
+                              var image = getHomeViewModel.pickedImages
+                                  .elementAt(index);
+                              return Padding(
+                                padding: const EdgeInsets.only(right: 10),
+                                child: Image.file(
+                                  image,
+                                  width: 300,
+                                  height: 300,
+                                  fit: BoxFit.cover,
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                  Spacer(),
+                  ElevatedButton(
+                    onPressed: () async {
+                      var pickedFiles =
+                          await getHomeViewModel.pickMultipleFiles();
+                      print(pickedFiles.elementAt(0).path);
+
+                      // getHomeViewModel.setIsLoading(true);
+                      //
+                      // for (var file in pickedFiles) {
+                      //   await getHomeViewModel
+                      //       .compressImage(file: file, quality: 90)
+                      //       .then((compressedFile) async {
+                      //     await getHomeViewModel.saveLocalImage(compressedFile);
+                      //   });
+                      // }
+                      //
+                      // getHomeViewModel.setIsLoading(false);
+                    },
+                    child: const Text('Pick images)'),
+                  ),
+                  SizedBox(height: 10),
+                  OutlinedButton(
+                    onPressed: () async {
+                      if (getHomeViewModel.pickedImages.isEmpty) {
+                        getHomeViewModel.showResult("pick images first");
+                        return;
+                      }
+
+                      getHomeViewModel.setIsLoading(true);
+
+                      for (var file in getHomeViewModel.pickedImages.state) {
+                        await getHomeViewModel
+                            .compressImage(file: file, quality: 90)
+                            .then((compressedFile) async {
+                          await getHomeViewModel.saveLocalImage(compressedFile);
+                        });
+                      }
+
+                      getHomeViewModel.setIsLoading(false);
+                    },
+                    child: const Text('Compress selected images'),
+                  ),
+                ],
+              ),
+              getHomeViewModel.isLoading.state
+                  ? SizedBox(
+                      width: 35,
+                      height: 35,
+                      child: CircularProgressIndicator(),
+                    )
+                  : Container(),
+            ],
+          );
+        }),
       ),
     );
   }
-
-  Future<File> _pickSingleFile(BuildContext context) async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles();
-
-    if (result != null) {
-      PlatformFile file = result.files.first;
-      File pickedFile = File(file.path!);
-      return File(pickedFile.path);
-    } else {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text("No file picked!")));
-
-      throw Exception('No file picked');
-    }
-  }
-
-  Future<List<File>> _pickMultipleFiles(BuildContext context) async {
-    FilePickerResult? result =
-        await FilePicker.platform.pickFiles(allowMultiple: true);
-
-    if (result != null) {
-      return result.paths.map((path) => File(path!)).toList();
-    } else {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text("No file picked!")));
-
-      throw Exception('No file picked');
-    }
-  }
-
-  Future<XFile?> compressImage({
-    required File file,
-    required int quality,
-    int minWidth = 1000,
-    int minHeight = 1000,
-  }) async {
-    final filePath = file.absolute.path;
-    final lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
-    final splitted = filePath.substring(0, (lastIndex));
-    final outPath = "${splitted}_out${filePath.substring(lastIndex)}";
-
-    return await FlutterImageCompress.compressAndGetFile(filePath, outPath,
-        minWidth: minWidth, minHeight: minHeight, quality: quality);
-  }
-
-  Future<void> _saveLocalImage({
-    required BuildContext context,
-    required XFile compressedImage,
-  }) async {
-    try {
-      GallerySaver.saveImage(compressedImage.path);
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Image Saved to Galery!")));
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Error ocurred - ${e.toString()}")));
-    }
-  }
 }
-
-// List<File> compressedFiles = List.empty();
-//
-// for (var file in files) {
-// var compressed = await compressImage(file: file, quality: quality);
-// compressedFiles.add(File(compressed!.path));
-// }
-//
-// return compressedFiles;
