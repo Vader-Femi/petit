@@ -1,0 +1,1 @@
+ D:\\ProjectFiles\\Flutter\\petit\\.dart_tool\\flutter_build\\8a3a7fe0c80574d8629fa2726541cad6\\native_assets.yaml: 

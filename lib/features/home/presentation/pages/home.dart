@@ -31,7 +31,7 @@ class HomePage extends StatelessWidget {
                   Spacer(),
                   getHomeViewModel.pickedImages.isEmpty
                       ? const Text(
-                          "The selected images will show here",
+                          "Select image(s) to compress",
                           style: TextStyle(fontSize: 18),
                         )
                       : Expanded(
@@ -40,12 +40,12 @@ class HomePage extends StatelessWidget {
                             scrollDirection: Axis.horizontal,
                             itemCount: getHomeViewModel.pickedImages.length,
                             itemBuilder: (context, index) {
-                              var image = getHomeViewModel.pickedImages
+                              var imageData = getHomeViewModel.pickedImages
                                   .elementAt(index);
                               return Padding(
                                 padding: const EdgeInsets.only(right: 10),
                                 child: Image.file(
-                                  image,
+                                  imageData.imageFile,
                                   width: 300,
                                   height: 300,
                                   fit: BoxFit.cover,
@@ -55,48 +55,6 @@ class HomePage extends StatelessWidget {
                           ),
                         ),
                   Spacer(),
-                  ElevatedButton(
-                    onPressed: () async {
-                      var pickedFiles =
-                          await getHomeViewModel.pickMultipleFiles();
-                      print(pickedFiles.elementAt(0).path);
-
-                      // getHomeViewModel.setIsLoading(true);
-                      //
-                      // for (var file in pickedFiles) {
-                      //   await getHomeViewModel
-                      //       .compressImage(file: file, quality: 90)
-                      //       .then((compressedFile) async {
-                      //     await getHomeViewModel.saveLocalImage(compressedFile);
-                      //   });
-                      // }
-                      //
-                      // getHomeViewModel.setIsLoading(false);
-                    },
-                    child: const Text('Pick images)'),
-                  ),
-                  SizedBox(height: 10),
-                  OutlinedButton(
-                    onPressed: () async {
-                      if (getHomeViewModel.pickedImages.isEmpty) {
-                        getHomeViewModel.showResult("pick images first");
-                        return;
-                      }
-
-                      getHomeViewModel.setIsLoading(true);
-
-                      for (var file in getHomeViewModel.pickedImages.state) {
-                        await getHomeViewModel
-                            .compressImage(file: file, quality: 90)
-                            .then((compressedFile) async {
-                          await getHomeViewModel.saveLocalImage(compressedFile);
-                        });
-                      }
-
-                      getHomeViewModel.setIsLoading(false);
-                    },
-                    child: const Text('Compress selected images'),
-                  ),
                 ],
               ),
               getHomeViewModel.isLoading.state
@@ -109,6 +67,52 @@ class HomePage extends StatelessWidget {
             ],
           );
         }),
+      ),
+      floatingActionButton: SuperBuilder(
+        builder: (context) {
+          return getHomeViewModel.pickedImages.isEmpty
+              ? FloatingActionButton(
+                  child: Icon(Icons.add_photo_alternate_outlined),
+                  onPressed: () async =>
+                      await getHomeViewModel.pickMultipleImages(),
+                )
+              : Column(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    FloatingActionButton(
+                      child: Icon(Icons.add_photo_alternate_outlined),
+                      onPressed: () async =>
+                          await getHomeViewModel.pickMultipleImages(),
+                    ),
+                    SizedBox(height: 10),
+                    FloatingActionButton.extended(
+                      icon: Icon(Icons.compress_outlined),
+                      onPressed: () async {
+                        if (getHomeViewModel.pickedImages.isEmpty) {
+                          await getHomeViewModel
+                              .showResult("Select images first");
+                          return;
+                        }
+
+                        getHomeViewModel.setIsLoading(true);
+                        for (var imageData
+                            in getHomeViewModel.pickedImages.state) {
+                          await getHomeViewModel
+                              .compressImage(imageData: imageData)
+                              .then((compressedFile) async {
+                            await getHomeViewModel
+                                .saveLocalImage(compressedFile);
+                          });
+                        }
+                        getHomeViewModel.pickedImages.state = List.empty();
+                        getHomeViewModel.setIsLoading(false);
+                      },
+                      label: const Text('Compress'),
+                    ),
+                  ],
+                );
+        },
       ),
     );
   }

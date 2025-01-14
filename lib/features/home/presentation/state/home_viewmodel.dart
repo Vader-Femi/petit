@@ -1,83 +1,123 @@
+import 'dart:ui';
 import 'package:flutter_super/flutter_super.dart';
 import 'dart:io';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:gallery_saver_plus/gallery_saver.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:petit/features/home/data/image_data.dart';
 
 HomeViewModel get getHomeViewModel => Super.init(HomeViewModel());
 
 class HomeViewModel {
   final result = RxT<String?>(null);
   final isLoading = RxBool(false);
-  final pickedImages = RxList<File>(List.empty());
+  final pickedImages = RxList<ImageData>([]);
 
   void setIsLoading(bool isLoading) {
     this.isLoading.state = isLoading;
   }
 
-  void showResult(String result) {
+  Future<void> showResult(String result) async {
     this.result.state = result;
+    await Future.delayed(Duration(microseconds: 100));
     this.result.state = null;
   }
 
-  Future<File> pickSingleFile() async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles();
+  Future<void> pickSingleImage() async {
+    final result = await ImagePicker().pickImage(source: ImageSource.gallery);
 
     if (result != null) {
-      PlatformFile file = result.files.first;
-      File pickedFile = File(file.path!);
-      return File(pickedFile.path);
-    } else {
-      showResult("No file picked!");
+      pickedImages.state = List.empty();
 
+      final imageBytes = await result.readAsBytes();
+      final buffer = await ImmutableBuffer.fromUint8List(imageBytes);
+      final descriptor = await ImageDescriptor.encoded(buffer);
+
+      pickedImages.state = [
+        ImageData(
+          imageFile: File(result.path),
+          pixelWidth: descriptor.width,
+          pixelHeight: descriptor.height,
+          quality: 90,
+        ),
+      ];
+
+      descriptor.dispose();
+      buffer.dispose();
+    } else {
+      await showResult("No file picked!");
+      setIsLoading(false);
       throw Exception('No file picked');
     }
   }
 
-  Future<List<File>> pickMultipleFiles() async {
-    FilePickerResult? result =
-        await FilePicker.platform.pickFiles(allowMultiple: true);
+  Future<void> pickMultipleImages() async {
+    final result = await ImagePicker().pickMultiImage();
 
-    if (result != null) {
-      var picked = result.paths.map((path) => File(path!)).toList();
+    if (result.isNotEmpty) {
+      pickedImages.state = [];
+
+      List<ImageData> picked = [];
+
+      for (var file in result) {
+        final imageBytes = await file.readAsBytes();
+        final buffer = await ImmutableBuffer.fromUint8List(imageBytes);
+        final descriptor = await ImageDescriptor.encoded(buffer);
+
+        picked.add(ImageData(
+          imageFile: File(file.path),
+          pixelWidth: descriptor.width,
+          pixelHeight: descriptor.height,
+          quality: 90,
+        ));
+
+        descriptor.dispose();
+        buffer.dispose();
+      }
+
       pickedImages.state = picked;
-      showResult("No file picked!");
-      return picked;
     } else {
-      showResult("No file picked!");
+      await showResult("No file picked!");
+      setIsLoading(false);
       throw Exception('No file picked');
     }
   }
 
-  Future<XFile> compressImage({
-    required File file,
-    required int quality,
-    int minWidth = 1000,
-    int minHeight = 1000,
-  }) async {
-    final filePath = file.absolute.path;
-    final lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
-    final splitted = filePath.substring(0, (lastIndex));
-    final outPath = "${splitted}_out${filePath.substring(lastIndex)}";
+  Future<XFile> compressImage({required ImageData imageData}) async {
+    try {
+      final filePath = imageData.imageFile.path;
+      final lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
+      final splitted = filePath.substring(0, (lastIndex));
+      final outPath = "${splitted}_out${filePath.substring(lastIndex)}";
 
-    var compressedImage = await FlutterImageCompress.compressAndGetFile(
-        filePath, outPath,
-        minWidth: minWidth, minHeight: minHeight, quality: quality);
+      var compressedImage = await FlutterImageCompress.compressAndGetFile(
+        filePath,
+        outPath,
+        minWidth: imageData.pixelWidth,
+        minHeight: imageData.pixelHeight,
+        quality: imageData.quality,
+      );
 
-    if (compressedImage != null) {
-      return compressedImage;
-    } else {
-      showResult("Error compressing image!");
-      throw Exception('Error compressing image');
+      if (compressedImage != null) {
+        return compressedImage;
+      } else {
+        await showResult("Error compressing image!");
+        throw Exception('Error compressing image');
+      }
+    } catch (e) {
+      await showResult("Error compressing image - ${e.toString()}");
+      setIsLoading(false);
+      throw Exception("Error compressing image - ${e.toString()}");
     }
   }
 
   Future<void> saveLocalImage(XFile compressedImage) async {
     try {
       await GallerySaver.saveImage(compressedImage.path);
-      showResult("Image Saved to Galery!");
+      await showResult("Image Saved to Galery!");
     } catch (e) {
-      showResult("Error ocurred - ${e.toString()}");
+      setIsLoading(false);
+      await showResult("Error ocurred - ${e.toString()}");
     }
   }
 }
