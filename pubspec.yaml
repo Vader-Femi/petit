@@ -50,6 +50,9 @@ dependencies:
   #Image compression
   flutter_image_compress: ^2.4.0
 
+  #For encoding and decoding
+  image: ^4.5.2
+
   #Image Picker
   image_picker: ^1.1.2
 

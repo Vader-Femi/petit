@@ -3,6 +3,7 @@ import 'package:flutter_super/flutter_super.dart';
 import 'dart:io';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:gallery_saver_plus/gallery_saver.dart';
+import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:petit/features/home/data/image_data.dart';
 
@@ -17,10 +18,8 @@ class HomeViewModel {
     this.isLoading.state = isLoading;
   }
 
-  Future<void> showResult(String result) async {
+  Future<void> showResult(String? result) async {
     this.result.state = result;
-    await Future.delayed(Duration(microseconds: 100));
-    this.result.state = null;
   }
 
   Future<void> pickSingleImage() async {
@@ -85,8 +84,19 @@ class HomeViewModel {
 
   Future<XFile> compressImage({required ImageData imageData}) async {
     try {
-      final filePath = imageData.imageFile.path;
-      final lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
+      var filePath = imageData.imageFile.path;
+      var lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
+      if(lastIndex == -1){
+        //Re encode as jpg
+        final image = img.decodeImage(imageData.imageFile.readAsBytesSync())!;
+        lastIndex = filePath.lastIndexOf(RegExp(r'(.png|.webp|.heic|.raw)'));
+        final splitted = filePath.substring(0, (lastIndex));
+        var file = File("$splitted.jpg")..writeAsBytesSync(img.encodeJpg(image));
+
+        //Replace file path and index
+        filePath = file.path;
+        lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
+      }
       final splitted = filePath.substring(0, (lastIndex));
       final outPath = "${splitted}_out${filePath.substring(lastIndex)}";
 
@@ -114,7 +124,6 @@ class HomeViewModel {
   Future<void> saveLocalImage(XFile compressedImage) async {
     try {
       await GallerySaver.saveImage(compressedImage.path);
-      await showResult("Image Saved to Galery!");
     } catch (e) {
       setIsLoading(false);
       await showResult("Error ocurred - ${e.toString()}");
