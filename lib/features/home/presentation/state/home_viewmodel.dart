@@ -86,7 +86,7 @@ class HomeViewModel {
     try {
       var filePath = imageData.imageFile.path;
       var lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
-      if(lastIndex == -1){
+      if(lastIndex == -1){ // This means its not jpeg or jpg
         //Re encode as jpg
         final image = img.decodeImage(imageData.imageFile.readAsBytesSync())!;
         lastIndex = filePath.lastIndexOf(RegExp(r'(.png|.webp|.heic|.raw)'));
