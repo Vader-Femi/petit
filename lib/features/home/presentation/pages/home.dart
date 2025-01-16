@@ -1,12 +1,16 @@
+import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'package:petit/features/home/presentation/state/home_viewmodel.dart';
+import 'package:step_progress_indicator/step_progress_indicator.dart';
 
 class HomePage extends StatelessWidget {
   const HomePage({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final carouselHeight = MediaQuery.sizeOf(context).height / 3;
+
     return Scaffold(
       appBar: AppBar(
         title: Text("Petit"),
@@ -29,40 +33,85 @@ class HomePage extends StatelessWidget {
               Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Spacer(),
                   getHomeViewModel.pickedImages.isEmpty
                       ? const Text(
                           "Select image(s) to compress",
                           style: TextStyle(fontSize: 18),
                         )
-                      : Expanded(
-                          child: ListView.builder(
-                            shrinkWrap: true,
-                            scrollDirection: Axis.horizontal,
-                            itemCount: getHomeViewModel.pickedImages.length,
-                            itemBuilder: (context, index) {
-                              var imageData = getHomeViewModel.pickedImages
-                                  .elementAt(index);
-                              return Padding(
-                                padding: const EdgeInsets.only(right: 10),
-                                child: Image.file(
-                                  imageData.imageFile,
-                                  width: 300,
-                                  height: 300,
-                                  fit: BoxFit.cover,
-                                ),
-                              );
-                            },
-                          ),
+                      : CarouselSlider(
+                          items: getHomeViewModel.pickedImages.state
+                              .map((imageData) {
+                            return ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: Image.file(
+                                imageData.imageFile,
+                                height: carouselHeight,
+                                fit: BoxFit.fitHeight,
+                              ),
+                            );
+                          }).toList(),
+                          options: CarouselOptions(
+                              height: carouselHeight,
+                              autoPlay: false,
+                              enlargeCenterPage: true,
+                              enableInfiniteScroll: false,
+                              onPageChanged: (index, reason) {
+                                getHomeViewModel.updateCurrentImageWithIndex(index);
+                              },
+                              reverse: false),
                         ),
-                  Spacer(),
+                  SizedBox(height: 20),
+
+                  getHomeViewModel.currentImage.state != null ?
+                  Row(
+                    children: [
+                      Text("Quality: ${getHomeViewModel.currentImage.state?.quality}"),
+                      Expanded(
+                          child: Slider(
+                              value: ((getHomeViewModel.currentImage.state?.quality.toDouble() ?? 90.0) / 100),
+                              onChanged: (value) => getHomeViewModel.updateCurrentImageQuality(value))),
+                    ],
+                  )
+                  : Container(),
                 ],
               ),
-              getHomeViewModel.isLoading.state
-                  ? SizedBox(
-                      width: 35,
-                      height: 35,
-                      child: CircularProgressIndicator(),
+              getHomeViewModel.isLoading.state.isLoading
+                  ? Container(
+                      color: Colors.black.withOpacity(0.75),
+                    )
+                  : Container(),
+              getHomeViewModel.isLoading.state.isLoading
+                  ? Container(
+                      width: 100,
+                      height: 100,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.primaryContainer,
+                          borderRadius: BorderRadius.circular(50)),
+                      child: Text(
+                        '${getHomeViewModel.isLoading.state.progressCounter}%',
+                        style: TextStyle(
+                            fontSize: 30,
+                            fontWeight: FontWeight.w900,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onPrimaryContainer),
+                      ),
+                    )
+                  : Container(),
+              getHomeViewModel.isLoading.state.isLoading
+                  ? CircularStepProgressIndicator(
+                      totalSteps:
+                          getHomeViewModel.isLoading.state.totalSteps ?? 1,
+                      stepSize: 20,
+                      selectedStepSize: 30,
+                      currentStep:
+                          getHomeViewModel.isLoading.state.completedSteps ?? 1,
+                      width: 180,
+                      height: 180,
+                      padding: 0.02,
+                      selectedColor: Colors.green,
+                      unselectedColor: Colors.red,
                     )
                   : Container(),
             ],
@@ -73,57 +122,34 @@ class HomePage extends StatelessWidget {
         builder: (context) {
           return getHomeViewModel.pickedImages.isEmpty
               ? FloatingActionButton(
-                  onPressed: () async {
-                    if (!getHomeViewModel.isLoading.state) {
-                      await getHomeViewModel.pickMultipleImages();
-                    }
-                  },
+                  onPressed: () async =>
+                      getHomeViewModel.selectImageButtonPressed(),
                   child: Icon(Icons.add_photo_alternate_outlined),
                 )
-              : Column(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    FloatingActionButton(
-                        onPressed: () async {
-                          if (!getHomeViewModel.isLoading.state) {
-                            await getHomeViewModel.pickMultipleImages();
-                          }
-                        },
-                        child: Icon(Icons.add_photo_alternate_outlined)),
-                    SizedBox(height: 10),
-                    FloatingActionButton.extended(
-                      icon: Icon(Icons.compress_outlined),
-                      onPressed: () async {
-                        if (!getHomeViewModel.isLoading.state) {
-                          if (getHomeViewModel.pickedImages.isEmpty) {
-                            await getHomeViewModel
-                                .showResult("Select images first");
-                            return;
-                          }
-
-                          getHomeViewModel.setIsLoading(true);
-                          for (var imageData
-                              in getHomeViewModel.pickedImages.state) {
-                            await getHomeViewModel
-                                .compressImage(imageData: imageData)
-                                .then((compressedFile) async {
-                              await getHomeViewModel
-                                  .saveLocalImage(compressedFile)
-                                  .then((onValue) async {
-                                getHomeViewModel
-                                    .showResult("Image(s) Saved to Galery!");
-                                getHomeViewModel.pickedImages.state = [];
-                                getHomeViewModel.setIsLoading(false);
-                              });
-                            });
-                          }
-                        }
-                      },
-                      label: const Text('Compress'),
-                    ),
-                  ],
-                );
+              : getHomeViewModel.isLoading.state.isLoading
+                  ? FloatingActionButton.extended(
+                      icon: Icon(Icons.cancel_outlined),
+                      onPressed: () async =>
+                          getHomeViewModel.cancelCompressionButtonPressed(),
+                      label: const Text('Cancel'),
+                    )
+                  : Column(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        FloatingActionButton(
+                            onPressed: () async =>
+                                getHomeViewModel.selectImageButtonPressed(),
+                            child: Icon(Icons.add_photo_alternate_outlined)),
+                        SizedBox(height: 10),
+                        FloatingActionButton.extended(
+                          icon: Icon(Icons.compress_outlined),
+                          onPressed: () async =>
+                              getHomeViewModel.compressButtonPressed(),
+                          label: const Text('Compress'),
+                        ),
+                      ],
+                    );
         },
       ),
     );

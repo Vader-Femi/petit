@@ -3,30 +3,54 @@ import 'package:flutter_super/flutter_super.dart';
 import 'dart:io';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:gallery_saver_plus/gallery_saver.dart';
+import 'package:heif_converter_plus/heif_converter.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:petit/features/home/data/image_data.dart';
+
+import '../../data/loading_data.dart';
 
 HomeViewModel get getHomeViewModel => Super.init(HomeViewModel());
 
 class HomeViewModel {
   final result = RxT<String?>(null);
-  final isLoading = RxBool(false);
+  final isLoading = RxT<LoadingData>(LoadingData(isLoading: false));
   final pickedImages = RxList<ImageData>([]);
+  final currentImage = RxT<ImageData?>(null);
 
-  void setIsLoading(bool isLoading) {
-    this.isLoading.state = isLoading;
+  void setIsLoading(LoadingData loadingData) {
+    isLoading.state = loadingData;
   }
 
   Future<void> showResult(String? result) async {
     this.result.state = result;
   }
 
+  Future<void> updateCurrentImageWithImageData(ImageData imageData) async {
+    currentImage.state = imageData;
+  }
+
+  Future<void> updateCurrentImageWithIndex(int index) async {
+    final image = getHomeViewModel.pickedImages.state.elementAt(index);
+    currentImage.state = image;
+  }
+
+  void updateCurrentImageQuality(double value){
+    if(currentImage.state != null){
+      final currentImageIndex =
+          getHomeViewModel.pickedImages.state.indexOf(currentImage.state!, 0);
+
+      final newImageData = currentImage.state!.copyWith(quality: (value * 100).toInt());
+      getHomeViewModel.pickedImages.state[currentImageIndex] = newImageData;
+      currentImage.state = newImageData;
+    }
+  }
+
   Future<void> pickSingleImage() async {
     final result = await ImagePicker().pickImage(source: ImageSource.gallery);
 
     if (result != null) {
-      pickedImages.state = List.empty();
+      pickedImages.state = [];
 
       final imageBytes = await result.readAsBytes();
       final buffer = await ImmutableBuffer.fromUint8List(imageBytes);
@@ -41,12 +65,13 @@ class HomeViewModel {
         ),
       ];
 
+      currentImage.state = pickedImages[0];
+
       descriptor.dispose();
       buffer.dispose();
     } else {
       await showResult("No file picked!");
-      setIsLoading(false);
-      throw Exception('No file picked');
+      setIsLoading(LoadingData(isLoading: false));
     }
   }
 
@@ -75,9 +100,10 @@ class HomeViewModel {
       }
 
       pickedImages.state = picked;
+      currentImage.state = pickedImages[0];
     } else {
       await showResult("No file picked!");
-      setIsLoading(false);
+      setIsLoading(LoadingData(isLoading: false));
       throw Exception('No file picked');
     }
   }
@@ -86,19 +112,38 @@ class HomeViewModel {
     try {
       var filePath = imageData.imageFile.path;
       var lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
-      if(lastIndex == -1){ // This means its not jpeg or jpg
-        //Re encode as jpg
-        final image = img.decodeImage(imageData.imageFile.readAsBytesSync())!;
-        lastIndex = filePath.lastIndexOf(RegExp(r'(.png|.webp|.heic|.raw)'));
-        final splitted = filePath.substring(0, (lastIndex));
-        var file = File("$splitted.jpg")..writeAsBytesSync(img.encodeJpg(image));
+      if (lastIndex == -1) { // This means it's not jpeg/jpg
 
-        //Replace file path and index
-        filePath = file.path;
-        lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
+        //Check if is heic/heif then handle it
+        var heifOrHeicIndex = filePath.lastIndexOf(RegExp(r'(.heic|.heif)'));
+        if (heifOrHeicIndex != -1) {
+          String? jpgPath =
+              await HeifConverter.convert(filePath, format: "jpg");
+          if (jpgPath != null) {
+            //Replace file path and index
+            filePath = jpgPath;
+            lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
+          } else {
+            await showResult("Invalid HEIC/HEIF file");
+            setIsLoading(LoadingData(isLoading: false));
+            throw Exception("Invalid HEIC/HEIF file");
+          }
+
+        } else {
+          //Re encode to jpg
+          final image = img.decodeImage(imageData.imageFile.readAsBytesSync())!;
+          lastIndex = filePath.lastIndexOf(RegExp(r'(.png|.webp|.raw)'));
+          final splitted = filePath.substring(0, (lastIndex));
+          var file = File("$splitted.jpg")
+            ..writeAsBytesSync(img.encodeJpg(image));
+
+          //Replace file path and index
+          filePath = file.path;
+          lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
+        }
       }
       final splitted = filePath.substring(0, (lastIndex));
-      final outPath = "${splitted}_out${filePath.substring(lastIndex)}";
+      final outPath = "${splitted}_compressed${filePath.substring(lastIndex)}";
 
       var compressedImage = await FlutterImageCompress.compressAndGetFile(
         filePath,
@@ -116,7 +161,7 @@ class HomeViewModel {
       }
     } catch (e) {
       await showResult("Error compressing image - ${e.toString()}");
-      setIsLoading(false);
+      setIsLoading(LoadingData(isLoading: false));
       throw Exception("Error compressing image - ${e.toString()}");
     }
   }
@@ -125,8 +170,66 @@ class HomeViewModel {
     try {
       await GallerySaver.saveImage(compressedImage.path);
     } catch (e) {
-      setIsLoading(false);
+      setIsLoading(LoadingData(isLoading: false));
       await showResult("Error ocurred - ${e.toString()}");
     }
+  }
+
+  Future<void> compressButtonPressed() async {
+    if (!getHomeViewModel.isLoading.state.isLoading) {
+      if (getHomeViewModel.pickedImages.isEmpty) {
+        await getHomeViewModel
+            .showResult("Select images first");
+        return;
+      }
+
+      var totalLength =
+          getHomeViewModel.pickedImages.state.length;
+
+      var progress = 0;
+
+      for (final (index, imageData) in getHomeViewModel
+          .pickedImages.state.indexed) {
+        progress = (((index + 1) / totalLength) * 100).round();
+
+        getHomeViewModel.setIsLoading(
+          LoadingData(
+              isLoading: true,
+              completedSteps: index + 1,
+              totalSteps: totalLength,
+              progressCounter: progress),
+        );
+
+        await getHomeViewModel
+            .compressImage(imageData: imageData)
+            .then((compressedFile) async {
+          await getHomeViewModel
+              .saveLocalImage(compressedFile);
+        });
+      }
+
+      currentImage.state = null;
+      getHomeViewModel.setIsLoading(
+        LoadingData(
+            progressCounter: 100,
+            isLoading: false,
+            completedSteps: totalLength,
+            totalSteps: totalLength),
+      );
+
+      await getHomeViewModel
+          .showResult("Image(s) Saved to Galery!");
+      getHomeViewModel.pickedImages.state = [];
+    }
+  }
+
+  Future<void> selectImageButtonPressed() async {
+    if (!getHomeViewModel.isLoading.state.isLoading) {
+      await getHomeViewModel.pickMultipleImages();
+    }
+  }
+
+  Future<void> cancelCompressionButtonPressed() async {
+
   }
 }
