@@ -7,7 +7,6 @@ import 'package:heif_converter_plus/heif_converter.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:petit/features/home/data/image_data.dart';
-
 import '../../data/loading_data.dart';
 
 HomeViewModel get getHomeViewModel => Super.init(HomeViewModel());
@@ -17,6 +16,7 @@ class HomeViewModel {
   final isLoading = RxT<LoadingData>(LoadingData(isLoading: false));
   final pickedImages = RxList<ImageData>([]);
   final currentImage = RxT<ImageData?>(null);
+  final currentImageIndex = RxT<int?>(null);
   final globalQualitySlider = RxT<int?>(null); //
 
   void setIsLoading(LoadingData loadingData) {
@@ -25,10 +25,6 @@ class HomeViewModel {
 
   Future<void> showResult(String? result) async {
     this.result.state = result;
-  }
-
-  Future<void> updateCurrentImageWithImageData(ImageData imageData) async {
-    currentImage.state = imageData;
   }
 
   Future<void> updateCurrentImageWithIndex(int index) async {
@@ -52,6 +48,10 @@ class HomeViewModel {
     }
   }
 
+  void updateCurrentImageIndex(int index) {
+    currentImageIndex.state = index;
+  }
+
   void updateGlobalQualitySlider(double value) {
     globalQualitySlider.state = (value * 100).toInt();
   }
@@ -72,6 +72,7 @@ class HomeViewModel {
 
       pickedImages.state = [];
       currentImage.state = null;
+      currentImageIndex.state = null;
       globalQualitySlider.state = null;
 
       final imageBytes = await result.readAsBytes();
@@ -88,6 +89,7 @@ class HomeViewModel {
       ];
 
       currentImage.state = pickedImages[0];
+      currentImageIndex.state = 0;
       setIsLoading(LoadingData(isLoading: false));
 
       descriptor.dispose();
@@ -114,6 +116,7 @@ class HomeViewModel {
 
       pickedImages.state = [];
       currentImage.state = null;
+      currentImageIndex.state = 0;
       globalQualitySlider.state = null;
       List<ImageData> picked = [];
 
@@ -135,6 +138,7 @@ class HomeViewModel {
 
       pickedImages.state = picked;
       currentImage.state = pickedImages[0];
+      currentImageIndex.state = 0;
       setIsLoading(LoadingData(isLoading: false));
 
     } else {
@@ -247,6 +251,7 @@ class HomeViewModel {
       }
 
       currentImage.state = null;
+      currentImageIndex.state = 0;
       globalQualitySlider.state = null;
       getHomeViewModel.pickedImages.state = [];
 
@@ -257,6 +262,7 @@ class HomeViewModel {
             completedSteps: totalLength,
             totalSteps: totalLength),
       );
+
 
       await getHomeViewModel.showResult("Image(s) Saved to Galery!");
     }

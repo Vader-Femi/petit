@@ -9,7 +9,7 @@ class HomePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final carouselHeight = MediaQuery.sizeOf(context).height / 3;
+    final carouselHeight = MediaQuery.sizeOf(context).height / 2;
 
     return Scaffold(
       appBar: AppBar(
@@ -38,86 +38,95 @@ class HomePage extends StatelessWidget {
                           "Select image(s) to compress",
                           style: TextStyle(fontSize: 18),
                         )
-                      : CarouselSlider(
-                          items: getHomeViewModel.pickedImages.state
-                              .map((imageData) {
-                            return ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
-                              child: Image.file(
-                                imageData.imageFile,
-                                height: carouselHeight,
-                                fit: BoxFit.fitHeight,
-                              ),
-                            );
-                          }).toList(),
-                          options: CarouselOptions(
-                              height: carouselHeight,
-                              autoPlay: true,
-                              enlargeCenterPage: true,
-                              pauseAutoPlayOnTouch: true,
-                              enableInfiniteScroll: false,
-                              onPageChanged: (index, reason) {
-                                getHomeViewModel
-                                    .updateCurrentImageWithIndex(index);
-                              },
-                              reverse: false),
-                        ),
-                  SizedBox(height: 20),
-                  getHomeViewModel.currentImage.state != null
-                      ? Row(
-                          children: [
-                            Text(
-                                "Quality: ${getHomeViewModel.globalQualitySlider.state ?? getHomeViewModel.currentImage.state?.quality}%"),
-                            Expanded(
-                                child: getHomeViewModel.globalQualitySlider.state !=
-                                        null
-                                    ? Slider(
-                                        value: ((getHomeViewModel
-                                                    .globalQualitySlider.state
-                                                    ?.toDouble() ??
-                                                90.0) /
-                                            100),
-                                        onChanged: (value) => getHomeViewModel
-                                            .updateGlobalQualitySlider(value))
-                                    : Slider(
-                                        value: ((getHomeViewModel
-                                                    .currentImage.state?.quality
-                                                    .toDouble() ??
-                                                90.0) /
-                                            100),
-                                        onChanged: (value) => getHomeViewModel
-                                            .updateCurrentImageQuality(value))),
-                          ],
-                        )
-                      : Container(),
-                  SizedBox(height: 10),
-                  (getHomeViewModel.currentImage.state != null &&
-                          getHomeViewModel.pickedImages.length > 1)
-                      ? Row(
-                          mainAxisSize: MainAxisSize.max,
-                          mainAxisAlignment: MainAxisAlignment.start,
-                          children: [
-                            Flexible(
-                                child: Text("Slider for or all images",
-                                    softWrap: true)),
-                            Switch(
-                                value: getHomeViewModel
-                                        .globalQualitySlider.state !=
-                                    null,
-                                onChanged: (value) {
-                                  if (getHomeViewModel
-                                          .globalQualitySlider.state ==
-                                      null) {
-                                    getHomeViewModel.globalQualitySlider.state =
-                                        90;
-                                  } else {
-                                    getHomeViewModel.globalQualitySlider.state =
-                                        null;
-                                  }
-                                }),
-                          ],
-                        )
-                      : Container(),
+                      : Column(
+                        children: [
+                          Text("${(getHomeViewModel.currentImageIndex.state?? -1) + 1} of ${getHomeViewModel.pickedImages.state.length}", style: TextStyle(fontSize: 16),),
+                          SizedBox(height: 10),
+                          CarouselSlider(
+                              items: getHomeViewModel.pickedImages.state
+                                  .map((imageData) {
+                                return ClipRRect(
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Image.file(
+                                    imageData.imageFile,
+                                    height: carouselHeight,
+                                    fit: BoxFit.fitHeight,
+                                    filterQuality: FilterQuality.none,
+                                  ),
+                                );
+                              }).toList(),
+                              options: CarouselOptions(
+                                  height: carouselHeight,
+                                  autoPlay: true,
+                                  enlargeCenterPage: true,
+                                  pauseAutoPlayOnTouch: true,
+                                  enableInfiniteScroll: false,
+                                  onPageChanged: (index, reason) {
+                                    getHomeViewModel
+                                        .updateCurrentImageWithIndex(index);
+
+                                    getHomeViewModel.updateCurrentImageIndex(index);
+                                  },
+                                  reverse: false),
+                            ),
+                          SizedBox(height: 20),
+                          getHomeViewModel.currentImage.state != null
+                              ? Row(
+                            children: [
+                              Text(
+                                  "Compression: ${getHomeViewModel.globalQualitySlider.state ?? getHomeViewModel.currentImage.state?.quality}%"),
+                              Expanded(
+                                  child: getHomeViewModel.globalQualitySlider.state !=
+                                      null
+                                      ? Slider(
+                                      value: ((getHomeViewModel
+                                          .globalQualitySlider.state
+                                          ?.toDouble() ??
+                                          90.0) /
+                                          100),
+                                      onChanged: (value) => getHomeViewModel
+                                          .updateGlobalQualitySlider(value))
+                                      : Slider(
+                                      value: ((getHomeViewModel
+                                          .currentImage.state?.quality
+                                          .toDouble() ??
+                                          90.0) /
+                                          100),
+                                      onChanged: (value) => getHomeViewModel
+                                          .updateCurrentImageQuality(value))),
+                            ],
+                          )
+                              : Container(),
+                          SizedBox(height: 10),
+                          (getHomeViewModel.currentImage.state != null &&
+                              getHomeViewModel.pickedImages.length > 1)
+                              ? Row(
+                            mainAxisSize: MainAxisSize.max,
+                            mainAxisAlignment: MainAxisAlignment.start,
+                            children: [
+                              Flexible(
+                                  child: Text("Slider for or all images",
+                                      softWrap: true)),
+                              Switch(
+                                  value: getHomeViewModel
+                                      .globalQualitySlider.state !=
+                                      null,
+                                  onChanged: (value) {
+                                    if (getHomeViewModel
+                                        .globalQualitySlider.state ==
+                                        null) {
+                                      getHomeViewModel.globalQualitySlider.state =
+                                      90;
+                                    } else {
+                                      getHomeViewModel.globalQualitySlider.state =
+                                      null;
+                                    }
+                                  }),
+                            ],
+                          )
+                              : Container(),
+                        ],
+                      ),
                 ],
               ),
               getHomeViewModel.isLoading.state.isLoading
