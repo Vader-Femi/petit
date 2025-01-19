@@ -17,7 +17,7 @@ class HomeViewModel {
   final pickedImages = RxList<ImageData>([]);
   final currentImage = RxT<ImageData?>(null);
   final currentImageIndex = RxT<int?>(null);
-  final globalQualitySlider = RxT<int?>(null); //
+  final globalQualitySlider = RxT<int?>(null);
 
   void setIsLoading(LoadingData loadingData) {
     isLoading.state = loadingData;
@@ -28,18 +28,18 @@ class HomeViewModel {
   }
 
   Future<void> updateCurrentImageWithIndex(int index) async {
-    final image = getHomeViewModel.pickedImages.state.elementAt(index);
+    final image = pickedImages.state.elementAt(index);
     currentImage.state = image;
   }
 
   void updateCurrentImageQuality(double value) {
     if (currentImage.state != null) {
       final currentImageIndex =
-          getHomeViewModel.pickedImages.state.indexOf(currentImage.state!, 0);
+          pickedImages.state.indexOf(currentImage.state!, 0);
 
       final newImageData =
           currentImage.state!.copyWith(quality: (value * 100).toInt());
-      getHomeViewModel.pickedImages.state[currentImageIndex] = newImageData;
+      pickedImages.state[currentImageIndex] = newImageData;
       currentImage.state = newImageData;
 
       if (globalQualitySlider.state != null) {
@@ -57,7 +57,6 @@ class HomeViewModel {
   }
 
   Future<void> pickSingleImage() async {
-
     setIsLoading(
       LoadingData(
           isLoading: true,
@@ -69,7 +68,6 @@ class HomeViewModel {
     final result = await ImagePicker().pickImage(source: ImageSource.gallery);
 
     if (result != null) {
-
       pickedImages.state = [];
       currentImage.state = null;
       currentImageIndex.state = null;
@@ -101,7 +99,6 @@ class HomeViewModel {
   }
 
   Future<void> pickMultipleImages() async {
-
     setIsLoading(
       LoadingData(
           isLoading: true,
@@ -113,7 +110,6 @@ class HomeViewModel {
     final result = await ImagePicker().pickMultiImage();
 
     if (result.isNotEmpty) {
-
       pickedImages.state = [];
       currentImage.state = null;
       currentImageIndex.state = 0;
@@ -140,7 +136,6 @@ class HomeViewModel {
       currentImage.state = pickedImages[0];
       currentImageIndex.state = 0;
       setIsLoading(LoadingData(isLoading: false));
-
     } else {
       await showResult("No file picked!");
       setIsLoading(LoadingData(isLoading: false));
@@ -152,7 +147,8 @@ class HomeViewModel {
     try {
       var filePath = imageData.imageFile.path;
       var lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
-      if (lastIndex == -1) {// This means it's not jpeg/jpg
+      if (lastIndex == -1) {
+        // This means it's not jpeg/jpg
         //Check if is heic/heif then handle it
         var heifOrHeicIndex = filePath.lastIndexOf(RegExp(r'(.heic|.heif)'));
         if (heifOrHeicIndex != -1) {
@@ -169,7 +165,6 @@ class HomeViewModel {
 
             filePath = file.path;
             lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
-
           } else {
             await showResult("Invalid HEIC/HEIF file");
             setIsLoading(LoadingData(isLoading: false));
@@ -221,21 +216,21 @@ class HomeViewModel {
     }
   }
 
-  Future<void> compressButtonUseCase() async {
-    if (!getHomeViewModel.isLoading.state.isLoading) {
-      if (getHomeViewModel.pickedImages.isEmpty) {
-        await getHomeViewModel.showResult("Select images first");
+  Future<void> compressAllSelectedImages() async {
+    if (!isLoading.state.isLoading) {
+      if (pickedImages.isEmpty) {
+        await showResult("Select images first");
         return;
       }
 
-      var totalLength = getHomeViewModel.pickedImages.state.length;
+      var totalLength = pickedImages.state.length;
       var progress = 0;
 
       for (final (index, imageData)
-          in getHomeViewModel.pickedImages.state.indexed) {
+          in pickedImages.state.indexed) {
         progress = (((index + 1) / totalLength) * 100).round();
 
-        getHomeViewModel.setIsLoading(
+        setIsLoading(
           LoadingData(
               isLoading: true,
               completedSteps: index + 1,
@@ -246,16 +241,16 @@ class HomeViewModel {
         await getHomeViewModel
             .compressImage(imageData: imageData)
             .then((compressedFile) async {
-          await getHomeViewModel.saveLocalImage(compressedFile);
+          await saveLocalImage(compressedFile);
         });
       }
 
       currentImage.state = null;
       currentImageIndex.state = 0;
       globalQualitySlider.state = null;
-      getHomeViewModel.pickedImages.state = [];
+      pickedImages.state = [];
 
-      getHomeViewModel.setIsLoading(
+      setIsLoading(
         LoadingData(
             progressCounter: 100,
             isLoading: false,
@@ -263,18 +258,33 @@ class HomeViewModel {
             totalSteps: totalLength),
       );
 
-
-      await getHomeViewModel.showResult("Image(s) Saved to Galery!");
+      await showResult("Image(s) Saved to Galery!");
     }
   }
 
   Future<void> selectImageButtonUseCase() async {
-    if (!getHomeViewModel.isLoading.state.isLoading) {
-      await getHomeViewModel.pickMultipleImages();
+
+    if (!isLoading.state.isLoading) {
+      await pickMultipleImages();
     }
   }
 
-  Future<void> cancelCompressionButtonUseCase() async {
+  void clearImages() {
+
+    var totalLength = pickedImages.state.length;
+
+    currentImage.state = null;
+    currentImageIndex.state = 0;
+    globalQualitySlider.state = null;
+    pickedImages.state = [];
+
+    setIsLoading(
+      LoadingData(
+          progressCounter: 100,
+          isLoading: false,
+          completedSteps: totalLength,
+          totalSteps: totalLength),
+    );
 
   }
 }

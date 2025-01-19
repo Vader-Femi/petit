@@ -1,3 +1,4 @@
+import 'package:async/async.dart';
 import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
@@ -10,6 +11,8 @@ class HomePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final carouselHeight = MediaQuery.sizeOf(context).height / 2;
+
+    CancelableOperation? cancelableCompressionOperation;
 
     return Scaffold(
       appBar: AppBar(
@@ -39,10 +42,13 @@ class HomePage extends StatelessWidget {
                           style: TextStyle(fontSize: 18),
                         )
                       : Column(
-                        children: [
-                          Text("${(getHomeViewModel.currentImageIndex.state?? -1) + 1} of ${getHomeViewModel.pickedImages.state.length}", style: TextStyle(fontSize: 16),),
-                          SizedBox(height: 10),
-                          CarouselSlider(
+                          children: [
+                            Text(
+                              "${(getHomeViewModel.currentImageIndex.state ?? -1) + 1} of ${getHomeViewModel.pickedImages.state.length}",
+                              style: TextStyle(fontSize: 16),
+                            ),
+                            SizedBox(height: 10),
+                            CarouselSlider(
                               items: getHomeViewModel.pickedImages.state
                                   .map((imageData) {
                                 return ClipRRect(
@@ -65,68 +71,77 @@ class HomePage extends StatelessWidget {
                                     getHomeViewModel
                                         .updateCurrentImageWithIndex(index);
 
-                                    getHomeViewModel.updateCurrentImageIndex(index);
+                                    getHomeViewModel
+                                        .updateCurrentImageIndex(index);
                                   },
                                   reverse: false),
                             ),
-                          SizedBox(height: 20),
-                          getHomeViewModel.currentImage.state != null
-                              ? Row(
-                            children: [
-                              Text(
-                                  "Compression: ${getHomeViewModel.globalQualitySlider.state ?? getHomeViewModel.currentImage.state?.quality}%"),
-                              Expanded(
-                                  child: getHomeViewModel.globalQualitySlider.state !=
-                                      null
-                                      ? Slider(
-                                      value: ((getHomeViewModel
-                                          .globalQualitySlider.state
-                                          ?.toDouble() ??
-                                          90.0) /
-                                          100),
-                                      onChanged: (value) => getHomeViewModel
-                                          .updateGlobalQualitySlider(value))
-                                      : Slider(
-                                      value: ((getHomeViewModel
-                                          .currentImage.state?.quality
-                                          .toDouble() ??
-                                          90.0) /
-                                          100),
-                                      onChanged: (value) => getHomeViewModel
-                                          .updateCurrentImageQuality(value))),
-                            ],
-                          )
-                              : Container(),
-                          SizedBox(height: 10),
-                          (getHomeViewModel.currentImage.state != null &&
-                              getHomeViewModel.pickedImages.length > 1)
-                              ? Row(
-                            mainAxisSize: MainAxisSize.max,
-                            mainAxisAlignment: MainAxisAlignment.start,
-                            children: [
-                              Flexible(
-                                  child: Text("Slider for or all images",
-                                      softWrap: true)),
-                              Switch(
-                                  value: getHomeViewModel
-                                      .globalQualitySlider.state !=
-                                      null,
-                                  onChanged: (value) {
-                                    if (getHomeViewModel
-                                        .globalQualitySlider.state ==
-                                        null) {
-                                      getHomeViewModel.globalQualitySlider.state =
-                                      90;
-                                    } else {
-                                      getHomeViewModel.globalQualitySlider.state =
-                                      null;
-                                    }
-                                  }),
-                            ],
-                          )
-                              : Container(),
-                        ],
-                      ),
+                            SizedBox(height: 20),
+                            getHomeViewModel.currentImage.state != null
+                                ? Row(
+                                    children: [
+                                      Text(
+                                          "Compression: ${getHomeViewModel.globalQualitySlider.state ?? getHomeViewModel.currentImage.state?.quality}%"),
+                                      Expanded(
+                                          child: getHomeViewModel.globalQualitySlider.state != null
+                                              ? Slider(
+                                                  value: ((getHomeViewModel
+                                                              .globalQualitySlider
+                                                              .state
+                                                              ?.toDouble() ??
+                                                          90.0) /
+                                                      100),
+                                                  onChanged: (value) =>
+                                                      getHomeViewModel
+                                                          .updateGlobalQualitySlider(
+                                                              value))
+                                              : Slider(
+                                                  value: ((getHomeViewModel
+                                                              .currentImage
+                                                              .state
+                                                              ?.quality
+                                                              .toDouble() ??
+                                                          90.0) /
+                                                      100),
+                                                  onChanged: (value) =>
+                                                      getHomeViewModel.updateCurrentImageQuality(value))),
+                                    ],
+                                  )
+                                : Container(),
+                            SizedBox(height: 10),
+                            (getHomeViewModel.currentImage.state != null &&
+                                    getHomeViewModel.pickedImages.length > 1)
+                                ? Row(
+                                    mainAxisSize: MainAxisSize.max,
+                                    mainAxisAlignment: MainAxisAlignment.start,
+                                    children: [
+                                      Flexible(
+                                          child: Text(
+                                              "Slider for or all images",
+                                              softWrap: true)),
+                                      Switch(
+                                          value: getHomeViewModel
+                                                  .globalQualitySlider.state !=
+                                              null,
+                                          onChanged: (value) {
+                                            if (getHomeViewModel
+                                                    .globalQualitySlider
+                                                    .state ==
+                                                null) {
+                                              getHomeViewModel
+                                                  .globalQualitySlider
+                                                  .state = 90;
+                                            } else {
+                                              getHomeViewModel
+                                                  .globalQualitySlider
+                                                  .state = null;
+                                            }
+                                          }),
+                                    ],
+                                  )
+                                : Container(),
+                          ],
+                        ),
                 ],
               ),
               getHomeViewModel.isLoading.state.isLoading
@@ -137,7 +152,7 @@ class HomePage extends StatelessWidget {
               getHomeViewModel.isLoading.state.isLoading
                   ? getHomeViewModel.isLoading.state.totalSteps == null
                       ? Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisAlignment: MainAxisAlignment.center,
                           mainAxisSize: MainAxisSize.max,
                           children: [
                             Text("Loading Please Wait"),
@@ -165,7 +180,8 @@ class HomePage extends StatelessWidget {
                           ),
                         )
                   : Container(),
-              (getHomeViewModel.isLoading.state.isLoading && getHomeViewModel.isLoading.state.totalSteps != null)
+              (getHomeViewModel.isLoading.state.isLoading &&
+                      getHomeViewModel.isLoading.state.totalSteps != null)
                   ? CircularStepProgressIndicator(
                       totalSteps:
                           getHomeViewModel.isLoading.state.totalSteps ?? 1,
@@ -195,8 +211,11 @@ class HomePage extends StatelessWidget {
               : getHomeViewModel.isLoading.state.isLoading
                   ? FloatingActionButton.extended(
                       icon: Icon(Icons.cancel_outlined),
-                      onPressed: () async =>
-                          getHomeViewModel.cancelCompressionButtonUseCase(),
+                      onPressed: () async {
+                        if (cancelableCompressionOperation != null) {
+                          cancelableCompressionOperation?.cancel();
+                        }
+                      },
                       label: const Text('Cancel'),
                     )
                   : Column(
@@ -210,8 +229,16 @@ class HomePage extends StatelessWidget {
                         SizedBox(height: 10),
                         FloatingActionButton.extended(
                           icon: Icon(Icons.compress_outlined),
-                          onPressed: () async =>
-                              getHomeViewModel.compressButtonUseCase(),
+                          onPressed: () async {
+                            cancelableCompressionOperation =
+                                CancelableOperation.fromFuture(
+                                    getHomeViewModel
+                                        .compressAllSelectedImages(),
+                                    onCancel: () {
+                              getHomeViewModel.clearImages();
+                              cancelableCompressionOperation == null;
+                            });
+                          },
                           label: const Text('Compress'),
                         ),
                       ],

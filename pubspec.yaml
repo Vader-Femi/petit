@@ -68,6 +68,9 @@ dependencies:
   #Gallery Saver
   gallery_saver_plus: ^3.2.1
 
+  #For cancelable operation (To cancel a future)
+  async: ^2.11.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
