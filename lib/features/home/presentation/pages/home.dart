@@ -38,7 +38,7 @@ class HomePage extends StatelessWidget {
                 children: [
                   getHomeViewModel.pickedImages.isEmpty
                       ? const Text(
-                          "Click the floating button at the bottom to select images and start compressing",
+                          "Click the floating button at the bottom to select images and start compressing.",
                           style: TextStyle(fontSize: 18),
                         )
                       : Column(
