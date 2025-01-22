@@ -1,4 +1,5 @@
 import 'dart:ui';
+import 'package:async/src/cancelable_operation.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'dart:io';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
@@ -216,7 +217,8 @@ class HomeViewModel {
     }
   }
 
-  Future<void> compressAllSelectedImages() async {
+  Future<void> compressAllSelectedImages(
+      CancelableCompleter<void>? completer) async {
     if (!isLoading.state.isLoading) {
       if (pickedImages.isEmpty) {
         await showResult("Select images first");
@@ -226,23 +228,26 @@ class HomeViewModel {
       var totalLength = pickedImages.state.length;
       var progress = 0;
 
-      for (final (index, imageData)
-          in pickedImages.state.indexed) {
-        progress = (((index + 1) / totalLength) * 100).round();
+      for (final (index, imageData) in pickedImages.state.indexed) {
+        if (completer?.isCanceled == true) {
+          break;
+        } else {
+          progress = (((index + 1) / totalLength) * 100).round();
 
-        setIsLoading(
-          LoadingData(
-              isLoading: true,
-              completedSteps: index + 1,
-              totalSteps: totalLength,
-              progressCounter: progress),
-        );
+          setIsLoading(
+            LoadingData(
+                isLoading: true,
+                completedSteps: index + 1,
+                totalSteps: totalLength,
+                progressCounter: progress),
+          );
 
-        await getHomeViewModel
-            .compressImage(imageData: imageData)
-            .then((compressedFile) async {
-          await saveLocalImage(compressedFile);
-        });
+          await getHomeViewModel
+              .compressImage(imageData: imageData)
+              .then((compressedFile) async {
+            await saveLocalImage(compressedFile);
+          });
+        }
       }
 
       currentImage.state = null;
@@ -263,14 +268,12 @@ class HomeViewModel {
   }
 
   Future<void> selectImageButtonUseCase() async {
-
     if (!isLoading.state.isLoading) {
       await pickMultipleImages();
     }
   }
 
-  void clearImages() {
-
+  void cancelCompressingAllImages() {
     var totalLength = pickedImages.state.length;
 
     currentImage.state = null;
@@ -285,6 +288,5 @@ class HomeViewModel {
           completedSteps: totalLength,
           totalSteps: totalLength),
     );
-
   }
 }

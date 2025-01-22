@@ -12,7 +12,8 @@ class HomePage extends StatelessWidget {
   Widget build(BuildContext context) {
     final carouselHeight = MediaQuery.sizeOf(context).height / 2;
 
-    CancelableOperation? cancelableCompressionOperation;
+    CancelableCompleter<void> completer = CancelableCompleter(
+        onCancel: getHomeViewModel.cancelCompressingAllImages);
 
     return Scaffold(
       appBar: AppBar(
@@ -22,12 +23,12 @@ class HomePage extends StatelessWidget {
         padding: EdgeInsets.fromLTRB(10, 0, 10, 15),
         child: SuperBuilder(builder: (context) {
           if (getHomeViewModel.result.state != null) {
-            WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text("${getHomeViewModel.result.state}"),
-              ));
-              getHomeViewModel.showResult(null);
-            });
+            // WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text("${getHomeViewModel.result.state}"),
+            ));
+            getHomeViewModel.showResult(null);
+            // });
           }
 
           return Stack(
@@ -38,8 +39,11 @@ class HomePage extends StatelessWidget {
                 children: [
                   getHomeViewModel.pickedImages.isEmpty
                       ? const Text(
-                          "Click the floating button at the bottom to select images and start compressing.",
-                          style: TextStyle(fontSize: 18),
+                          "Add images and start compressing",
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 18,
+                          ),
                         )
                       : Column(
                           children: [
@@ -212,8 +216,13 @@ class HomePage extends StatelessWidget {
                   ? FloatingActionButton.extended(
                       icon: Icon(Icons.cancel_outlined),
                       onPressed: () async {
-                        if (cancelableCompressionOperation != null) {
-                          cancelableCompressionOperation?.cancel();
+                        await getHomeViewModel
+                            .showResult("Cancelling...Please wait!");
+                        if (!completer.isCanceled) {
+                          await completer.operation.cancel();
+                          completer = CancelableCompleter(
+                              onCancel:
+                                  getHomeViewModel.cancelCompressingAllImages);
                         }
                       },
                       label: const Text('Cancel'),
@@ -230,14 +239,8 @@ class HomePage extends StatelessWidget {
                         FloatingActionButton.extended(
                           icon: Icon(Icons.compress_outlined),
                           onPressed: () async {
-                            cancelableCompressionOperation =
-                                CancelableOperation.fromFuture(
-                                    getHomeViewModel
-                                        .compressAllSelectedImages(),
-                                    onCancel: () {
-                              getHomeViewModel.clearImages();
-                              cancelableCompressionOperation == null;
-                            });
+                            completer.complete(getHomeViewModel
+                                .compressAllSelectedImages(completer));
                           },
                           label: const Text('Compress'),
                         ),
