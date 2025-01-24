@@ -28,9 +28,10 @@ class HomeViewModel {
     this.result.state = result;
   }
 
-  Future<void> updateCurrentImageWithIndex(int index) async {
+  Future<void> updateCurrentImageAndIndex(int index) async {
     final image = pickedImages.state.elementAt(index);
     currentImage.state = image;
+    currentImageIndex.state = index;
   }
 
   void updateCurrentImageQuality(double value) {
@@ -47,10 +48,6 @@ class HomeViewModel {
         globalQualitySlider.state = null;
       }
     }
-  }
-
-  void updateCurrentImageIndex(int index) {
-    currentImageIndex.state = index;
   }
 
   void updateGlobalQualitySlider(double value) {
@@ -186,6 +183,8 @@ class HomeViewModel {
       }
       final splitted = filePath.substring(0, (lastIndex));
       final outPath = "${splitted}_compressed${filePath.substring(lastIndex)}";
+
+
 
       var compressedImage = await FlutterImageCompress.compressAndGetFile(
         filePath,

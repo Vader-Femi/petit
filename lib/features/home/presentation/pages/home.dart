@@ -2,7 +2,9 @@ import 'package:async/async.dart';
 import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
+import 'package:petit/config/theme/theme.dart';
 import 'package:petit/features/home/presentation/state/home_viewmodel.dart';
+import 'package:smooth_page_indicator/smooth_page_indicator.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
 
 class HomePage extends StatelessWidget {
@@ -12,6 +14,7 @@ class HomePage extends StatelessWidget {
   Widget build(BuildContext context) {
     final carouselHeight = MediaQuery.sizeOf(context).height / 2;
 
+    final carouselSliderController = CarouselSliderController();
     CancelableCompleter<void> completer = CancelableCompleter(
         onCancel: getHomeViewModel.cancelCompressingAllImages);
 
@@ -19,39 +22,34 @@ class HomePage extends StatelessWidget {
       appBar: AppBar(
         title: Text("Petit"),
       ),
-      body: Padding(
-        padding: EdgeInsets.fromLTRB(10, 0, 10, 15),
-        child: SuperBuilder(builder: (context) {
-          if (getHomeViewModel.result.state != null) {
-            // WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text("${getHomeViewModel.result.state}"),
-            ));
-            getHomeViewModel.showResult(null);
-            // });
-          }
+      body: SuperBuilder(builder: (context) {
+        if (getHomeViewModel.result.state != null) {
+          // WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text("${getHomeViewModel.result.state}"),
+          ));
+          getHomeViewModel.showResult(null);
+          // });
+        }
 
-          return Stack(
-            alignment: Alignment.center,
-            children: [
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  getHomeViewModel.pickedImages.isEmpty
-                      ? const Text(
-                          "Add images and start compressing",
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 18,
-                          ),
-                        )
-                      : Column(
+        return Stack(
+          alignment: Alignment.center,
+          children: [
+            Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                getHomeViewModel.pickedImages.isEmpty
+                    ? const Text(
+                        "Add images and start compressing",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 18,
+                        ),
+                      )
+                    : Padding(
+                        padding: EdgeInsets.fromLTRB(10, 0, 10, 15),
+                        child: Column(
                           children: [
-                            Text(
-                              "${(getHomeViewModel.currentImageIndex.state ?? -1) + 1} of ${getHomeViewModel.pickedImages.state.length}",
-                              style: TextStyle(fontSize: 16),
-                            ),
-                            SizedBox(height: 10),
                             CarouselSlider(
                               items: getHomeViewModel.pickedImages.state
                                   .map((imageData) {
@@ -65,22 +63,37 @@ class HomePage extends StatelessWidget {
                                   ),
                                 );
                               }).toList(),
+                              carouselController: carouselSliderController,
                               options: CarouselOptions(
                                   height: carouselHeight,
                                   autoPlay: true,
+                                  enlargeStrategy:
+                                      CenterPageEnlargeStrategy.zoom,
                                   enlargeCenterPage: true,
+                                  pageSnapping: true,
+                                  scrollDirection: Axis.horizontal,
                                   pauseAutoPlayOnTouch: true,
                                   enableInfiniteScroll: false,
-                                  onPageChanged: (index, reason) {
-                                    getHomeViewModel
-                                        .updateCurrentImageWithIndex(index);
-
-                                    getHomeViewModel
-                                        .updateCurrentImageIndex(index);
-                                  },
+                                  onPageChanged: (index, _) => getHomeViewModel
+                                      .updateCurrentImageAndIndex(index),
                                   reverse: false),
                             ),
-                            SizedBox(height: 20),
+                            SizedBox(height: 10),
+                            AnimatedSmoothIndicator(
+                              activeIndex:
+                                  getHomeViewModel.currentImageIndex.state ?? 0,
+                              count: getHomeViewModel.pickedImages.state.length,
+                              effect: ExpandingDotsEffect(
+                                activeDotColor:
+                                    Theme.of(context).colorScheme.primary,
+                                dotHeight: 10,
+                                spacing: 5,
+                              ),
+                              onDotClicked: (index) => carouselSliderController.animateToPage(index),
+                              // onDotClicked: (index) => getHomeViewModel
+                              //     .updateCurrentImageAndIndex(index),
+                            ),
+                            SizedBox(height: 10),
                             getHomeViewModel.currentImage.state != null
                                 ? Row(
                                     children: [
@@ -123,87 +136,93 @@ class HomePage extends StatelessWidget {
                                           child: Text(
                                               "Slider for or all images",
                                               softWrap: true)),
-                                      Switch(
-                                          value: getHomeViewModel
-                                                  .globalQualitySlider.state !=
-                                              null,
-                                          onChanged: (value) {
-                                            if (getHomeViewModel
-                                                    .globalQualitySlider
-                                                    .state ==
-                                                null) {
-                                              getHomeViewModel
-                                                  .globalQualitySlider
-                                                  .state = 90;
-                                            } else {
-                                              getHomeViewModel
-                                                  .globalQualitySlider
-                                                  .state = null;
-                                            }
-                                          }),
+                                      SizedBox(width: 5),
+                                      SizedBox(
+                                        height: 40,
+                                        child: FittedBox(
+                                          fit: BoxFit.fill,
+                                          child: Switch(
+                                              value: getHomeViewModel
+                                                      .globalQualitySlider.state !=
+                                                  null,
+                                              onChanged: (value) {
+                                                if (getHomeViewModel
+                                                        .globalQualitySlider
+                                                        .state ==
+                                                    null) {
+                                                  getHomeViewModel
+                                                      .globalQualitySlider
+                                                      .state = 90;
+                                                } else {
+                                                  getHomeViewModel
+                                                      .globalQualitySlider
+                                                      .state = null;
+                                                }
+                                              }),
+                                        ),
+                                      ),
                                     ],
                                   )
                                 : Container(),
                           ],
                         ),
-                ],
-              ),
-              getHomeViewModel.isLoading.state.isLoading
-                  ? Container(
-                      color: Colors.black.withOpacity(0.75),
-                    )
-                  : Container(),
-              getHomeViewModel.isLoading.state.isLoading
-                  ? getHomeViewModel.isLoading.state.totalSteps == null
-                      ? Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          mainAxisSize: MainAxisSize.max,
-                          children: [
-                            Text("Loading Please Wait"),
-                            SizedBox(height: 5),
-                            CircularProgressIndicator()
-                          ],
-                        )
-                      : Container(
-                          width: 100,
-                          height: 100,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
+                      ),
+              ],
+            ),
+            getHomeViewModel.isLoading.state.isLoading
+                ? Container(
+                    color: Colors.black.withOpacity(0.75),
+                  )
+                : Container(),
+            getHomeViewModel.isLoading.state.isLoading
+                ? getHomeViewModel.isLoading.state.totalSteps == null
+                    ? Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.max,
+                        children: [
+                          Text("Loading Please Wait"),
+                          SizedBox(height: 5),
+                          CircularProgressIndicator()
+                        ],
+                      )
+                    : Container(
+                        width: 100,
+                        height: 100,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                            color:
+                                Theme.of(context).colorScheme.primaryContainer,
+                            borderRadius: BorderRadius.circular(50)),
+                        child: Text(
+                          '${getHomeViewModel.isLoading.state.progressCounter}%',
+                          style: TextStyle(
+                              fontSize: 30,
+                              fontWeight: FontWeight.w900,
                               color: Theme.of(context)
                                   .colorScheme
-                                  .primaryContainer,
-                              borderRadius: BorderRadius.circular(50)),
-                          child: Text(
-                            '${getHomeViewModel.isLoading.state.progressCounter}%',
-                            style: TextStyle(
-                                fontSize: 30,
-                                fontWeight: FontWeight.w900,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onPrimaryContainer),
-                          ),
-                        )
-                  : Container(),
-              (getHomeViewModel.isLoading.state.isLoading &&
-                      getHomeViewModel.isLoading.state.totalSteps != null)
-                  ? CircularStepProgressIndicator(
-                      totalSteps:
-                          getHomeViewModel.isLoading.state.totalSteps ?? 1,
-                      stepSize: 20,
-                      selectedStepSize: 30,
-                      currentStep:
-                          getHomeViewModel.isLoading.state.completedSteps ?? 1,
-                      width: 180,
-                      height: 180,
-                      padding: 0.02,
-                      selectedColor: Colors.green,
-                      unselectedColor: Colors.red,
-                    )
-                  : Container(),
-            ],
-          );
-        }),
-      ),
+                                  .onPrimaryContainer),
+                        ),
+                      )
+                : Container(),
+            (getHomeViewModel.isLoading.state.isLoading &&
+                    getHomeViewModel.isLoading.state.totalSteps != null)
+                ? CircularStepProgressIndicator(
+                    totalSteps:
+                        getHomeViewModel.isLoading.state.totalSteps ?? 1,
+                    stepSize: 20,
+                    selectedStepSize: 30,
+                    currentStep:
+                        getHomeViewModel.isLoading.state.completedSteps ?? 1,
+                    width: 180,
+                    height: 180,
+                    padding: 0.02,
+                    selectedColor: Colors.green,
+                    unselectedColor: Colors.red,
+                  )
+                : Container(),
+          ],
+        );
+      }),
       floatingActionButton: SuperBuilder(
         builder: (context) {
           return getHomeViewModel.pickedImages.isEmpty
