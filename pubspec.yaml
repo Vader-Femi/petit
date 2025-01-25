@@ -50,9 +50,6 @@ dependencies:
   #Image carousel slider
   carousel_slider: ^5.0.0
 
-  #Image carousel indicator
-  smooth_page_indicator: ^1.2.0+3
-
   #Image compression
   flutter_image_compress: ^2.4.0
 

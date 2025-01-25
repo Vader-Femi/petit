@@ -2,9 +2,7 @@ import 'package:async/async.dart';
 import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
-import 'package:petit/config/theme/theme.dart';
 import 'package:petit/features/home/presentation/state/home_viewmodel.dart';
-import 'package:smooth_page_indicator/smooth_page_indicator.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
 
 class HomePage extends StatelessWidget {
@@ -79,19 +77,9 @@ class HomePage extends StatelessWidget {
                                   reverse: false),
                             ),
                             SizedBox(height: 10),
-                            AnimatedSmoothIndicator(
-                              activeIndex:
-                                  getHomeViewModel.currentImageIndex.state ?? 0,
-                              count: getHomeViewModel.pickedImages.state.length,
-                              effect: ExpandingDotsEffect(
-                                activeDotColor:
-                                    Theme.of(context).colorScheme.primary,
-                                dotHeight: 10,
-                                spacing: 5,
-                              ),
-                              onDotClicked: (index) => carouselSliderController.animateToPage(index),
-                              // onDotClicked: (index) => getHomeViewModel
-                              //     .updateCurrentImageAndIndex(index),
+                            Text(
+                              "${(getHomeViewModel.currentImageIndex.state ?? -1) + 1} of ${getHomeViewModel.pickedImages.state.length}",
+                              style: TextStyle(fontSize: 16),
                             ),
                             SizedBox(height: 10),
                             getHomeViewModel.currentImage.state != null
