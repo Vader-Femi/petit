@@ -49,18 +49,21 @@ class HomePage extends StatelessWidget {
                         child: Column(
                           children: [
                             CarouselSlider(
-                              items: getHomeViewModel.pickedImages.state
+                              items:
+                              getHomeViewModel.pickedImages.state
                                   .map((imageData) {
                                 return ClipRRect(
                                   borderRadius: BorderRadius.circular(12),
                                   child: Image.file(
                                     imageData.imageFile,
                                     height: carouselHeight,
+                                    cacheHeight: carouselHeight.toInt(),
                                     fit: BoxFit.fitHeight,
                                     filterQuality: FilterQuality.none,
                                   ),
                                 );
                               }).toList(),
+
                               carouselController: carouselSliderController,
                               options: CarouselOptions(
                                   height: carouselHeight,

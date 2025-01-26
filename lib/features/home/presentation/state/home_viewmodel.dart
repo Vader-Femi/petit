@@ -108,30 +108,27 @@ class HomeViewModel {
     final result = await ImagePicker().pickMultiImage();
 
     if (result.isNotEmpty) {
+
       pickedImages.state = [];
       currentImage.state = null;
-      currentImageIndex.state = 0;
       globalQualitySlider.state = null;
       List<ImageData> picked = [];
 
       for (var file in result) {
         final imageBytes = await file.readAsBytes();
-        final buffer = await ImmutableBuffer.fromUint8List(imageBytes);
-        final descriptor = await ImageDescriptor.encoded(buffer);
+        var decodedImage = img.decodeImage(imageBytes);
 
         picked.add(ImageData(
           imageFile: File(file.path),
-          pixelWidth: descriptor.width,
-          pixelHeight: descriptor.height,
+          pixelWidth: decodedImage?.width ?? 1080,
+          pixelHeight: decodedImage?.height ?? 1080,
           quality: 90,
         ));
 
-        descriptor.dispose();
-        buffer.dispose();
       }
 
       pickedImages.state = picked;
-      currentImage.state = pickedImages[0];
+      currentImage.state = picked[0];
       currentImageIndex.state = 0;
       setIsLoading(LoadingData(isLoading: false));
     } else {
