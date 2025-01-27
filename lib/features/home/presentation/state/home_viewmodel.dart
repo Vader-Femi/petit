@@ -116,7 +116,7 @@ class HomeViewModel {
 
       for (var file in result) {
         final imageBytes = await file.readAsBytes();
-        var decodedImage = img.decodeImage(imageBytes);
+        final decodedImage = img.decodeImage(imageBytes);
 
         picked.add(ImageData(
           imageFile: File(file.path),
@@ -140,22 +140,31 @@ class HomeViewModel {
 
   Future<XFile> compressImage({required ImageData imageData}) async {
     try {
+
       var filePath = imageData.imageFile.path;
+      final supportedFormatIndex = filePath.lastIndexOf(RegExp(r'(.png|.webp|.jp|.heic|.heif)'));
+      if (supportedFormatIndex == -1){
+        await showResult("Unsupported- Only supports png,webp,jpeg,jpg,heic and heif");
+        setIsLoading(LoadingData(isLoading: false));
+        throw Exception("Unsupported- Only supports png,webp,jpeg,jpg,heic and heif");
+      }
+
       var lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
       if (lastIndex == -1) {
         // This means it's not jpeg/jpg
         //Check if is heic/heif then handle it
-        var heifOrHeicIndex = filePath.lastIndexOf(RegExp(r'(.heic|.heif)'));
+        final heifOrHeicIndex = filePath.lastIndexOf(RegExp(r'(.heic|.heif)'));
         if (heifOrHeicIndex != -1) {
           String? jpgPath =
               await HeifConverter.convert(filePath, format: "jpg");
           if (jpgPath != null) {
-            //Flip and Replace file path and index
-            var jpgImage = img.decodeImage(await File(jpgPath).readAsBytes());
-            var rotatedJpgImage = img.copyRotate(jpgImage!, angle: 90);
+            //Resize, Rotate, then Replace the file path and index
+            final jpgImage = img.decodeImage(await File(jpgPath).readAsBytes());
+            final resizedImage = img.copyResize(jpgImage!, width: imageData.pixelWidth, height: imageData.pixelHeight);
+            final rotatedJpgImage = img.copyRotate(resizedImage, angle: 90);
 
             final splitted = filePath.substring(0, (heifOrHeicIndex));
-            var file = File("$splitted.jpg")
+            final file = File("$splitted.jpg")
               ..writeAsBytesSync(img.encodeJpg(rotatedJpgImage));
 
             filePath = file.path;
@@ -168,9 +177,9 @@ class HomeViewModel {
         } else {
           //Re encode to jpg
           final image = img.decodeImage(imageData.imageFile.readAsBytesSync())!;
-          lastIndex = filePath.lastIndexOf(RegExp(r'(.png|.webp|.raw)'));
+          lastIndex = filePath.lastIndexOf(RegExp(r'(.png|.webp)'));
           final splitted = filePath.substring(0, (lastIndex));
-          var file = File("$splitted.jpg")
+          final file = File("$splitted.jpg")
             ..writeAsBytesSync(img.encodeJpg(image));
 
           //Replace file path and index
@@ -182,8 +191,7 @@ class HomeViewModel {
       final outPath = "${splitted}_compressed${filePath.substring(lastIndex)}";
 
 
-
-      var compressedImage = await FlutterImageCompress.compressAndGetFile(
+      final compressedImage = await FlutterImageCompress.compressAndGetFile(
         filePath,
         outPath,
         minWidth: imageData.pixelWidth,
@@ -221,13 +229,28 @@ class HomeViewModel {
         return;
       }
 
-      var totalLength = pickedImages.state.length;
-      var progress = 0;
+      final totalLength = pickedImages.state.length;
+      var progress = totalLength == 1 ? 50 : 0;
 
       for (final (index, imageData) in pickedImages.state.indexed) {
         if (completer?.isCanceled == true) {
           break;
         } else {
+
+          setIsLoading(
+            LoadingData(
+                isLoading: true,
+                completedSteps: index,
+                totalSteps: totalLength,
+                progressCounter: progress),
+          );
+
+          await getHomeViewModel
+              .compressImage(imageData: imageData)
+              .then((compressedFile) async {
+            await saveLocalImage(compressedFile);
+          });
+
           progress = (((index + 1) / totalLength) * 100).round();
 
           setIsLoading(
@@ -238,11 +261,6 @@ class HomeViewModel {
                 progressCounter: progress),
           );
 
-          await getHomeViewModel
-              .compressImage(imageData: imageData)
-              .then((compressedFile) async {
-            await saveLocalImage(compressedFile);
-          });
         }
       }
 
@@ -270,7 +288,7 @@ class HomeViewModel {
   }
 
   void cancelCompressingAllImages() {
-    var totalLength = pickedImages.state.length;
+    final totalLength = pickedImages.state.length;
 
     currentImage.state = null;
     currentImageIndex.state = 0;

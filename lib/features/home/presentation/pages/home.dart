@@ -22,12 +22,12 @@ class HomePage extends StatelessWidget {
       ),
       body: SuperBuilder(builder: (context) {
         if (getHomeViewModel.result.state != null) {
-          // WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
+          WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text("${getHomeViewModel.result.state}"),
           ));
           getHomeViewModel.showResult(null);
-          // });
+          });
         }
 
         return Stack(
