@@ -23,10 +23,10 @@ class HomePage extends StatelessWidget {
       body: SuperBuilder(builder: (context) {
         if (getHomeViewModel.result.state != null) {
           WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text("${getHomeViewModel.result.state}"),
-          ));
-          getHomeViewModel.showResult(null);
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text("${getHomeViewModel.result.state}"),
+            ));
+            getHomeViewModel.showResult(null);
           });
         }
 
@@ -49,21 +49,30 @@ class HomePage extends StatelessWidget {
                         child: Column(
                           children: [
                             CarouselSlider(
-                              items:
-                              getHomeViewModel.pickedImages.state
+                              items: getHomeViewModel.pickedImages.state
                                   .map((imageData) {
                                 return ClipRRect(
                                   borderRadius: BorderRadius.circular(12),
                                   child: Image.file(
                                     imageData.imageFile,
                                     height: carouselHeight,
+                                    frameBuilder: (BuildContext context,
+                                        Widget child,
+                                        int? frame,
+                                        bool? wasSynchronouslyLoaded) {
+                                      return AnimatedOpacity(
+                                        opacity: frame == null ? 0 : 1,
+                                        duration: Duration(seconds: 1),
+                                        curve: Curves.easeIn,
+                                        child: child,
+                                      );
+                                    },
                                     cacheHeight: carouselHeight.toInt(),
                                     fit: BoxFit.fitHeight,
                                     filterQuality: FilterQuality.none,
                                   ),
                                 );
                               }).toList(),
-
                               carouselController: carouselSliderController,
                               options: CarouselOptions(
                                   height: carouselHeight,
@@ -134,7 +143,8 @@ class HomePage extends StatelessWidget {
                                           fit: BoxFit.fill,
                                           child: Switch(
                                               value: getHomeViewModel
-                                                      .globalQualitySlider.state !=
+                                                      .globalQualitySlider
+                                                      .state !=
                                                   null,
                                               onChanged: (value) {
                                                 if (getHomeViewModel
