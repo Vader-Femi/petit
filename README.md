@@ -3,7 +3,7 @@
 
 It supports png, webp, jpeg, jpg, heic, and heif formats. So I added an error massage for unsupported formats. I also found out that the webp compression is not very effecient.
 
-<a href="https://github.com/Vader-Femi/petit/" target="_blank"
+<a href="https://appetize.io/app/b_5q7h4bxybf3vgeckafpxufi7xe?device=pixel7&osVersion=15.0" target="_blank"
 rel="nofollow noopener noreferrer" aria-label="Live Demo"><u>Live Demo 🚀(Coming soon)</u></a>
 
 A Flutter image compression application capable of compressing images in various formats, like HEIC, HEIF, PNG, and JPG, for efficient storage and faster file transfers without compromising quality
