@@ -231,6 +231,8 @@ class HomeViewModel {
 
       final totalLength = pickedImages.state.length;
       var progress = totalLength == 1 ? 50 : 0;
+      var sizeBeforeCompression = 0;
+      var sizeAfterCompression = 0;
 
       for (final (index, imageData) in pickedImages.state.indexed) {
         if (completer?.isCanceled == true) {
@@ -245,10 +247,13 @@ class HomeViewModel {
                 progressCounter: progress),
           );
 
+          sizeBeforeCompression += imageData.imageFile.lengthSync();
+
           await getHomeViewModel
               .compressImage(imageData: imageData)
               .then((compressedFile) async {
             await saveLocalImage(compressedFile);
+            sizeAfterCompression += await compressedFile.length();
           });
 
           progress = (((index + 1) / totalLength) * 100).round();
@@ -277,7 +282,8 @@ class HomeViewModel {
             totalSteps: totalLength),
       );
 
-      await showResult("Image(s) Saved to Galery!");
+      final savedMegabytes = ((sizeBeforeCompression-sizeAfterCompression) / 1048576);
+      await showResult("Saved ${savedMegabytes.toStringAsFixed(2)}MB");
     }
   }
 
