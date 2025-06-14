@@ -66,7 +66,7 @@ dependencies:
   image_picker: ^1.1.2
 
   #Gallery Saver
-  gallery_saver_plus: ^3.2.1
+  gallery_saver_plus: ^3.2.8
 
   #For cancelable operation (To cancel a future)
   async: ^2.11.0
