@@ -62,12 +62,11 @@ class HomePage extends StatelessWidget {
                                         bool? wasSynchronouslyLoaded) {
                                       return AnimatedOpacity(
                                         opacity: frame == null ? 0 : 1,
-                                        duration: Duration(seconds: 1),
+                                        duration: Duration(milliseconds: 500),
                                         curve: Curves.easeIn,
                                         child: child,
                                       );
                                     },
-                                    cacheHeight: carouselHeight.toInt(),
                                     fit: BoxFit.fitHeight,
                                     filterQuality: FilterQuality.none,
                                   ),
@@ -98,7 +97,7 @@ class HomePage extends StatelessWidget {
                                 ? Row(
                                     children: [
                                       Text(
-                                          "Compression: ${getHomeViewModel.globalQualitySlider.state ?? getHomeViewModel.currentImage.state?.quality}%"),
+                                          "Quality: ${getHomeViewModel.globalQualitySlider.state ?? getHomeViewModel.currentImage.state?.quality}%"),
                                       Expanded(
                                           child: getHomeViewModel.globalQualitySlider.state != null
                                               ? Slider(
@@ -134,7 +133,7 @@ class HomePage extends StatelessWidget {
                                     children: [
                                       Flexible(
                                           child: Text(
-                                              "Slider for or all images",
+                                              "Use same quality for all images",
                                               softWrap: true)),
                                       SizedBox(width: 5),
                                       SizedBox(
@@ -226,46 +225,58 @@ class HomePage extends StatelessWidget {
       }),
       floatingActionButton: SuperBuilder(
         builder: (context) {
-          return getHomeViewModel.pickedImages.isEmpty
-              ? FloatingActionButton(
-                  onPressed: () async =>
-                      getHomeViewModel.selectImageButtonUseCase(),
-                  child: Icon(Icons.add_photo_alternate_outlined),
-                )
-              : getHomeViewModel.isLoading.state.isLoading
-                  ? FloatingActionButton.extended(
-                      icon: Icon(Icons.cancel_outlined),
-                      onPressed: () async {
-                        await getHomeViewModel
-                            .showResult("Cancelling...Please wait!");
-                        if (!completer.isCanceled) {
-                          await completer.operation.cancel();
-                          completer = CancelableCompleter(
-                              onCancel:
-                                  getHomeViewModel.cancelCompressingAllImages);
-                        }
-                      },
-                      label: const Text('Cancel'),
-                    )
-                  : Column(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        FloatingActionButton(
-                            onPressed: () async =>
-                                getHomeViewModel.selectImageButtonUseCase(),
-                            child: Icon(Icons.add_photo_alternate_outlined)),
-                        SizedBox(height: 10),
-                        FloatingActionButton.extended(
-                          icon: Icon(Icons.compress_outlined),
-                          onPressed: () async {
-                            completer.complete(getHomeViewModel
-                                .compressAllSelectedImages(completer));
-                          },
-                          label: const Text('Compress'),
-                        ),
-                      ],
-                    );
+          if (getHomeViewModel.pickedImages.isEmpty) {
+            return FloatingActionButton(
+              onPressed: () async =>
+                  getHomeViewModel.selectImageButtonUseCase(),
+              tooltip: "Add Images",
+              child: const Icon(Icons.add_photo_alternate_outlined),
+            );
+          } else {
+            if (getHomeViewModel.isLoading.state.isLoading) {
+              return FloatingActionButton.extended(
+                icon: const Icon(Icons.clear),
+                tooltip: "Cancel compression ",
+                onPressed: () async {
+                  await getHomeViewModel
+                      .showResult("Cancelling...Please wait!");
+                  if (!completer.isCanceled) {
+                    await completer.operation.cancel();
+                    completer = CancelableCompleter(
+                        onCancel: getHomeViewModel.cancelCompressingAllImages);
+                  }
+                },
+                label: const Text('Cancel'),
+              );
+            } else {
+              return Column(
+                mainAxisAlignment: MainAxisAlignment.end,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  FloatingActionButton.extended(
+                    icon: const Icon(Icons.compress_outlined),
+                    tooltip: "Compress Images",
+                    onPressed: () async {
+
+                        throw FormatException("Test Crash");
+                      completer.complete(getHomeViewModel
+                          .compressAllSelectedImages(completer));
+                    },
+                    label: const Text('Compress'),
+                  ),
+                  SizedBox(height: 10),
+                  FloatingActionButton.extended(
+                    icon: const Icon(Icons.clear),
+                    tooltip: "Clear images",
+                    onPressed: () async {
+                      getHomeViewModel.cancelCompressingAllImages();
+                    },
+                    label: const Text('Clear'),
+                  ),
+                ],
+              );
+            }
+          }
         },
       ),
     );

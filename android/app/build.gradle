@@ -3,6 +3,12 @@ plugins {
     id "kotlin-android"
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id "dev.flutter.flutter-gradle-plugin"
+
+    // GMS forAnalytics and other GMS Plugins
+    id 'com.google.gms.google-services'
+
+    // Add the Crashlytics Gradle plugin
+    id 'com.google.firebase.crashlytics'
 }
 
 def keystoreProperties = new Properties()
@@ -12,7 +18,7 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace = "com.example.petit"
+    namespace = "com.outsidetheide.petit"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -56,4 +62,13 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Import the Firebase BoM
+    implementation platform('com.google.firebase:firebase-bom:33.15.0')
+
+
+    // When using the BoM, don't specify versions in Firebase dependencies
+    implementation 'com.google.firebase:firebase-analytics'
 }
