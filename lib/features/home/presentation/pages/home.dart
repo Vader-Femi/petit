@@ -18,7 +18,7 @@ class HomePage extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text("Petit"),
+        title: Text("Petit - Image Compression App"),
       ),
       body: SuperBuilder(builder: (context) {
         if (getHomeViewModel.result.state != null) {

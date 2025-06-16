@@ -1,5 +1,5 @@
 name: petit
-description: "A Flutter image compression application capable of compressing images in various formats, like HEIC, HEIF, PNG, and JPG, for efficient storage and faster file transfers without compromising quality"
+description: "An image compression application capable of compressing images in various formats, like HEIC, HEIF, PNG, and JPG, for efficient storage and faster file transfers without compromising quality"
 
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
