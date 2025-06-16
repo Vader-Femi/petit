@@ -257,8 +257,6 @@ class HomePage extends StatelessWidget {
                     icon: const Icon(Icons.compress_outlined),
                     tooltip: "Compress Images",
                     onPressed: () async {
-
-                        throw FormatException("Test Crash");
                       completer.complete(getHomeViewModel
                           .compressAllSelectedImages(completer));
                     },
