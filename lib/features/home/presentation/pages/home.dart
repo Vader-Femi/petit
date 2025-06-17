@@ -18,7 +18,9 @@ class HomePage extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text("Petit - Image Compression App"),
+        title: Text("Petit - Image Compression", style: TextStyle(color: Theme.of(context).colorScheme.primary),),
+        elevation: 5,
+        backgroundColor: Theme.of(context).colorScheme.surfaceContainerLow,
       ),
       body: SuperBuilder(builder: (context) {
         if (getHomeViewModel.result.state != null) {
@@ -257,8 +259,10 @@ class HomePage extends StatelessWidget {
                     icon: const Icon(Icons.compress_outlined),
                     tooltip: "Compress Images",
                     onPressed: () async {
-                      completer.complete(getHomeViewModel
-                          .compressAllSelectedImages(completer));
+                      if (!completer.isCanceled) {
+                        completer.complete(getHomeViewModel
+                            .compressAllSelectedImages(completer));
+                      }
                     },
                     label: const Text('Compress'),
                   ),

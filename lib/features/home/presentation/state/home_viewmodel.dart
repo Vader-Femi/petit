@@ -134,7 +134,6 @@ class HomeViewModel {
     } else {
       await showResult("No file picked!");
       setIsLoading(LoadingData(isLoading: false));
-      throw Exception('No file picked');
     }
   }
 
