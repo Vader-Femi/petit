@@ -7,6 +7,8 @@ import 'package:gallery_saver_plus/gallery_saver.dart';
 import 'package:heif_converter_plus/heif_converter.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
+import 'package:image_size_getter/file_input.dart';
+import 'package:image_size_getter/image_size_getter.dart';
 import 'package:petit/features/home/data/image_data.dart';
 
 // import 'package:receive_sharing_intent/receive_sharing_intent.dart';
@@ -161,13 +163,38 @@ class HomeViewModel {
       List<ImageData> picked = [];
 
       for (var file in result) {
-        final imageBytes = await file.readAsBytes();
-        final decodedImage = img.decodeImage(imageBytes);
+        final path = file.path;
+        int width = 1080;
+        int height = 1080;
+
+        final imageGetterSsupportedFormatIndex =
+            path.lastIndexOf(RegExp(r'(.png|.webp|.jp|.gif|.bmp)'));
+        if (imageGetterSsupportedFormatIndex == -1) {
+          // Check if is HEIF or HEIC
+          final isHeicOrHeif = path.toLowerCase().endsWith(".heic") ||
+              path.toLowerCase().endsWith(".heif");
+
+          if (isHeicOrHeif) {
+            String? jpgPath = await HeifConverter.convert(path, format: "jpg");
+            if (jpgPath != null) {
+              final size =
+                  ImageSizeGetter.getSizeResult(FileInput(File(jpgPath))).size;
+              width = size.width;
+              height = size.height;
+            }
+          }
+
+        } else {
+          final size =
+              ImageSizeGetter.getSizeResult(FileInput(File(path))).size;
+          width = size.width;
+          height = size.height;
+        }
 
         picked.add(ImageData(
-          imageFile: File(file.path),
-          pixelWidth: decodedImage?.width ?? 1080,
-          pixelHeight: decodedImage?.height ?? 1080,
+          imageFile: File(path),
+          pixelWidth: width,
+          pixelHeight: height,
           quality: 90,
         ));
       }
@@ -277,7 +304,6 @@ class HomeViewModel {
 
   Future<SummaryReport?> compressAllSelectedImages(
       CancelableCompleter<void>? completer) async {
-
     if (!isLoading.state.isLoading) {
       if (pickedImages.isEmpty) {
         await showResult("Select images first");
@@ -341,12 +367,11 @@ class HomeViewModel {
 
       final path = Platform.isAndroid ? "Pictures/Petit" : "Pictures";
       return SummaryReport(
-        originalSizeBytes: formatBytes(sizeBeforeCompression),
-        compressedSizeBytes: formatBytes(sizeAfterCompression),
-        savedBytes: formatBytes(savedBytes),
-        savedPercent: savedPercent,
-        path: path
-      );
+          originalSizeBytes: formatBytes(sizeBeforeCompression),
+          compressedSizeBytes: formatBytes(sizeAfterCompression),
+          savedBytes: formatBytes(savedBytes),
+          savedPercent: savedPercent,
+          path: path);
     }
     return null;
   }

@@ -260,6 +260,12 @@
       "languageVersion": "3.0"
     },
     {
+      "name": "hashcodes",
+      "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/hashcodes-2.0.0",
+      "packageUri": "lib/",
+      "languageVersion": "2.12"
+    },
+    {
       "name": "heif_converter_plus",
       "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/heif_converter_plus-1.0.2",
       "packageUri": "lib/",
@@ -336,6 +342,12 @@
       "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/image_picker_windows-0.2.1+1",
       "packageUri": "lib/",
       "languageVersion": "2.19"
+    },
+    {
+      "name": "image_size_getter",
+      "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/image_size_getter-2.4.0",
+      "packageUri": "lib/",
+      "languageVersion": "2.12"
     },
     {
       "name": "leak_tracker",
@@ -620,7 +632,7 @@
       "languageVersion": "3.5"
     }
   ],
-  "generated": "2025-06-19T11:10:42.220894Z",
+  "generated": "2025-06-19T19:14:37.257080Z",
   "generator": "pub",
   "generatorVersion": "3.7.2",
   "flutterRoot": "file:///D:/Sdk/flutter",
