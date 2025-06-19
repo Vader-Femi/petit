@@ -1,12 +1,51 @@
-# petit
- To be added later
+<img src="assets/images/petit_feature_graphic.png" alt="Watchlist Image" width="1024" />
 
-It supports png, webp, jpeg, jpg, heic, and heif formats. So I added an error massage for unsupported formats. I also found out that the webp compression is not very effecient.
+
+<a href=""https://play.google.com/store/apps/details?id=com.outsidetheide.petit" target="_blank" rel="nofollow noopener noreferrer"
+aria-label="Live Demo"> <u>Live Demo 🚀 - Play Store</u> </a>
 
 <a href="https://appetize.io/app/b_5q7h4bxybf3vgeckafpxufi7xe?device=pixel7&osVersion=15.0" target="_blank"
-rel="nofollow noopener noreferrer" aria-label="Live Demo"><u>Live Demo 🚀(Coming soon)</u></a>
+rel="nofollow noopener noreferrer" aria-label="Live Demo"><u>Live Demo 🚀 - Appetize.io</u></a>
+
+# petit
 
 A Flutter image compression application capable of compressing images in various formats, like HEIC, HEIF, PNG, and JPG, for efficient storage and faster file transfers without compromising quality
+
+--- 
+### Or
+---
+This app makes your images smaller in size so they take up less space and send faster — without losing quality and it works completely offline.
+
+It works with different types of images like JPG, PNG, HEIF, and HEIC.
+
+Just choose your pictures, pick the quality you want, tap “Compress,” and the smaller images will be saved to your gallery automatically.
+
+--- 
+### Note
+---
+(webp compression is not very effecient)
+
+## Screenshots
+<br />
+<div>
+  &emsp;&emsp;&emsp;
+  <img src="assets/images/7_inch_tab_app_dark_mode.png" alt="Light theme" width="2204">
+  &emsp;&emsp;&emsp;&emsp;
+  <img src="assets/images/phone_app_light_mode.png" alt="Dark theme" width="1080">  
+</div>
+<br />
+
+<br />
+<div>
+  &emsp;&emsp;&emsp;
+  <img src="assets/images/7_inch_tab_app_dark_mode_2.png" alt="Light theme" width="2204">
+  &emsp;&emsp;&emsp;&emsp;
+  <img src="assets/images/phone_app_dark_mode.png" alt="Dark theme" width="1080">  
+</div>
+<br />
+
+<img src="assets/images/10_inch_tab_app_light_mode.png" alt="Light theme" width="1600">
+
 
 ### Packages
 - [Flutter Super] for state management  
@@ -26,15 +65,6 @@ A Flutter image compression application capable of compressing images in various
 [crashlytics]: https://pub.dev/packages/image
 [Step Progress Indicator]: https://pub.dev/documentation/step_progress_indicator/latest/
 [Carousel Slider]: https://pub.dev/packages/carousel_slider
-
-<br />
-<div>
-  &emsp;&emsp;&emsp;
-  <img src="assets/images/app_light_mode.png" alt="Light theme" width="320">
-  &emsp;&emsp;&emsp;&emsp;
-  <img src="assets/images/app_dark_mode.png" alt="Dark theme" width="320">  
-</div>
-<br />
 
 # First Run
 

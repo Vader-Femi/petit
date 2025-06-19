@@ -2,11 +2,55 @@ import 'package:async/async.dart';
 import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
+import 'package:flutter_svg/svg.dart';
 import 'package:petit/features/home/presentation/state/home_viewmodel.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
 
-class HomePage extends StatelessWidget {
-  const HomePage({super.key});
+import '../../../../core/constants/consts.dart';
+import '../widget/IntroCarouselDialog.dart';
+
+class HomePage extends StatefulWidget {
+  const HomePage({
+    super.key,
+    // this.sharedFiles
+  });
+
+  // final List<SharedMediaFile>? sharedFiles;
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  @override
+  void initState() {
+    super.initState();
+    getHomeViewModel.addSharedImages(
+        // widget.sharedFiles
+        );
+    _checkFirstLaunch();
+  }
+
+  Future<void> _checkFirstLaunch() async {
+    final prefs = await SharedPreferences.getInstance();
+    final hasSeenDialog = prefs.getBool(Consts.hasSeenIntroDialog) ?? false;
+
+    if (!hasSeenDialog) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _showIntroDialogCarousel();
+      });
+      await prefs.setBool(Consts.hasSeenIntroDialog, true);
+    }
+  }
+
+  void _showIntroDialogCarousel() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const IntroCarouselDialog(),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -18,9 +62,15 @@ class HomePage extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text("Petit - Image Compression", style: TextStyle(color: Theme.of(context).colorScheme.primary),),
-        elevation: 5,
-        backgroundColor: Theme.of(context).colorScheme.surfaceContainerLow,
+        title: Text(
+          "Petit - Image Compressor",
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        elevation: 8,
+        backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
       ),
       body: SuperBuilder(builder: (context) {
         if (getHomeViewModel.result.state != null) {
@@ -173,7 +223,7 @@ class HomePage extends StatelessWidget {
             ),
             getHomeViewModel.isLoading.state.isLoading
                 ? Container(
-                    color: Colors.black.withOpacity(0.75),
+                    color: Colors.black.withValues(alpha: 0.75),
                   )
                 : Container(),
             getHomeViewModel.isLoading.state.isLoading

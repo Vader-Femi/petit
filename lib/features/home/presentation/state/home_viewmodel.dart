@@ -8,6 +8,7 @@ import 'package:heif_converter_plus/heif_converter.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:petit/features/home/data/image_data.dart';
+// import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import '../../data/loading_data.dart';
 
 HomeViewModel get getHomeViewModel => Super.init(HomeViewModel());
@@ -95,6 +96,52 @@ class HomeViewModel {
       setIsLoading(LoadingData(isLoading: false));
     }
   }
+
+  Future<void> addSharedImages(
+      // List<SharedMediaFile>? sharedFiles
+      ) async {
+    // if (sharedFiles != null && sharedFiles.isNotEmpty) {
+    //
+    //   setIsLoading(
+    //     LoadingData(
+    //         isLoading: true,
+    //         completedSteps: null,
+    //         totalSteps: null,
+    //         progressCounter: null),
+    //   );
+    //
+    //   try {
+    //     pickedImages.state = [];
+    //     currentImage.state = null;
+    //     globalQualitySlider.state = null;
+    //     List<ImageData> picked = [];
+    //
+    //     for (var sharedFile in sharedFiles) {
+    //       final file = File(sharedFile.path);
+    //
+    //       final imageBytes = await file.readAsBytes();
+    //       final decodedImage = img.decodeImage(imageBytes);
+    //
+    //       picked.add(ImageData(
+    //         imageFile: File(file.path),
+    //         pixelWidth: decodedImage?.width ?? 1080,
+    //         pixelHeight: decodedImage?.height ?? 1080,
+    //         quality: 90,
+    //       ));
+    //     }
+    //
+    //     pickedImages.state = picked;
+    //     currentImage.state = picked[0];
+    //     currentImageIndex.state = 0;
+    //     setIsLoading(LoadingData(isLoading: false));
+    //   } catch (e) {
+    //     await showResult("Cannot access shared files - ${e.toString()}");
+    //     setIsLoading(LoadingData(isLoading: false));
+    //     throw Exception("Cannot access shared files - ${e.toString()}");
+    //   }
+    // }
+  }
+
 
   Future<void> pickMultipleImages() async {
     setIsLoading(
