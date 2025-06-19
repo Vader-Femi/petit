@@ -24,6 +24,9 @@ class HomeViewModel {
   final currentImage = RxT<ImageData?>(null);
   final currentImageIndex = RxT<int?>(null);
   final globalQualitySlider = RxT<int?>(null);
+  final isFabOpen  = RxT<bool>(true);
+
+  CancelableCompleter<void> completer = CancelableCompleter();
 
   void setIsLoading(LoadingData loadingData) {
     isLoading.state = loadingData;
@@ -183,7 +186,6 @@ class HomeViewModel {
               height = size.height;
             }
           }
-
         } else {
           final size =
               ImageSizeGetter.getSizeResult(FileInput(File(path))).size;
@@ -209,7 +211,9 @@ class HomeViewModel {
     }
   }
 
-  Future<XFile> compressImage({required ImageData imageData}) async {
+  Future<XFile> compressImage({
+    required ImageData imageData
+  }) async {
     try {
       var filePath = imageData.imageFile.path;
       final supportedFormatIndex =
@@ -302,8 +306,7 @@ class HomeViewModel {
     }
   }
 
-  Future<SummaryReport?> compressAllSelectedImages(
-      CancelableCompleter<void>? completer) async {
+  Future<SummaryReport?> compressAllSelectedImages() async {
     if (!isLoading.state.isLoading) {
       if (pickedImages.isEmpty) {
         await showResult("Select images first");
@@ -316,7 +319,7 @@ class HomeViewModel {
       var sizeAfterCompression = 0;
 
       for (final (index, imageData) in pickedImages.state.indexed) {
-        if (completer?.isCanceled == true) {
+        if (completer.isCanceled == true) {
           break;
         } else {
           setIsLoading(
@@ -329,12 +332,22 @@ class HomeViewModel {
 
           sizeBeforeCompression += imageData.imageFile.lengthSync();
 
-          await getHomeViewModel
-              .compressImage(imageData: imageData)
-              .then((compressedFile) async {
-            await saveLocalImage(compressedFile);
-            sizeAfterCompression += await compressedFile.length();
-          });
+          if (completer.isCanceled == true) break;
+
+          final compressedFile = await compressImage(imageData: imageData);
+
+          if (completer.isCanceled == true) break;
+
+          await saveLocalImage(compressedFile);
+
+          sizeAfterCompression += await compressedFile.length();
+
+          // await getHomeViewModel
+          //     .compressImage(imageData: imageData)
+          //     .then((compressedFile) async {
+          //   await saveLocalImage(compressedFile);
+          //   sizeAfterCompression += await compressedFile.length();
+          // });
 
           progress = (((index + 1) / totalLength) * 100).round();
 

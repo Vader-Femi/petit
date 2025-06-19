@@ -2,11 +2,9 @@ import 'package:async/async.dart';
 import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
-import 'package:flutter_svg/svg.dart';
 import 'package:petit/features/home/presentation/state/home_viewmodel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
-
 import '../../../../core/constants/consts.dart';
 import '../data/Summary_report.dart';
 import '../widget/CompressionSummaryDialog.dart';
@@ -71,8 +69,6 @@ class _HomePageState extends State<HomePage> {
     final carouselHeight = MediaQuery.sizeOf(context).height / 2;
 
     final carouselSliderController = CarouselSliderController();
-    CancelableCompleter<void> completer = CancelableCompleter(
-        onCancel: getHomeViewModel.cancelCompressingAllImages);
 
     return Scaffold(
       appBar: AppBar(
@@ -128,7 +124,7 @@ class _HomePageState extends State<HomePage> {
                                         bool? wasSynchronouslyLoaded) {
                                       return AnimatedOpacity(
                                         opacity: frame == null ? 0 : 1,
-                                        duration: Duration(milliseconds: 500),
+                                        duration: Duration(milliseconds: 200),
                                         curve: Curves.easeIn,
                                         child: child,
                                       );
@@ -305,14 +301,11 @@ class _HomePageState extends State<HomePage> {
                 tooltip: "Cancel compression ",
                 onPressed: () async {
                   try {
-                    await getHomeViewModel
-                        .showResult("Cancelling...Please wait!");
-                    if (!completer.isCanceled && !completer.isCompleted) {
-                      await completer.operation.cancel();
+                    if (!getHomeViewModel.completer.isCanceled ||
+                        !getHomeViewModel.completer.isCompleted) {
+                      getHomeViewModel.completer.operation.cancel();
                     }
-                    completer = CancelableCompleter(
-                      onCancel: getHomeViewModel.cancelCompressingAllImages,
-                    );
+                    getHomeViewModel.showResult("Cancelling");
                   } catch (e) {
                     debugPrint('Error during cancel: $e');
                   }
@@ -324,31 +317,54 @@ class _HomePageState extends State<HomePage> {
                 mainAxisAlignment: MainAxisAlignment.end,
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  FloatingActionButton.extended(
-                    icon: const Icon(Icons.compress_outlined),
-                    tooltip: "Compress Images",
-                    onPressed: () async {
-                      completer.complete(getHomeViewModel
-                          .compressAllSelectedImages(completer)
-                          .then((summaryReport) {
-                        if (summaryReport != null) {
-                          if (mounted) {
-                            _showCompressionSummaryDialog(
-                                context: context, summaryReport: summaryReport);
+                  if (getHomeViewModel.isFabOpen.state) ...[
+                    FloatingActionButton.extended(
+                      icon: const Icon(Icons.compress_outlined),
+                      tooltip: "Compress Images",
+                      onPressed: () async {
+                        getHomeViewModel.completer = CancelableCompleter(
+                          onCancel: getHomeViewModel.cancelCompressingAllImages,
+                        );
+
+                        getHomeViewModel.completer.complete(getHomeViewModel
+                            .compressAllSelectedImages()
+                            .then((summaryReport) {
+                          if (summaryReport != null) {
+                            if (mounted) {
+                              _showCompressionSummaryDialog(
+                                  context: context,
+                                  summaryReport: summaryReport);
+                            }
                           }
-                        }
-                      }));
+                        }));
+                      },
+                      label: const Text('Compress'),
+                    ),
+                    SizedBox(height: 10),
+                    FloatingActionButton.extended(
+                      icon: const Icon(Icons.delete_outline),
+                      tooltip: "Clear images",
+                      onPressed: () async {
+                        getHomeViewModel.cancelCompressingAllImages();
+                      },
+                      label: const Text('Clear'),
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  FloatingActionButton(
+                    heroTag: "toggle_fab",
+                    onPressed: () {
+                      setState(() {
+                        getHomeViewModel.isFabOpen.state =
+                            !getHomeViewModel.isFabOpen.state;
+                      });
                     },
-                    label: const Text('Compress'),
-                  ),
-                  SizedBox(height: 10),
-                  FloatingActionButton.extended(
-                    icon: const Icon(Icons.clear),
-                    tooltip: "Clear images",
-                    onPressed: () async {
-                      getHomeViewModel.cancelCompressingAllImages();
-                    },
-                    label: const Text('Clear'),
+                    tooltip: getHomeViewModel.isFabOpen.state
+                        ? "Close Actions"
+                        : "Show Actions",
+                    child: Icon(getHomeViewModel.isFabOpen.state
+                        ? Icons.close
+                        : Icons.compress_outlined),
                   ),
                 ],
               );
