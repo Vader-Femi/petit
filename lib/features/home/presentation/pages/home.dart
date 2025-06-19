@@ -290,12 +290,16 @@ class _HomePageState extends State<HomePage> {
                 icon: const Icon(Icons.clear),
                 tooltip: "Cancel compression ",
                 onPressed: () async {
-                  await getHomeViewModel
-                      .showResult("Cancelling...Please wait!");
-                  if (!completer.isCanceled) {
-                    await completer.operation.cancel();
+                  try {
+                    await getHomeViewModel.showResult("Cancelling...Please wait!");
+                    if (!completer.isCanceled && !completer.isCompleted) {
+                      await completer.operation.cancel();
+                    }
                     completer = CancelableCompleter(
-                        onCancel: getHomeViewModel.cancelCompressingAllImages);
+                      onCancel: getHomeViewModel.cancelCompressingAllImages,
+                    );
+                  } catch (e) {
+                    debugPrint('Error during cancel: $e');
                   }
                 },
                 label: const Text('Cancel'),
