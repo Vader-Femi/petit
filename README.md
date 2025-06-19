@@ -7,7 +7,7 @@ aria-label="Live Demo - Play Store"> <u>Live Demo 🚀 - Play Store</u></a>
 <a href="https://appetize.io/app/b_5q7h4bxybf3vgeckafpxufi7xe?device=pixel7&osVersion=15.0" target="_blank"
 rel="nofollow noopener noreferrer" aria-label="Live Demo - Appetize.io"><u>Live Demo 🚀 - Appetize.io</u></a>
 
-# petit
+# PETIT
 
 A Flutter image compression application capable of compressing images in various formats, like HEIC, HEIF, PNG, and JPG, for efficient storage and faster file transfers without compromising quality
 
@@ -29,22 +29,22 @@ Just choose your pictures, pick the quality you want, tap “Compress,” and th
 <br />
 <div>
   &emsp;&emsp;&emsp;
-  <img src="assets/images/7_inch_tab_app_dark_mode.png" alt="Light theme" width="256">
+  <img src="assets/images/7_inch_tab_app_dark_mode.png" alt="Light theme" width="2204">
   &emsp;&emsp;&emsp;&emsp;
-  <img src="assets/images/phone_listing_1.png" alt="Dark theme" width="256">  
+  <img src="assets/images/phone_listing_1.png" alt="Dark theme" width="1024">  
 </div>
 <br />
 
 <br />
 <div>
   &emsp;&emsp;&emsp;
-  <img src="assets/images/7_inch_tab_app_dark_mode_2.png" alt="Light theme" width="256">
+  <img src="assets/images/7_inch_tab_app_dark_mode_2.png" alt="Light theme" width="2204">
   &emsp;&emsp;&emsp;&emsp;
-  <img src="assets/images/phone_app_light_mode.png" alt="Dark theme" width="256">  
+  <img src="assets/images/phone_app_light_mode.png" alt="Dark theme" width="1080">  
 </div>
 <br />
 
-<img src="assets/images/10_inch_tab_app_light_mode.png" alt="Light theme" width="256">
+<img src="assets/images/10_inch_tab_app_light_mode.png" alt="Light theme" width="1600">
 
 
 ### Packages
