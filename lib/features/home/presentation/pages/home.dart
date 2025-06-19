@@ -3,10 +3,25 @@ import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'package:petit/features/home/presentation/state/home_viewmodel.dart';
+import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
 
-class HomePage extends StatelessWidget {
-  const HomePage({super.key});
+class HomePage extends StatefulWidget {
+  const HomePage({super.key, this.sharedFiles});
+
+  final List<SharedMediaFile>? sharedFiles;
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+
+  @override
+  void initState() {
+    super.initState();
+    getHomeViewModel.addSharedImages(widget.sharedFiles);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -18,7 +33,10 @@ class HomePage extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text("Petit - Image Compression", style: TextStyle(color: Theme.of(context).colorScheme.primary),),
+        title: Text(
+          "Petit - Image Compression",
+          style: TextStyle(color: Theme.of(context).colorScheme.primary),
+        ),
         elevation: 5,
         backgroundColor: Theme.of(context).colorScheme.surfaceContainerLow,
       ),
@@ -173,7 +191,7 @@ class HomePage extends StatelessWidget {
             ),
             getHomeViewModel.isLoading.state.isLoading
                 ? Container(
-                    color: Colors.black.withOpacity(0.75),
+                    color: Colors.black.withValues(alpha: 0.75),
                   )
                 : Container(),
             getHomeViewModel.isLoading.state.isLoading

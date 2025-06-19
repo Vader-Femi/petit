@@ -452,6 +452,12 @@
       "languageVersion": "3.0"
     },
     {
+      "name": "receive_sharing_intent",
+      "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/receive_sharing_intent-1.8.1",
+      "packageUri": "lib/",
+      "languageVersion": "2.17"
+    },
+    {
       "name": "sky_engine",
       "rootUri": "file:///D:/Sdk/flutter/bin/cache/pkg/sky_engine",
       "packageUri": "lib/",
@@ -572,7 +578,7 @@
       "languageVersion": "3.5"
     }
   ],
-  "generated": "2025-06-18T22:07:51.136824Z",
+  "generated": "2025-06-19T00:51:02.977537Z",
   "generator": "pub",
   "generatorVersion": "3.7.2",
   "flutterRoot": "file:///D:/Sdk/flutter",

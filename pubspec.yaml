@@ -3,7 +3,7 @@ description: "An image compression application capable of compressing images in 
 
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 1.0.4+4
+version: 1.0.5+5
 
 environment:
   sdk: ^3.5.3
@@ -48,6 +48,9 @@ dependencies:
 
   #For cancelable operation (To cancel a future)
   async: ^2.11.0
+
+  #Receive image files
+  receive_sharing_intent: ^1.4.5
 
   #Firebase
   firebase_core: ^3.6.0
