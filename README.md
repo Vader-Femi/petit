@@ -1,11 +1,17 @@
 <img src="assets/images/petit_feature_graphic.png" alt="Watchlist Image" width="1024" />
 
 
-<a href="https://play.google.com/store/apps/details?id=com.outsidetheide.petit" target="_blank" rel="nofollow noopener noreferrer"
+<br />
+<div>
+  &emsp;&emsp;&emsp;
+  <a href="https://play.google.com/store/apps/details?id=com.outsidetheide.petit" target="_blank" rel="nofollow noopener noreferrer"
 aria-label="Live Demo - Play Store"> <u>Live Demo 🚀 - Play Store</u></a>
+  &emsp;&emsp;&emsp;&emsp;
+  <a href="https://appetize.io/app/b_5q7h4bxybf3vgeckafpxufi7xe?device=pixel7&osVersion=15.0" target="_blank"
+rel="nofollow noopener noreferrer" aria-label="Live Demo - Appetize.io"><u>Live Demo 🚀 - Appetize.io</u></a>  
+</div>
+<br />
 
-<a href="https://appetize.io/app/b_5q7h4bxybf3vgeckafpxufi7xe?device=pixel7&osVersion=15.0" target="_blank"
-rel="nofollow noopener noreferrer" aria-label="Live Demo - Appetize.io"><u>Live Demo 🚀 - Appetize.io</u></a>
 
 # PETIT
 
