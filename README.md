@@ -2,10 +2,10 @@
 
 
 <a href=""https://play.google.com/store/apps/details?id=com.outsidetheide.petit" target="_blank" rel="nofollow noopener noreferrer"
-aria-label="Live Demo"> <u>Live Demo 🚀 - Play Store</u> </a>
+aria-label="Live Demo - Play Store"> <u>Live Demo 🚀 - Play Store</u></a>
 
 <a href="https://appetize.io/app/b_5q7h4bxybf3vgeckafpxufi7xe?device=pixel7&osVersion=15.0" target="_blank"
-rel="nofollow noopener noreferrer" aria-label="Live Demo"><u>Live Demo 🚀 - Appetize.io</u></a>
+rel="nofollow noopener noreferrer" aria-label="Live Demo - Appetize.io"><u>Live Demo 🚀 - Appetize.io</u></a>
 
 # petit
 
@@ -29,22 +29,22 @@ Just choose your pictures, pick the quality you want, tap “Compress,” and th
 <br />
 <div>
   &emsp;&emsp;&emsp;
-  <img src="assets/images/7_inch_tab_app_dark_mode.png" alt="Light theme" width="512">
+  <img src="assets/images/7_inch_tab_app_dark_mode.png" alt="Light theme" width="256">
   &emsp;&emsp;&emsp;&emsp;
-  <img src="assets/images/phone_listing_1.png" alt="Dark theme" width="512">  
+  <img src="assets/images/phone_listing_1.png" alt="Dark theme" width="256">  
 </div>
 <br />
 
 <br />
 <div>
   &emsp;&emsp;&emsp;
-  <img src="assets/images/7_inch_tab_app_dark_mode_2.png" alt="Light theme" width="512">
+  <img src="assets/images/7_inch_tab_app_dark_mode_2.png" alt="Light theme" width="256">
   &emsp;&emsp;&emsp;&emsp;
-  <img src="assets/images/phone_app_light_mode.png" alt="Dark theme" width="512">  
+  <img src="assets/images/phone_app_light_mode.png" alt="Dark theme" width="256">  
 </div>
 <br />
 
-<img src="assets/images/10_inch_tab_app_light_mode.png" alt="Light theme" width="512">
+<img src="assets/images/10_inch_tab_app_light_mode.png" alt="Light theme" width="256">
 
 
 ### Packages
