@@ -8,8 +8,10 @@ import 'package:heif_converter_plus/heif_converter.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:petit/features/home/data/image_data.dart';
+
 // import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import '../../data/loading_data.dart';
+import '../data/Summary_report.dart';
 
 HomeViewModel get getHomeViewModel => Super.init(HomeViewModel());
 
@@ -97,8 +99,7 @@ class HomeViewModel {
     }
   }
 
-  Future<void> addSharedImages(
-      // List<SharedMediaFile>? sharedFiles
+  Future<void> addSharedImages(// List<SharedMediaFile>? sharedFiles
       ) async {
     // if (sharedFiles != null && sharedFiles.isNotEmpty) {
     //
@@ -142,7 +143,6 @@ class HomeViewModel {
     // }
   }
 
-
   Future<void> pickMultipleImages() async {
     setIsLoading(
       LoadingData(
@@ -155,7 +155,6 @@ class HomeViewModel {
     final result = await ImagePicker().pickMultiImage();
 
     if (result.isNotEmpty) {
-
       pickedImages.state = [];
       currentImage.state = null;
       globalQualitySlider.state = null;
@@ -171,7 +170,6 @@ class HomeViewModel {
           pixelHeight: decodedImage?.height ?? 1080,
           quality: 90,
         ));
-
       }
 
       pickedImages.state = picked;
@@ -186,13 +184,15 @@ class HomeViewModel {
 
   Future<XFile> compressImage({required ImageData imageData}) async {
     try {
-
       var filePath = imageData.imageFile.path;
-      final supportedFormatIndex = filePath.lastIndexOf(RegExp(r'(.png|.webp|.jp|.heic|.heif)'));
-      if (supportedFormatIndex == -1){
-        await showResult("Unsupported- Only supports png,webp,jpeg,jpg,heic and heif");
+      final supportedFormatIndex =
+          filePath.lastIndexOf(RegExp(r'(.png|.webp|.jp|.heic|.heif)'));
+      if (supportedFormatIndex == -1) {
+        await showResult(
+            "Unsupported- Only supports png,webp,jpeg,jpg,heic and heif");
         setIsLoading(LoadingData(isLoading: false));
-        throw Exception("Unsupported- Only supports png,webp,jpeg,jpg,heic and heif");
+        throw Exception(
+            "Unsupported- Only supports png,webp,jpeg,jpg,heic and heif");
       }
 
       var lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
@@ -206,7 +206,8 @@ class HomeViewModel {
           if (jpgPath != null) {
             //Resize, Rotate, then Replace the file path and index
             final jpgImage = img.decodeImage(await File(jpgPath).readAsBytes());
-            final resizedImage = img.copyResize(jpgImage!, width: imageData.pixelWidth, height: imageData.pixelHeight);
+            final resizedImage = img.copyResize(jpgImage!,
+                width: imageData.pixelWidth, height: imageData.pixelHeight);
             final rotatedJpgImage = img.copyRotate(resizedImage, angle: 90);
 
             final splitted = filePath.substring(0, (heifOrHeicIndex));
@@ -236,7 +237,6 @@ class HomeViewModel {
       final splitted = filePath.substring(0, (lastIndex));
       final outPath = "${splitted}_compressed${filePath.substring(lastIndex)}";
 
-
       final compressedImage = await FlutterImageCompress.compressAndGetFile(
         filePath,
         outPath,
@@ -246,7 +246,15 @@ class HomeViewModel {
       );
 
       if (compressedImage != null) {
-        return compressedImage;
+        final originalSize = await File(filePath).length();
+        final compressedSize = await compressedImage.length();
+
+        if (compressedSize < originalSize) {
+          return compressedImage;
+        } else {
+          // Compressed is larger or equal; return original
+          return XFile(imageData.imageFile.path);
+        }
       } else {
         await showResult("Error compressing image!");
         throw Exception('Error compressing image');
@@ -260,19 +268,20 @@ class HomeViewModel {
 
   Future<void> saveLocalImage(XFile compressedImage) async {
     try {
-      await GallerySaver.saveImage(compressedImage.path);
+      await GallerySaver.saveImage(compressedImage.path, albumName: "Petit");
     } catch (e) {
       setIsLoading(LoadingData(isLoading: false));
       await showResult("Error ocurred - ${e.toString()}");
     }
   }
 
-  Future<void> compressAllSelectedImages(
+  Future<SummaryReport?> compressAllSelectedImages(
       CancelableCompleter<void>? completer) async {
+
     if (!isLoading.state.isLoading) {
       if (pickedImages.isEmpty) {
         await showResult("Select images first");
-        return;
+        return null;
       }
 
       final totalLength = pickedImages.state.length;
@@ -284,7 +293,6 @@ class HomeViewModel {
         if (completer?.isCanceled == true) {
           break;
         } else {
-
           setIsLoading(
             LoadingData(
                 isLoading: true,
@@ -311,7 +319,6 @@ class HomeViewModel {
                 totalSteps: totalLength,
                 progressCounter: progress),
           );
-
         }
       }
 
@@ -328,9 +335,28 @@ class HomeViewModel {
             totalSteps: totalLength),
       );
 
-      final savedMegabytes = ((sizeBeforeCompression-sizeAfterCompression) / 1048576);
-      await showResult("Saved ${savedMegabytes.toStringAsFixed(2)}MB");
+      final savedBytes = sizeBeforeCompression - sizeAfterCompression;
+      final savedPercent =
+          (savedBytes / sizeBeforeCompression).clamp(0, 1).toDouble();
+
+      final path = Platform.isAndroid ? "Pictures/Petit" : "Pictures";
+      return SummaryReport(
+        originalSizeBytes: formatBytes(sizeBeforeCompression),
+        compressedSizeBytes: formatBytes(sizeAfterCompression),
+        savedBytes: formatBytes(savedBytes),
+        savedPercent: savedPercent,
+        path: path
+      );
     }
+    return null;
+  }
+
+  String formatBytes(int bytes, [int decimals = 2]) {
+    if (bytes <= 0) return "0 B";
+    const suffixes = ["B", "KB", "MB", "GB"];
+    final i = (bytes == 0) ? 0 : (bytes.bitLength / 10).floor();
+    final size = bytes / (1 << (10 * i));
+    return '${size.toStringAsFixed(decimals)} ${suffixes[i]}';
   }
 
   Future<void> selectImageButtonUseCase() async {

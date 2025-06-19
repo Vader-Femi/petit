@@ -8,6 +8,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
 
 import '../../../../core/constants/consts.dart';
+import '../data/Summary_report.dart';
+import '../widget/CompressionSummaryDialog.dart';
 import '../widget/IntroCarouselDialog.dart';
 
 class HomePage extends StatefulWidget {
@@ -49,6 +51,18 @@ class _HomePageState extends State<HomePage> {
       context: context,
       barrierDismissible: false,
       builder: (context) => const IntroCarouselDialog(),
+    );
+  }
+
+  void _showCompressionSummaryDialog({
+    required BuildContext context,
+    required SummaryReport summaryReport,
+  }) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) =>
+          CompressionSummaryDialog(summaryReport: summaryReport),
     );
   }
 
@@ -291,7 +305,8 @@ class _HomePageState extends State<HomePage> {
                 tooltip: "Cancel compression ",
                 onPressed: () async {
                   try {
-                    await getHomeViewModel.showResult("Cancelling...Please wait!");
+                    await getHomeViewModel
+                        .showResult("Cancelling...Please wait!");
                     if (!completer.isCanceled && !completer.isCompleted) {
                       await completer.operation.cancel();
                     }
@@ -313,10 +328,16 @@ class _HomePageState extends State<HomePage> {
                     icon: const Icon(Icons.compress_outlined),
                     tooltip: "Compress Images",
                     onPressed: () async {
-                      if (!completer.isCanceled) {
-                        completer.complete(getHomeViewModel
-                            .compressAllSelectedImages(completer));
-                      }
+                      completer.complete(getHomeViewModel
+                          .compressAllSelectedImages(completer)
+                          .then((summaryReport) {
+                        if (summaryReport != null) {
+                          if (mounted) {
+                            _showCompressionSummaryDialog(
+                                context: context, summaryReport: summaryReport);
+                          }
+                        }
+                      }));
                     },
                     label: const Text('Compress'),
                   ),

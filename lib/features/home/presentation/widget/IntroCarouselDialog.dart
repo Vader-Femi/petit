@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../data/IntroPage.dart';
+import 'IntroPage.dart';
 
 class IntroCarouselDialog extends StatefulWidget {
   const IntroCarouselDialog({super.key});
