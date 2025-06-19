@@ -29,22 +29,22 @@ Just choose your pictures, pick the quality you want, tap “Compress,” and th
 <br />
 <div>
   &emsp;&emsp;&emsp;
-  <img src="assets/images/7_inch_tab_app_dark_mode.png" alt="Light theme" width="2204">
+  <img src="assets/images/7_inch_tab_app_dark_mode.png" alt="Light theme" width="512">
   &emsp;&emsp;&emsp;&emsp;
-  <img src="assets/images/phone_app_light_mode.png" alt="Dark theme" width="1080">  
+  <img src="assets/images/phone_listing_1.png" alt="Dark theme" width="512">  
 </div>
 <br />
 
 <br />
 <div>
   &emsp;&emsp;&emsp;
-  <img src="assets/images/7_inch_tab_app_dark_mode_2.png" alt="Light theme" width="2204">
+  <img src="assets/images/7_inch_tab_app_dark_mode_2.png" alt="Light theme" width="512">
   &emsp;&emsp;&emsp;&emsp;
-  <img src="assets/images/phone_app_dark_mode.png" alt="Dark theme" width="1080">  
+  <img src="assets/images/phone_app_light_mode.png" alt="Dark theme" width="512">  
 </div>
 <br />
 
-<img src="assets/images/10_inch_tab_app_light_mode.png" alt="Light theme" width="1600">
+<img src="assets/images/10_inch_tab_app_light_mode.png" alt="Light theme" width="512">
 
 
 ### Packages
