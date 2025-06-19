@@ -65,7 +65,7 @@ class IntroCarouselDialogState extends State<IntroCarouselDialog> {
                 pages.length,
                     (index) => Container(
                   margin: const EdgeInsets.symmetric(horizontal: 4),
-                  width: 14,
+                  width: _currentPage == index ? 16 : 8,
                   height: 8,
                   decoration: BoxDecoration(
                     shape: BoxShape.rectangle,
