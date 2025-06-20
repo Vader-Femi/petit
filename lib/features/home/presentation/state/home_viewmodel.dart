@@ -318,8 +318,7 @@ class HomeViewModel {
     }
   }
 
-  Future<SummaryReport?> compressAllSelectedImages(
-      {bool deleteOriginalFIle = false}) async {
+  Future<SummaryReport?> compressAllSelectedImages() async {
     if (!isLoading.state.isLoading) {
       if (pickedImages.isEmpty) {
         await showResult("Select images first");
@@ -384,14 +383,6 @@ class HomeViewModel {
       currentImageIndex.state = 0;
       globalQualitySlider.state = null;
 
-      // ✅ Delete original after saving
-      if (deleteOriginalFIle) {
-        await showResult("Deleting original images");
-        for (var imageData in pickedImages.state.toList()) {
-          pickedImages.remove(imageData);
-          await deleteOriginalImage(imageData.imageFile);
-        }
-      }
       await clearCacheDir();
 
       pickedImages.state = [];
@@ -457,18 +448,6 @@ class HomeViewModel {
       } catch (e) {
         debugPrint('Error clearing cache: $e');
       }
-    }
-  }
-
-
-  Future<void> deleteOriginalImage(File file) async {
-    try {
-      if (await file.exists()) {
-        await file.delete();
-        debugPrint('Original file deleted: ${file.path}');
-      }
-    } catch (e) {
-      await showResult("Failed to delete an original file: $e");
     }
   }
 
