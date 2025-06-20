@@ -1,7 +1,10 @@
+import 'dart:io';
 import 'package:async/async.dart';
 import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_super/flutter_super.dart';
+import 'package:in_app_update/in_app_update.dart';
 import 'package:petit/features/home/presentation/state/home_viewmodel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
@@ -18,11 +21,13 @@ class HomePage extends StatefulWidget {
 
   // final List<SharedMediaFile>? sharedFiles;
 
+
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
+
   @override
   void initState() {
     super.initState();
@@ -30,6 +35,9 @@ class _HomePageState extends State<HomePage> {
         // widget.sharedFiles
         );
     _checkFirstLaunch();
+    if (Platform.isAndroid) {
+      _checkAndroidFlexibleUpdate();
+    }
   }
 
   Future<void> _checkFirstLaunch() async {
@@ -43,6 +51,37 @@ class _HomePageState extends State<HomePage> {
       await prefs.setBool(Consts.hasSeenIntroDialog, true);
     }
   }
+
+
+  Future<void> _checkAndroidFlexibleUpdate() async {
+    try {
+      final updateInfo = await InAppUpdate.checkForUpdate();
+
+      if (updateInfo.updateAvailability == UpdateAvailability.updateAvailable &&
+          updateInfo.flexibleUpdateAllowed == true) {
+
+        try {
+          await InAppUpdate.startFlexibleUpdate();
+          await InAppUpdate.completeFlexibleUpdate();
+        } on PlatformException catch (e) {
+          debugPrint("In-app update error: ${e.message}");
+          throw Exception('Error during in-app update: $e');
+        }
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Update downloaded! Restart the app to apply.'),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint("In-app update error: $e");
+      throw Exception('Error during in-app update: $e');
+    }
+  }
+
+
 
   void _showIntroDialogCarousel() {
     showDialog(

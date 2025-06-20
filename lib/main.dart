@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'package:petit/features/home/presentation/pages/home.dart';
 import 'package:petit/service_locator.dart';
+import 'package:upgrader/upgrader.dart';
+
 // import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import 'config/routes/AppRoutes.dart';
 import 'config/theme/AppTheme.dart';
@@ -58,27 +60,27 @@ class _MyAppState extends State<MyApp> {
   void initState() {
     super.initState();
 
-  //   // When app is in memory
-  //   _intentDataStreamSubscription = ReceiveSharingIntent.instance
-  //       .getMediaStream()
-  //       .listen((List<SharedMediaFile> value) {
-  //     setState(() {
-  //       _sharedFiles = value;
-  //     });
-  //   }, onError: (err) {
-  //     if (kDebugMode) {
-  //       print("getMediaStream error: $err");
-  //     }
-  //   });
-  //
-  //   // When app is cold started
-  //   ReceiveSharingIntent.instance
-  //       .getInitialMedia()
-  //       .then((List<SharedMediaFile> value) {
-  //     setState(() {
-  //       _sharedFiles = value;
-  //     });
-  //   });
+    //   // When app is in memory
+    //   _intentDataStreamSubscription = ReceiveSharingIntent.instance
+    //       .getMediaStream()
+    //       .listen((List<SharedMediaFile> value) {
+    //     setState(() {
+    //       _sharedFiles = value;
+    //     });
+    //   }, onError: (err) {
+    //     if (kDebugMode) {
+    //       print("getMediaStream error: $err");
+    //     }
+    //   });
+    //
+    //   // When app is cold started
+    //   ReceiveSharingIntent.instance
+    //       .getInitialMedia()
+    //       .then((List<SharedMediaFile> value) {
+    //     setState(() {
+    //       _sharedFiles = value;
+    //     });
+    //   });
   }
 
   @override
@@ -95,8 +97,16 @@ class _MyAppState extends State<MyApp> {
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
       onGenerateRoute: AppRoutes.onGenerateRoutes,
-      home: HomePage(
-          // sharedFiles: _sharedFiles
+      home: UpgradeAlert(
+        upgrader: Upgrader(
+          dialogStyle: UpgradeDialogStyle.material,
+          showIgnore: false,
+          showLater: true,
+          durationUntilAlertAgain: const Duration(days: 3),
+        ),
+        child: HomePage(
+            // sharedFiles: _sharedFiles
+            ),
       ),
     );
   }

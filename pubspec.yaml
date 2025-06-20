@@ -3,7 +3,7 @@ description: "An image compression application capable of compressing images in 
 
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 1.0.9+9
+version: 1.0.0+10
 
 environment:
   sdk: ^3.5.3
@@ -61,6 +61,12 @@ dependencies:
 
   #Pref
   shared_preferences: ^2.2.2
+
+  #In app update - Android
+  in_app_update: ^4.2.2
+
+  #In app update - IOS
+  upgrader: ^8.1.0
 
 dev_dependencies:
   flutter_test:
