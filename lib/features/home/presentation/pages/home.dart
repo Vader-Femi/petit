@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:async/async.dart';
 import 'package:carousel_slider/carousel_slider.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_super/flutter_super.dart';
@@ -36,7 +37,9 @@ class _HomePageState extends State<HomePage> {
         );
     _checkFirstLaunch();
     if (Platform.isAndroid) {
-      _checkAndroidFlexibleUpdate();
+      if (!kDebugMode) {
+        _checkAndroidFlexibleUpdate();
+      }
     }
   }
 
@@ -70,7 +73,7 @@ class _HomePageState extends State<HomePage> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Update downloaded! Restart the app to apply.'),
+              content: Text('Update downloaded! Restart the app to apply'),
             ),
           );
         }

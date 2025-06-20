@@ -1,5 +1,6 @@
 import 'dart:ui';
 import 'package:async/src/cancelable_operation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'dart:io';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
@@ -9,6 +10,7 @@ import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:image_size_getter/file_input.dart';
 import 'package:image_size_getter/image_size_getter.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:petit/features/home/data/image_data.dart';
 
 // import 'package:receive_sharing_intent/receive_sharing_intent.dart';
@@ -24,7 +26,7 @@ class HomeViewModel {
   final currentImage = RxT<ImageData?>(null);
   final currentImageIndex = RxT<int?>(null);
   final globalQualitySlider = RxT<int?>(null);
-  final isFabOpen  = RxT<bool>(true);
+  final isFabOpen = RxT<bool>(true);
 
   CancelableCompleter<void> completer = CancelableCompleter();
 
@@ -63,43 +65,49 @@ class HomeViewModel {
   }
 
   Future<void> pickSingleImage() async {
-    setIsLoading(
-      LoadingData(
-          isLoading: true,
-          completedSteps: null,
-          totalSteps: null,
-          progressCounter: null),
-    );
 
-    final result = await ImagePicker().pickImage(source: ImageSource.gallery);
+    try {
+      setIsLoading(
+        LoadingData(
+            isLoading: true,
+            completedSteps: null,
+            totalSteps: null,
+            progressCounter: null),
+      );
 
-    if (result != null) {
-      pickedImages.state = [];
-      currentImage.state = null;
-      currentImageIndex.state = null;
-      globalQualitySlider.state = null;
+      final result = await ImagePicker().pickImage(source: ImageSource.gallery);
 
-      final imageBytes = await result.readAsBytes();
-      final buffer = await ImmutableBuffer.fromUint8List(imageBytes);
-      final descriptor = await ImageDescriptor.encoded(buffer);
+      if (result != null) {
+        pickedImages.state = [];
+        currentImage.state = null;
+        currentImageIndex.state = null;
+        globalQualitySlider.state = null;
 
-      pickedImages.state = [
-        ImageData(
-          imageFile: File(result.path),
-          pixelWidth: descriptor.width,
-          pixelHeight: descriptor.height,
-          quality: 90,
-        ),
-      ];
+        final imageBytes = await result.readAsBytes();
+        final buffer = await ImmutableBuffer.fromUint8List(imageBytes);
+        final descriptor = await ImageDescriptor.encoded(buffer);
 
-      currentImage.state = pickedImages[0];
-      currentImageIndex.state = 0;
-      setIsLoading(LoadingData(isLoading: false));
+        pickedImages.state = [
+          ImageData(
+            imageFile: File(result.path),
+            pixelWidth: descriptor.width,
+            pixelHeight: descriptor.height,
+            quality: 90,
+          ),
+        ];
 
-      descriptor.dispose();
-      buffer.dispose();
-    } else {
-      await showResult("No file picked!");
+        currentImage.state = pickedImages[0];
+        currentImageIndex.state = 0;
+        setIsLoading(LoadingData(isLoading: false));
+
+        descriptor.dispose();
+        buffer.dispose();
+      } else {
+        await showResult("No file picked!");
+        setIsLoading(LoadingData(isLoading: false));
+      }
+    } catch (e){
+      await showResult("An error ocurred - ${e.toString()}");
       setIsLoading(LoadingData(isLoading: false));
     }
   }
@@ -143,77 +151,85 @@ class HomeViewModel {
     //   } catch (e) {
     //     await showResult("Cannot access shared files - ${e.toString()}");
     //     setIsLoading(LoadingData(isLoading: false));
-    //     throw Exception("Cannot access shared files - ${e.toString()}");
     //   }
     // }
   }
 
   Future<void> pickMultipleImages() async {
-    setIsLoading(
-      LoadingData(
-          isLoading: true,
-          completedSteps: null,
-          totalSteps: null,
-          progressCounter: null),
-    );
+    try {
+      setIsLoading(
+        LoadingData(
+            isLoading: true,
+            completedSteps: null,
+            totalSteps: null,
+            progressCounter: null),
+      );
 
-    final result = await ImagePicker().pickMultiImage();
+      final result = await ImagePicker().pickMultiImage();
 
-    if (result.isNotEmpty) {
-      pickedImages.state = [];
-      currentImage.state = null;
-      globalQualitySlider.state = null;
-      List<ImageData> picked = [];
+      if (result.isNotEmpty) {
+        pickedImages.state = [];
+        currentImage.state = null;
+        globalQualitySlider.state = null;
+        List<ImageData> picked = [];
 
-      for (var file in result) {
-        final path = file.path;
-        int width = 1080;
-        int height = 1080;
+        for (var file in result) {
+          final path = file.path;
+          int width = 1080;
+          int height = 1080;
 
-        final imageGetterSsupportedFormatIndex =
-            path.lastIndexOf(RegExp(r'(.png|.webp|.jp|.gif|.bmp)'));
-        if (imageGetterSsupportedFormatIndex == -1) {
-          // Check if is HEIF or HEIC
-          final isHeicOrHeif = path.toLowerCase().endsWith(".heic") ||
-              path.toLowerCase().endsWith(".heif");
+          final imageGetterSsupportedFormatIndex =
+          path.lastIndexOf(RegExp(r'(.png|.webp|.jp|.gif|.bmp)'));
+          if (imageGetterSsupportedFormatIndex == -1) {
+            // Check if is HEIF or HEIC
+            final isHeicOrHeif = path.toLowerCase().endsWith(".heic") ||
+                path.toLowerCase().endsWith(".heif");
 
-          if (isHeicOrHeif) {
-            String? jpgPath = await HeifConverter.convert(path, format: "jpg");
-            if (jpgPath != null) {
-              final size =
-                  ImageSizeGetter.getSizeResult(FileInput(File(jpgPath))).size;
-              width = size.width;
-              height = size.height;
+            if (isHeicOrHeif) {
+              String? jpgPath = await HeifConverter.convert(
+                  path, format: "jpg");
+              if (jpgPath != null) {
+                final size =
+                    ImageSizeGetter
+                        .getSizeResult(FileInput(File(jpgPath)))
+                        .size;
+                width = size.width;
+                height = size.height;
+              }
             }
+          } else {
+            final size =
+                ImageSizeGetter
+                    .getSizeResult(FileInput(File(path)))
+                    .size;
+            width = size.width;
+            height = size.height;
           }
-        } else {
-          final size =
-              ImageSizeGetter.getSizeResult(FileInput(File(path))).size;
-          width = size.width;
-          height = size.height;
+
+          picked.add(ImageData(
+            imageFile: File(path),
+            pixelWidth: width,
+            pixelHeight: height,
+            quality: 90,
+          ));
         }
 
-        picked.add(ImageData(
-          imageFile: File(path),
-          pixelWidth: width,
-          pixelHeight: height,
-          quality: 90,
-        ));
+        pickedImages.state = picked;
+        currentImage.state = picked[0];
+        currentImageIndex.state = 0;
+        setIsLoading(LoadingData(isLoading: false));
+      } else {
+        await showResult("No file picked!");
+        setIsLoading(LoadingData(isLoading: false));
+        return;
       }
-
-      pickedImages.state = picked;
-      currentImage.state = picked[0];
-      currentImageIndex.state = 0;
-      setIsLoading(LoadingData(isLoading: false));
-    } else {
-      await showResult("No file picked!");
+    } catch (e){
+      await showResult("An error ocurred - ${e.toString()}");
       setIsLoading(LoadingData(isLoading: false));
     }
   }
 
-  Future<XFile> compressImage({
-    required ImageData imageData
-  }) async {
+  Future<XFile?> compressImage({required ImageData imageData}) async {
     try {
       var filePath = imageData.imageFile.path;
       final supportedFormatIndex =
@@ -222,8 +238,6 @@ class HomeViewModel {
         await showResult(
             "Unsupported- Only supports png,webp,jpeg,jpg,heic and heif");
         setIsLoading(LoadingData(isLoading: false));
-        throw Exception(
-            "Unsupported- Only supports png,webp,jpeg,jpg,heic and heif");
       }
 
       var lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
@@ -250,7 +264,6 @@ class HomeViewModel {
           } else {
             await showResult("Invalid HEIC/HEIF file");
             setIsLoading(LoadingData(isLoading: false));
-            throw Exception("Invalid HEIC/HEIF file");
           }
         } else {
           //Re encode to jpg
@@ -288,13 +301,12 @@ class HomeViewModel {
         }
       } else {
         await showResult("Error compressing image!");
-        throw Exception('Error compressing image');
       }
     } catch (e) {
       await showResult("Error compressing image - ${e.toString()}");
       setIsLoading(LoadingData(isLoading: false));
-      throw Exception("Error compressing image - ${e.toString()}");
     }
+    return null;
   }
 
   Future<void> saveLocalImage(XFile compressedImage) async {
@@ -306,7 +318,8 @@ class HomeViewModel {
     }
   }
 
-  Future<SummaryReport?> compressAllSelectedImages() async {
+  Future<SummaryReport?> compressAllSelectedImages(
+      {bool deleteOriginalFIle = false}) async {
     if (!isLoading.state.isLoading) {
       if (pickedImages.isEmpty) {
         await showResult("Select images first");
@@ -335,12 +348,18 @@ class HomeViewModel {
           if (completer.isCanceled == true) break;
 
           final compressedFile = await compressImage(imageData: imageData);
+          if (compressedFile == null) {
+            sizeBeforeCompression -= imageData.imageFile.lengthSync();
+            continue;
+          }
 
           if (completer.isCanceled == true) break;
 
           await saveLocalImage(compressedFile);
 
           sizeAfterCompression += await compressedFile.length();
+
+          if (completer.isCanceled == true) break;
 
           // await getHomeViewModel
           //     .compressImage(imageData: imageData)
@@ -364,6 +383,17 @@ class HomeViewModel {
       currentImage.state = null;
       currentImageIndex.state = 0;
       globalQualitySlider.state = null;
+
+      // ✅ Delete original after saving
+      if (deleteOriginalFIle) {
+        await showResult("Deleting original images");
+        for (var imageData in pickedImages.state.toList()) {
+          pickedImages.remove(imageData);
+          await deleteOriginalImage(imageData.imageFile);
+        }
+      }
+      await clearCacheDir();
+
       pickedImages.state = [];
 
       setIsLoading(
@@ -378,7 +408,7 @@ class HomeViewModel {
       final savedPercent =
           (savedBytes / sizeBeforeCompression).clamp(0, 1).toDouble();
 
-      final path = Platform.isAndroid ? "Pictures/Petit" : "Pictures";
+      final path = Platform.isAndroid ? "Pictures/Petit" : "Photos";
       return SummaryReport(
           originalSizeBytes: formatBytes(sizeBeforeCompression),
           compressedSizeBytes: formatBytes(sizeAfterCompression),
@@ -395,6 +425,51 @@ class HomeViewModel {
     final i = (bytes == 0) ? 0 : (bytes.bitLength / 10).floor();
     final size = bytes / (1 << (10 * i));
     return '${size.toStringAsFixed(decimals)} ${suffixes[i]}';
+  }
+
+  Future<void> clearCacheDir() async {
+    final tempDir = await getTemporaryDirectory();
+
+    if (await tempDir.exists()) {
+      try {
+        final tempDir = await getTemporaryDirectory();
+
+        if (!await tempDir.exists()) return;
+
+        final entities = tempDir.listSync(recursive: true);
+
+        for (final entity in entities) {
+          try {
+            if (entity is File && await entity.exists()) {
+              await entity.delete();
+              debugPrint("🗑️ Deleted file: ${entity.path}");
+            } else if (entity is Directory && await entity.exists()) {
+              await entity.delete(recursive: true);
+              debugPrint("🗑️ Deleted directory: ${entity.path}");
+            } else {
+              debugPrint("⚠️ Skipped (not found): ${entity.path}");
+            }
+          } catch (e) {
+            debugPrint("❌ Failed to delete ${entity.path}: $e");
+          }
+        }
+        debugPrint('Cache cleared');
+      } catch (e) {
+        debugPrint('Error clearing cache: $e');
+      }
+    }
+  }
+
+
+  Future<void> deleteOriginalImage(File file) async {
+    try {
+      if (await file.exists()) {
+        await file.delete();
+        debugPrint('Original file deleted: ${file.path}');
+      }
+    } catch (e) {
+      await showResult("Failed to delete an original file: $e");
+    }
   }
 
   Future<void> selectImageButtonUseCase() async {
