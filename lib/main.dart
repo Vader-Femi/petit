@@ -1,11 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:ui';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
-import 'package:petit/features/home/presentation/pages/home.dart';
+import 'package:petit/features/home/Home_screen.dart';
 import 'package:petit/service_locator.dart';
 import 'package:upgrader/upgrader.dart';
 
@@ -89,6 +90,10 @@ class _MyAppState extends State<MyApp> {
     super.dispose();
   }
 
+  var homePage = HomeScreen(
+      // sharedFiles: _sharedFiles
+      );
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -97,17 +102,17 @@ class _MyAppState extends State<MyApp> {
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
       onGenerateRoute: AppRoutes.onGenerateRoutes,
-      home: UpgradeAlert(
-        upgrader: Upgrader(
-          dialogStyle: UpgradeDialogStyle.material,
-          showIgnore: false,
-          showLater: true,
-          durationUntilAlertAgain: const Duration(days: 3),
-        ),
-        child: HomePage(
-            // sharedFiles: _sharedFiles
-            ),
-      ),
+      home: Platform.isIOS
+          ? UpgradeAlert(
+              upgrader: Upgrader(
+                dialogStyle: UpgradeDialogStyle.material,
+                showIgnore: false,
+                showLater: true,
+                durationUntilAlertAgain: const Duration(days: 3),
+              ),
+              child: homePage,
+            )
+          : homePage,
     );
   }
 }

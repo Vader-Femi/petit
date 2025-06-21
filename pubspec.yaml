@@ -3,7 +3,7 @@ description: "An image compression application capable of compressing images in 
 
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 1.0.13+13
+version: 1.0.14+14
 
 environment:
   sdk: ^3.5.3
@@ -70,6 +70,15 @@ dependencies:
 
   #Get temp cache directory
   path_provider: ^2.1.0
+
+  # Video player
+  video_player: ^2.8.1
+
+  # Video compresser
+#  video_compress: ^3.1.1
+
+  #Get video info
+  ffmpeg_kit_flutter_new: ^2.0.0
 
 dev_dependencies:
   flutter_test:
