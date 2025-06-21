@@ -1,19 +1,13 @@
-import 'dart:io';
 import 'package:async/async.dart';
 import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_super/flutter_super.dart';
-import 'package:in_app_update/in_app_update.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
-import '../../../../core/constants/consts.dart';
-import '../../../../service_locator.dart';
 import '../../../../common/data/Summary_report.dart';
 import '../../../../common/widgets/CompressionSummaryDialog.dart';
-import '../widget/IntroCarouselDialog.dart';
 
 class ImagesPage extends StatefulWidget {
   const ImagesPage({
@@ -36,64 +30,8 @@ class _ImagesPageState extends State<ImagesPage> {
     getImagesViewModel.addSharedImages(
         // widget.sharedFiles
         );
-    _checkFirstLaunch();
-    if (Platform.isAndroid) {
-      if (!kDebugMode) {
-        _checkAndroidFlexibleUpdate();
-      }
-    }
   }
 
-  Future<void> _checkFirstLaunch() async {
-    var prefs = sl.call<SharedPreferencesAsync>();
-    final hasSeenDialog = await prefs.getBool(Consts.hasSeenIntroDialog) ?? false;
-
-    if (!hasSeenDialog) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _showIntroDialogCarousel();
-      });
-      await prefs.setBool(Consts.hasSeenIntroDialog, true);
-    }
-  }
-
-
-  Future<void> _checkAndroidFlexibleUpdate() async {
-    try {
-      final updateInfo = await InAppUpdate.checkForUpdate();
-
-      if (updateInfo.updateAvailability == UpdateAvailability.updateAvailable &&
-          updateInfo.flexibleUpdateAllowed == true) {
-
-        try {
-          await InAppUpdate.startFlexibleUpdate();
-          await InAppUpdate.completeFlexibleUpdate();
-        } on PlatformException catch (e) {
-          debugPrint("In-app update error: ${e.message}");
-          throw Exception('Error during in-app update: $e');
-        }
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Update downloaded! Restart the app to apply'),
-            ),
-          );
-        }
-      }
-    } catch (e) {
-      debugPrint("In-app update error: $e");
-      throw Exception('Error during in-app update: $e');
-    }
-  }
-
-
-
-  void _showIntroDialogCarousel() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const IntroCarouselDialog(),
-    );
-  }
 
   void _showCompressionSummaryDialog({
     required BuildContext context,

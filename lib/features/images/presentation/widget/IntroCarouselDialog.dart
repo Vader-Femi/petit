@@ -17,17 +17,17 @@ class IntroCarouselDialogState extends State<IntroCarouselDialog> {
     IntroPage(
       imageAsset: Icons.photo_size_select_small,
       title: 'Welcome to Petit',
-      description: 'This app makes your images smaller in size so they take up less space and send faster — without losing quality.',
+      description: 'This app makes your images and videos smaller in size so they take up less space and send faster — without losing quality. And it works completely offline.',
     ),
     IntroPage(
       imageAsset: Icons.image,
-      title: 'Supports Many Formats',
+      title: 'Supports Many Image Formats',
       description: 'It works with different types of images like JPG, PNG, HEIF, and HEIC.',
     ),
     IntroPage(
       imageAsset: Icons.compress,
       title: 'Simple to Use',
-      description: 'Just choose your pictures, pick the quality you want, tap “Compress,” and your smaller images will be saved automatically.',
+      description: 'Just choose your pictures or video, pick the quality you want, tap “Compress,” and your smaller images will be saved automatically.',
     ),
   ];
 

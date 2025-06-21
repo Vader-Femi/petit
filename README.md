@@ -15,16 +15,16 @@ rel="nofollow noopener noreferrer" aria-label="Live Demo - Appetize.io"><u>Live 
 
 # PETIT
 
-A Flutter image compression application capable of compressing images in various formats, like HEIC, HEIF, PNG, and JPG, for efficient storage and faster file transfers without compromising quality
+A Flutter image and video compression application capable of compressing videos and images of various formats, like HEIC, HEIF, PNG, and JPG, for efficient storage and faster file transfers without compromising quality
 
 --- 
 ### Or
 ---
-This app makes your images smaller in size so they take up less space and send faster — without losing quality and it works completely offline.
+This app makes your images and videos smaller in size so they take up less space and send faster — without losing quality. And it works completely offline.
 
 It works with different types of images like JPG, PNG, HEIF, and HEIC.
 
-Just choose your pictures, pick the quality you want, tap “Compress,” and the smaller images will be saved to your gallery automatically.
+Just choose your pictures or video, pick the quality you want, tap “Compress,” and your smaller images will be saved automatically.
 
 --- 
 ### Note
