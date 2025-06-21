@@ -1,4 +1,7 @@
 import 'package:flutter_super/flutter_super.dart';
+import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+
+import '../../../videos/presentation/state/videos_viewmodel.dart';
 
 HomeViewModel get getHomeViewModel => Super.init(HomeViewModel());
 
@@ -17,6 +20,12 @@ class HomeViewModel {
   }
 
   Future<void> updateCurrentTabIndex(int index) async {
+    if (index == 0) {
+      getVideosViewModel.removeVideo();
+    }
+    if (index == 1) {
+      getImagesViewModel.pickedImages.state = [];
+    }
     currentTabIndex.state = index;
   }
 

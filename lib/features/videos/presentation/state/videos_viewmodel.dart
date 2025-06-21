@@ -23,10 +23,10 @@ class VideosViewModel {
   final videoFile = RxT<File?>(null);
   final videoController = RxT<VideoPlayerController?>(null);
   final isCompressing = RxBool(false);
-  final globalQualitySlider = RxInt(90);
+  final globalQualitySlider = RxInt(50);
   final isFabOpen = RxT<bool>(true);
   final percentageComplete = RxInt(0);
-  final selectedPreset = RxString('medium');
+  final selectedPresetIndex = RxInt(5);
 
   Session? _currentSession;
   List<String> ffmpegPresets = [
@@ -41,6 +41,25 @@ class VideosViewModel {
     'veryslow',
   ];
 
+  String get selectedPreset => ffmpegPresets[selectedPresetIndex.state];
+
+  String getLabelForSlider(int value) {
+    switch (value) {
+      case 0:
+        return "Compressed";
+      case 25:
+        return "Low";
+      case 50:
+        return "Medium";
+      case 75:
+        return "High";
+      case 100:
+        return "Ultra";
+      default:
+        return "";
+    }
+  }
+
   void setIsLoading(bool isLoading) {
     this.isLoading.state = isLoading;
   }
@@ -52,9 +71,14 @@ class VideosViewModel {
   void setPercentageComplete(int value) {
     percentageComplete.state = value;
   }
-  void setPreset(String newPreset) {
-    selectedPreset.state = newPreset;
+
+  void setPresetIndex(int index) {
+    selectedPresetIndex.state = index;
   }
+
+  // void setPreset(String newPreset) {
+  //   selectedPreset = newPreset;
+  // }
 
   Future<void> showResult(String? result) async {
     this.result.state = result;
@@ -152,8 +176,7 @@ class VideosViewModel {
       final outPath = '${outputDir.path}/compressed_${DateTime.now().millisecondsSinceEpoch}.mp4';
 
       final crf = (35 - ((globalQualitySlider.state / 100) * (35 - 18))).round();
-      final preset = selectedPreset.state;
-      final command = "-i ${originalFile.path} -vcodec libx264 -crf $crf -preset $preset $outPath";
+      final command = "-i ${originalFile.path} -vcodec libx264 -crf $crf -preset $selectedPreset $outPath";
 
       _currentSession  = await FFmpegKit.executeAsync(
         command,
@@ -162,14 +185,22 @@ class VideosViewModel {
           if (ReturnCode.isSuccess(returnCode)) {
             // ✅ Success
             final compressedFile = File(outPath);
+            final sizeBefore = originalFile.lengthSync();
+            final sizeAfter = compressedFile.lengthSync();
+
+            File finalFile;
+            if (sizeAfter >= sizeBefore) {
+              finalFile = originalFile;
+            } else {
+              finalFile = compressedFile;
+            }
+
+            final saved = sizeBefore - sizeAfter;
+            final savedPercent = (saved / sizeBefore).clamp(0, 1).toDouble();
+
             await saveLocalVideo(compressedFile);
             removeVideo();
             clearCacheDir();
-
-            final sizeBefore = originalFile.lengthSync();
-            final sizeAfter = compressedFile.lengthSync();
-            final saved = sizeBefore - sizeAfter;
-            final savedPercent = (saved / sizeBefore).clamp(0, 1).toDouble();
 
             setIsCompressing(false);
             setIsLoading(false);
@@ -183,7 +214,6 @@ class VideosViewModel {
               path: path,
             );
             onComplete(summary);
-
 
             // This can be returned from wherever you're awaiting compressVideo()
             // or use a callback

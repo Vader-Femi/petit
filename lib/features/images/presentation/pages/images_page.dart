@@ -8,6 +8,7 @@ import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
 import '../../../../common/data/Summary_report.dart';
 import '../../../../common/widgets/CompressionSummaryDialog.dart';
+import '../widget/image_quality_slider_box.dart';
 
 class ImagesPage extends StatefulWidget {
   const ImagesPage({
@@ -51,6 +52,8 @@ class _ImagesPageState extends State<ImagesPage> {
 
     final carouselSliderController = CarouselSliderController();
 
+    const fabHeight = 72.0; // Adjust to actual height of your FAB + margin
+
     return Scaffold(
       body: SuperBuilder(builder: (context) {
         if (getImagesViewModel.result.state != null) {
@@ -76,124 +79,80 @@ class _ImagesPageState extends State<ImagesPage> {
                 : Padding(
                     padding: EdgeInsets.fromLTRB(10, 0, 10, 15),
                     child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        CarouselSlider(
-                          items: getImagesViewModel.pickedImages.state
-                              .map((imageData) {
-                            return ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
-                              child: Image.file(
-                                imageData.imageFile,
-                                height: carouselHeight,
-                                frameBuilder: (BuildContext context,
-                                    Widget child,
-                                    int? frame,
-                                    bool? wasSynchronouslyLoaded) {
-                                  return AnimatedOpacity(
-                                    opacity: frame == null ? 0 : 1,
-                                    duration: Duration(milliseconds: 200),
-                                    curve: Curves.easeIn,
-                                    child: child,
-                                  );
-                                },
-                                fit: BoxFit.fitHeight,
-                                filterQuality: FilterQuality.none,
-                              ),
-                            );
-                          }).toList(),
-                          carouselController: carouselSliderController,
-                          options: CarouselOptions(
-                              height: carouselHeight,
-                              autoPlay: true,
-                              enlargeStrategy:
-                                  CenterPageEnlargeStrategy.zoom,
-                              enlargeCenterPage: true,
-                              pageSnapping: true,
-                              scrollDirection: Axis.horizontal,
-                              pauseAutoPlayOnTouch: true,
-                              enableInfiniteScroll: false,
-                              onPageChanged: (index, _) => getImagesViewModel
-                                  .updateCurrentImageAndIndex(index),
-                              reverse: false),
+                        Expanded(
+                          child: CarouselSlider(
+                            items: getImagesViewModel.pickedImages.state
+                                .map((imageData) {
+                              return ClipRRect(
+                                borderRadius: BorderRadius.circular(12),
+                                child: Image.file(
+                                  imageData.imageFile,
+                                  frameBuilder: (BuildContext context,
+                                      Widget child,
+                                      int? frame,
+                                      bool? wasSynchronouslyLoaded) {
+                                    return AnimatedOpacity(
+                                      opacity: frame == null ? 0 : 1,
+                                      duration: Duration(milliseconds: 200),
+                                      curve: Curves.easeIn,
+                                      child: child,
+                                    );
+                                  },
+                                  fit: BoxFit.contain,
+                                  filterQuality: FilterQuality.none,
+                                ),
+                              );
+                            }).toList(),
+                            carouselController: carouselSliderController,
+                            options: CarouselOptions(
+                                autoPlay: true,
+                                enlargeStrategy:
+                                    CenterPageEnlargeStrategy.zoom,
+                                enlargeCenterPage: true,
+                                pageSnapping: true,
+                                scrollDirection: Axis.horizontal,
+                                pauseAutoPlayOnTouch: true,
+                                enableInfiniteScroll: false,
+                                onPageChanged: (index, _) => getImagesViewModel
+                                    .updateCurrentImageAndIndex(index),
+                                reverse: false),
+                          ),
                         ),
                         SizedBox(height: 10),
-                        Text(
-                          "${(getImagesViewModel.currentImageIndex.state ?? -1) + 1} of ${getImagesViewModel.pickedImages.state.length}",
-                          style: TextStyle(fontSize: 16),
-                        ),
+                        // Current image index
+                        if (getImagesViewModel.pickedImages.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 6),
+                            child: Text(
+                              "${(getImagesViewModel.currentImageIndex.state ?? -1) + 1} of ${getImagesViewModel.pickedImages.state.length}",
+                              style: const TextStyle(fontSize: 16),
+                            ),
+                          ),
+
                         SizedBox(height: 10),
-                        getImagesViewModel.currentImage.state != null
-                            ? Row(
-                                children: [
-                                  Text(
-                                      "Quality: ${getImagesViewModel.globalQualitySlider.state ?? getImagesViewModel.currentImage.state?.quality}%"),
-                                  Expanded(
-                                      child: getImagesViewModel.globalQualitySlider.state != null
-                                          ? Slider(
-                                              value: ((getImagesViewModel
-                                                          .globalQualitySlider
-                                                          .state
-                                                          ?.toDouble() ??
-                                                      90.0) /
-                                                  100),
-                                              onChanged: (value) =>
-                                                  getImagesViewModel
-                                                      .updateGlobalQualitySlider(
-                                                          value))
-                                          : Slider(
-                                              value: ((getImagesViewModel
-                                                          .currentImage
-                                                          .state
-                                                          ?.quality
-                                                          .toDouble() ??
-                                                      90.0) /
-                                                  100),
-                                              onChanged: (value) =>
-                                                  getImagesViewModel.updateCurrentImageQuality(value))),
-                                ],
-                              )
-                            : Container(),
-                        SizedBox(height: 10),
-                        (getImagesViewModel.currentImage.state != null &&
-                                getImagesViewModel.pickedImages.length > 1)
-                            ? Row(
-                                mainAxisSize: MainAxisSize.max,
-                                mainAxisAlignment: MainAxisAlignment.start,
-                                children: [
-                                  Flexible(
-                                      child: Text(
-                                          "Use same quality for all images",
-                                          softWrap: true)),
-                                  SizedBox(width: 5),
-                                  SizedBox(
-                                    height: 40,
-                                    child: FittedBox(
-                                      fit: BoxFit.fill,
-                                      child: Switch(
-                                          value: getImagesViewModel
-                                                  .globalQualitySlider
-                                                  .state !=
-                                              null,
-                                          onChanged: (value) {
-                                            if (getImagesViewModel
-                                                    .globalQualitySlider
-                                                    .state ==
-                                                null) {
-                                              getImagesViewModel
-                                                  .globalQualitySlider
-                                                  .state = 90;
-                                            } else {
-                                              getImagesViewModel
-                                                  .globalQualitySlider
-                                                  .state = null;
-                                            }
-                                          }),
-                                    ),
-                                  ),
-                                ],
-                              )
-                            : Container(),
+
+                        if (getImagesViewModel.currentImage.state != null)
+                          ImageQualitySliderBox(
+                            sliderValue: (getImagesViewModel.globalQualitySlider.state ??
+                                getImagesViewModel.currentImage.state!.quality) /
+                                100,
+                            isGlobal: getImagesViewModel.globalQualitySlider.state != null,
+                            showGlobalSwitch: getImagesViewModel.pickedImages.length > 1,
+                            onSliderChanged: (value) {
+                              if (getImagesViewModel.globalQualitySlider.state != null) {
+                                getImagesViewModel.updateGlobalQualitySlider(value);
+                              } else {
+                                getImagesViewModel.updateCurrentImageQuality(value);
+                              }
+                            },
+                            onGlobalToggle: (value) {
+                              getImagesViewModel.globalQualitySlider.state = value ? 90 : null;
+                            },
+                          ),
+
+                        // Reserve space for FABs
+                        const SizedBox(height: 72.0),
                       ],
                     ),
                   ),

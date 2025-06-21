@@ -6,6 +6,7 @@ import 'package:video_player/video_player.dart';
 
 import '../../../../common/data/Summary_report.dart';
 import '../../../../common/widgets/CompressionSummaryDialog.dart';
+import '../widgets/slider_box.dart';
 
 class VideosPagePlaceholder extends StatelessWidget {
   const VideosPagePlaceholder({super.key});
@@ -49,7 +50,7 @@ class _VideosPageState extends State<VideosPage> {
 
   @override
   Widget build(BuildContext context) {
-    final videoPlayerHeight = MediaQuery.sizeOf(context).height / 2;
+    const fabHeight = 72.0; // Adjust to actual height of your FAB + margin
 
     return Scaffold(
       body: SuperBuilder(builder: (context) {
@@ -68,120 +69,171 @@ class _VideosPageState extends State<VideosPage> {
             if (getVideosViewModel.videoController.state != null &&
                 getVideosViewModel.videoController.state!.value.isInitialized)
               Padding(
-                padding: const EdgeInsets.all(8.0),
+                padding: EdgeInsets.fromLTRB(10, 0, 10, 15),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    SizedBox(
-                      height: videoPlayerHeight,
-                      child: AspectRatio(
-                        aspectRatio: getVideosViewModel
-                            .videoController.state!.value.aspectRatio,
-                        child: VideoPlayer(
-                            getVideosViewModel.videoController.state!),
+                    Expanded(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: AspectRatio(
+                          aspectRatio: getVideosViewModel
+                              .videoController.state!.value.aspectRatio,
+                          child: VideoPlayer(
+                              getVideosViewModel.videoController.state!),
+                        ),
                       ),
                     ),
-                    Row(
-                      children: [
-                        Text(
-                            "Quality: ${getVideosViewModel.globalQualitySlider.state}%"),
-                        Expanded(
-                            child: Slider(
-                                value: ((getVideosViewModel
-                                        .globalQualitySlider.state
-                                        .toDouble()) /
-                                    100),
-                                onChanged: (value) => getVideosViewModel
-                                    .updateGlobalQualitySlider(value)))
-                      ],
-                    ),
+                    // Row(
+                    //   children: [
+                    //     Text(
+                    //         "Quality: ${getVideosViewModel.globalQualitySlider.state}%"),
+                    //     Expanded(
+                    //         child: Slider(
+                    //             value: ((getVideosViewModel
+                    //                     .globalQualitySlider.state
+                    //                     .toDouble()) /
+                    //                 100),
+                    //             onChanged: (value) => getVideosViewModel
+                    //                 .updateGlobalQualitySlider(value)))
+                    //   ],
+                    // ),
 
-                    Row(
+                    /*
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Tooltip(
-                          message: "Choose a compression preset.\n"
-                              "• ultrafast = fastest, biggest file\n"
-                              "• slower = slower, smaller file\n"
-                              "Higher compression = smaller size but slower.",
-                          waitDuration: Duration(milliseconds: 300),
-                          showDuration: Duration(seconds: 5),
-                          child: Icon(Icons.info_outline, size: 18),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: const [
+                            Text("Compressed"), // CRF 35
+                            // Text("Low"),         // CRF 30
+                            // Text("Medium"),      // CRF 26
+                            // Text("High"),        // CRF 22
+                            Text("Ultra"), // CRF 35
+                          ],
                         ),
-                        const SizedBox(width: 8),
-                        DropdownButton<String>(
-                          hint: const Text("Preset"),
-                          value: getVideosViewModel.selectedPreset.state,
-                          items: getVideosViewModel.ffmpegPresets.map((preset) {
-                            return DropdownMenuItem(
-                              value: preset,
-                              child: Text(preset),
-                            );
-                          }).toList(),
+                        const SizedBox(height: 4),
+                        Slider(
+                          value: getVideosViewModel.globalQualitySlider.state
+                              .toDouble(),
+                          min: 0,
+                          max: 100,
+                          divisions: 4,
+                          // 5 points = 4 divisions
+                          label: getVideosViewModel.getLabelForSlider(
+                              getVideosViewModel.globalQualitySlider.state),
                           onChanged: (value) {
-                            if (value != null) {
-                              getVideosViewModel.setPreset(value);
-                            }
+                            final snapped = (value / 25).round() * 25;
+                            getVideosViewModel
+                                .updateGlobalQualitySlider(snapped / 100);
                           },
                         ),
                       ],
-                    )
+                    ),
 
-                    // Column(
-                    //   crossAxisAlignment: CrossAxisAlignment.start,
-                    //   children: [
-                    //     const Text(
-                    //       "Compression Speed vs Quality",
-                    //       style: TextStyle(fontWeight: FontWeight.bold),
-                    //     ),
-                    //     const SizedBox(height: 4),
-                    //     const Text(
-                    //       "Choose a preset: faster = bigger file, slower = smaller file.",
-                    //       style: TextStyle(fontSize: 12, color: Colors.grey),
-                    //     ),
-                    //     const SizedBox(height: 8),
-                    //     Align(
-                    //       alignment: Alignment.centerLeft,
-                    //       child: Tooltip(
-                    //         message:
-                    //         "Faster presets are quicker but result in larger files.\nSlower presets take more time but reduce file size.",
-                    //         child: DropdownButton<String>(
-                    //           hint: const Text("Preset"),
-                    //           value: getVideosViewModel.selectedPreset.state,
-                    //           items: getVideosViewModel.ffmpegPresets.map((preset) {
-                    //             return DropdownMenuItem<String>(
-                    //               value: preset,
-                    //               child: Text(preset),
-                    //             );
-                    //           }).toList(),
-                    //           onChanged: (value) {
-                    //             if (value != null) {
-                    //               getVideosViewModel.setPreset(value);
-                    //             }
-                    //           },
-                    //         ),
-                    //       ),
-                    //     ),
-                    //   ],
-                    // )
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text("Speed"),
+                            Text("Quality"),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Slider(
+                          value: getVideosViewModel.selectedPresetIndex.state
+                              .toDouble(),
+                          min: 0,
+                          max: (getVideosViewModel.ffmpegPresets.length - 1)
+                              .toDouble(),
+                          divisions:
+                              getVideosViewModel.ffmpegPresets.length - 1,
+                          label: getVideosViewModel.selectedPreset,
+                          onChanged: (value) {
+                            getVideosViewModel.setPresetIndex(value.round());
+                          },
+                        ),
 
-                    // Align(
-                    //   alignment: Alignment.centerLeft,
-                    //   child: DropdownButton(
-                    //     hint: Text("Preset"),
-                    //     value: getVideosViewModel.selectedPreset.state,
-                    //     items: getVideosViewModel.ffmpegPresets.map((preset) {
-                    //       return DropdownMenuItem(
-                    //         value: preset,
-                    //         child: Text(preset),
-                    //       );
-                    //     }).toList(),
-                    //     onChanged: (value) {
-                    //       if (value != null) {
-                    //         getVideosViewModel.setPreset(value);
-                    //       }
-                    //     },
-                    //   ),
+                      ],
+                    ),
+
+                    // Tooltip(
+                    //   message: "Choose a compression preset.\n"
+                    //       "• ultrafast = fastest, biggest file\n"
+                    //       "• slower = slower, smaller file\n"
+                    //       "Higher compression = smaller size but slower.",
+                    //   waitDuration: Duration(milliseconds: 300),
+                    //   showDuration: Duration(seconds: 5),
+                    //   child: Icon(Icons.info_outline, size: 18),
                     // ),
+
+                    */
+
+                    const SizedBox(height: 12),
+
+                    Column(
+                      children: [
+                        buildSliderBox(
+                          context: context,
+                          label: "Video Quality",
+                          minValue: "Compressed",
+                          maxValue: "Ultra",
+                          tootTipMessage: "Adjusts the compression level.\n"
+                              "• Higher quality = larger size,\n"
+                              "• Lower quality = smaller size, less clarity.\n"
+                              "• Default balance is Medium.",
+                          slider: Slider(
+                            value: getVideosViewModel
+                                .globalQualitySlider.state /
+                                100,
+                            min: 0,
+                            max: 1,
+                            divisions: 4,
+                            label:
+                            "${getVideosViewModel.globalQualitySlider.state}%",
+                            onChanged: (value) {
+                              getVideosViewModel
+                                  .updateGlobalQualitySlider(value);
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        buildSliderBox(
+                          context: context,
+                          label: "Compression Mode",
+                          minValue: "Speed ",
+                          maxValue: "Quality",
+                          tootTipMessage: "Choose a compression preset.\n"
+                              "• ultrafast = fastest, biggest file\n"
+                              "• slower = slower, smaller file\n"
+                              "Higher compression = smaller size but slower.",
+                          slider: Slider(
+                            value: getVideosViewModel
+                                .selectedPresetIndex.state
+                                .toDouble(),
+                            min: 0,
+                            max: (getVideosViewModel.ffmpegPresets.length -
+                                1)
+                                .toDouble(),
+                            divisions:
+                            getVideosViewModel.ffmpegPresets.length - 1,
+                            label: getVideosViewModel.ffmpegPresets[
+                            getVideosViewModel
+                                .selectedPresetIndex.state],
+                            onChanged: (value) {
+                              getVideosViewModel
+                                  .setPresetIndex(value.toInt());
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    // Space for FABs
+                    const SizedBox(height: fabHeight),
                   ],
                 ),
               )
@@ -286,6 +338,7 @@ class _VideosPageState extends State<VideosPage> {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   if (getVideosViewModel.isFabOpen.state) ...[
+                    SizedBox(width: 30),
                     getVideosViewModel.videoController.state != null &&
                             getVideosViewModel
                                 .videoController.state!.value.isInitialized
