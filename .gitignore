@@ -15,6 +15,10 @@ captures/
 *.apk
 output.json
 
+# Android App Bundles
+*.aab
+
+
 # IntelliJ
 *.iml
 .idea/

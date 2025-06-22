@@ -1,4 +1,4 @@
-<img src="assets/images/petit_feature_graphic.png" alt="Watchlist Image" width="1024" />
+<img src="dev/assets/petit_feature_graphic.png" alt="Watchlist Image" width="1024" />
 
 
 <br />
@@ -35,22 +35,22 @@ Just choose your pictures or video, pick the quality you want, tap â€œCompress,â
 <br />
 <div>
   &emsp;&emsp;&emsp;
-  <img src="assets/images/7_inch_tab_app_dark_mode.png" alt="Light theme" width="2204">
+  <img src="dev/assets/7_inch_tab_app_dark_mode.png" alt="Light theme" width="2204">
   &emsp;&emsp;&emsp;&emsp;
-  <img src="assets/images/phone_listing_1.png" alt="Dark theme" width="1024">  
+  <img src="dev/assets/phone_listing_1.png" alt="Dark theme" width="1024">  
 </div>
 <br />
 
 <br />
 <div>
   &emsp;&emsp;&emsp;
-  <img src="assets/images/7_inch_tab_app_dark_mode_2.png" alt="Light theme" width="2204">
+  <img src="dev/assets/7_inch_tab_app_dark_mode_2.png" alt="Light theme" width="2204">
   &emsp;&emsp;&emsp;&emsp;
-  <img src="assets/images/phone_app_light_mode.png" alt="Dark theme" width="1080">  
+  <img src="dev/assets/phone_app_light_mode.png" alt="Dark theme" width="1080">  
 </div>
 <br />
 
-<img src="assets/images/10_inch_tab_app_light_mode.png" alt="Light theme" width="1600">
+<img src="dev/assets/10_inch_tab_app_light_mode.png" alt="Light theme" width="1600">
 
 
 ### Packages

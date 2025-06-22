@@ -11,7 +11,7 @@ class AppTheme {
     useMaterial3: true,
     colorScheme: lightColourScheme,
     brightness: lightColourScheme.brightness,
-    fontFamily: "Domine",
+    fontFamily: "Satoshi",
     // textTheme: const TextTheme(
     //   // bodySmall: TextStyle(color: AppColours.primary),
     //   // bodyMedium: TextStyle(color: AppColours.primary),
@@ -74,7 +74,7 @@ class AppTheme {
     useMaterial3: true,
     colorScheme: darkColourScheme,
     brightness: darkColourScheme.brightness,
-    fontFamily: "Domine",
+    fontFamily: "Satoshi",
     // textTheme: const TextTheme(
     //   // bodySmall: TextStyle(color: AppColours.primary),
     //   // bodyMedium: TextStyle(color: AppColours.primary),
