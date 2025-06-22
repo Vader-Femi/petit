@@ -23,10 +23,10 @@ class VideosViewModel {
   final videoFile = RxT<File?>(null);
   final videoController = RxT<VideoPlayerController?>(null);
   final isCompressing = RxBool(false);
-  final globalQualitySlider = RxInt(50);
+  final globalQualitySlider = RxInt(75);
   final isFabOpen = RxT<bool>(true);
   final percentageComplete = RxInt(0);
-  final selectedPresetIndex = RxInt(5);
+  final selectedPresetIndex = RxInt(6);
 
   Session? _currentSession;
   List<String> ffmpegPresets = [

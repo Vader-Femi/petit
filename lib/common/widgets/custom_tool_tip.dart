@@ -45,7 +45,7 @@ class _CustomTapTooltipState extends State<CustomTapTooltip> {
           color: Colors.transparent,
           child: AnimatedOpacity(
             opacity: 1,
-            duration: const Duration(milliseconds: 100),
+            duration: const Duration(milliseconds: 200),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(

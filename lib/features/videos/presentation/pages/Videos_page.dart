@@ -69,7 +69,7 @@ class _VideosPageState extends State<VideosPage> {
             if (getVideosViewModel.videoController.state != null &&
                 getVideosViewModel.videoController.state!.value.isInitialized)
               Padding(
-                padding: EdgeInsets.fromLTRB(10, 0, 10, 15),
+                padding: EdgeInsets.fromLTRB(10, 10, 10, 15),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [

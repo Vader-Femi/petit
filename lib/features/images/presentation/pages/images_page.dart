@@ -77,7 +77,7 @@ class _ImagesPageState extends State<ImagesPage> {
                     ),
                   )
                 : Padding(
-                    padding: EdgeInsets.fromLTRB(10, 0, 10, 15),
+                    padding: EdgeInsets.fromLTRB(10, 10, 10, 15),
                     child: Column(
                       children: [
                         Expanded(
