@@ -3,7 +3,7 @@ description: "An image compression application capable of compressing images in 
 
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 1.0.15+15
+version: 1.0.16+16
 
 environment:
   sdk: ^3.5.3
@@ -120,27 +120,27 @@ flutter:
   # list giving the asset and other descriptors for the font. For
   # example:
 
-  fonts:
-    - family: Satoshi
-      fonts:
-        - asset: assets/fonts/satoshi/Satoshi-Black.otf
-          weight: 900
+#  fonts:
+#    - family: Satoshi
+#      fonts:
+#        - asset: assets/fonts/satoshi/Satoshi-Black.otf
+#          weight: 900
 #        - asset: assets/fonts/satoshi/Satoshi-BlackItalic.otf
 #          weight: 900
-        - asset: assets/fonts/satoshi/Satoshi-Bold.otf
-          weight: 700
+#        - asset: assets/fonts/satoshi/Satoshi-Bold.otf
+#          weight: 700
 #        - asset: assets/fonts/satoshi/Satoshi-BoldItalic.otf
 #          weight: 700
 #        - asset: assets/fonts/satoshi/Satoshi-Italic.otf
 #          weight: 500
-        - asset: assets/fonts/satoshi/Satoshi-Medium.otf
-          weight: 500
+#        - asset: assets/fonts/satoshi/Satoshi-Medium.otf
+#          weight: 500
 #        - asset: assets/fonts/satoshi/Satoshi-MediumItalic.otf
 #          weight: 500
-        - asset: assets/fonts/satoshi/Satoshi-Regular.otf
-          weight: 400
-        - asset: assets/fonts/satoshi/Satoshi-Light.otf
-          weight: 300
+#        - asset: assets/fonts/satoshi/Satoshi-Regular.otf
+#          weight: 400
+#        - asset: assets/fonts/satoshi/Satoshi-Light.otf
+#          weight: 300
 #        - asset: assets/fonts/satoshi/Satoshi-LightItalic.otf
 #          weight: 300
 

@@ -185,11 +185,12 @@ class VideosViewModel {
             // ✅ Success
             final compressedFile = File(outPath);
             final sizeBefore = originalFile.lengthSync();
-            final sizeAfter = compressedFile.lengthSync();
+            var sizeAfter = compressedFile.lengthSync();
 
             File finalFile;
             if (sizeAfter >= sizeBefore) {
               finalFile = originalFile;
+              sizeAfter = sizeBefore;
             } else {
               finalFile = compressedFile;
             }
@@ -197,7 +198,7 @@ class VideosViewModel {
             final saved = sizeBefore - sizeAfter;
             final savedPercent = (saved / sizeBefore).clamp(0, 1).toDouble();
 
-            await saveLocalVideo(compressedFile);
+            await saveLocalVideo(finalFile);
             removeVideo();
             clearCacheDir();
 
