@@ -1,5 +1,4 @@
 import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -66,7 +65,6 @@ class _HomeScreenState extends State<HomeScreen> {
           await InAppUpdate.completeFlexibleUpdate();
         } on PlatformException catch (e) {
           debugPrint("In-app update error: ${e.message}");
-          throw Exception('Error during in-app update: $e');
         }
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -78,7 +76,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     } catch (e) {
       debugPrint("In-app update error: $e");
-      throw Exception('Error during in-app update: $e');
     }
   }
 
