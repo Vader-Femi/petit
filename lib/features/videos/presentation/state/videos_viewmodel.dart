@@ -22,41 +22,32 @@ class VideosViewModel {
   final videoFile = RxT<File?>(null);
   final videoController = RxT<VideoPlayerController?>(null);
   final isCompressing = RxBool(false);
-  final globalQualitySlider = RxInt(75);
+  final cfrQualitySlider = RxInt(75);
   final isFabOpen = RxT<bool>(true);
   final percentageComplete = RxInt(0);
   final selectedPresetIndex = RxInt(6);
 
   Session? _currentSession;
   List<String> ffmpegPresets = [
-    'ultrafast',
-    'superfast',
-    'veryfast',
-    'faster',
-    'fast',
-    'medium', // 🟢 good default
-    'slow',
-    'slower',
-    'veryslow',
+    'Ultrafast',
+    'Superfast',
+    'Very fast',
+    'Faster',
+    'Fast',
+    'Medium', // 🟢 good default
+    'Slow',
+    'Slower',
+    'Very slow',
   ];
 
   String get selectedPreset => ffmpegPresets[selectedPresetIndex.state];
 
-  String getLabelForSlider(int value) {
-    switch (value) {
-      case 0:
-        return "Compressed";
-      case 25:
-        return "Low";
-      case 50:
-        return "Medium";
-      case 75:
-        return "High";
-      case 100:
-        return "Ultra";
-      default:
-        return "";
-    }
+  String getLabelForCRFSlider(int value) {
+    if (value <= 10) return "Compressed";
+    if (value <= 25) return "Low";
+    if (value <= 50) return "Medium";
+    if (value <= 75) return "High";
+    return "Lossless";
   }
 
   void setIsLoading(bool isLoading) {
@@ -84,7 +75,7 @@ class VideosViewModel {
   }
 
   void updateGlobalQualitySlider(double value) {
-    globalQualitySlider.state = (value * 100).toInt();
+    cfrQualitySlider.state = (value * 100).toInt();
   }
 
   Future<void> pickVideo() async {
@@ -174,7 +165,7 @@ class VideosViewModel {
       final outputDir = await getTemporaryDirectory();
       final outPath = '${outputDir.path}/compressed_${DateTime.now().millisecondsSinceEpoch}.mp4';
 
-      final crf = (35 - ((globalQualitySlider.state / 100) * (35 - 18))).round();
+      final crf = (28 - ((cfrQualitySlider.state / 100) * (28 - 18))).round();
       final command = "-i ${originalFile.path} -vcodec libx264 -crf $crf -preset $selectedPreset $outPath";
 
       _currentSession  = await FFmpegKit.executeAsync(

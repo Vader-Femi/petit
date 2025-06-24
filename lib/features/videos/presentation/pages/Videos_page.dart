@@ -178,22 +178,21 @@ class _VideosPageState extends State<VideosPage> {
                       children: [
                         buildSliderBox(
                           context: context,
-                          label: "Video Quality",
+                          label: "Compression Level",
                           minValue: "Compressed",
-                          maxValue: "Ultra",
+                          maxValue: "Lossless",
                           tootTipMessage: "Adjusts the compression level.\n"
-                              "• Higher quality = larger size,\n"
-                              "• Lower quality = smaller size, less clarity.\n"
-                              "• Default balance is Medium.",
+                              "•Lossless/Highest = larger size, more clarity\n"
+                              "•Compressed/Lowest = smaller size, less clarity.",
                           slider: Slider(
                             value: getVideosViewModel
-                                .globalQualitySlider.state /
+                                .cfrQualitySlider.state /
                                 100,
                             min: 0,
                             max: 1,
                             divisions: 4,
                             label:
-                            "${getVideosViewModel.globalQualitySlider.state}%",
+                            "${getVideosViewModel.cfrQualitySlider.state}%",
                             onChanged: (value) {
                               getVideosViewModel
                                   .updateGlobalQualitySlider(value);
@@ -203,13 +202,14 @@ class _VideosPageState extends State<VideosPage> {
                         const SizedBox(height: 12),
                         buildSliderBox(
                           context: context,
-                          label: "Compression Mode",
-                          minValue: "Speed ",
-                          maxValue: "Quality",
-                          tootTipMessage: "Choose a compression preset.\n"
-                              "• ultrafast = fastest, biggest file\n"
-                              "• slower = slower, smaller file\n"
-                              "Higher compression = smaller size but slower.",
+                          label: "Compression Speed",
+                          minValue: "Ultra fast",
+                          maxValue: "Very Slow",
+                          tootTipMessage: "Choose a compression speed.\n"
+                              "•Ultrafast = fastest, biggest file\n"
+                              "•Very Slow = slower, smaller file\n"
+                              "The slower the compression speed,\n"
+                              "the more the size will be reduced",
                           slider: Slider(
                             value: getVideosViewModel
                                 .selectedPresetIndex.state
