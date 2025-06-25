@@ -6,7 +6,7 @@ import 'package:video_player/video_player.dart';
 
 import '../../../../common/data/Summary_report.dart';
 import '../../../../common/widgets/CompressionSummaryDialog.dart';
-import '../widgets/slider_box.dart';
+import '../../../../common/widgets/slider_box.dart';
 
 class VideosPagePlaceholder extends StatelessWidget {
   const VideosPagePlaceholder({super.key});
@@ -182,17 +182,17 @@ class _VideosPageState extends State<VideosPage> {
                           minValue: "Compressed",
                           maxValue: "Lossless",
                           tootTipMessage: "Adjusts the compression level.\n"
-                              "•Lossless/Highest = larger size, more clarity\n"
-                              "•Compressed/Lowest = smaller size, less clarity.",
+                              "•Lossless = larger size, more clarity\n"
+                              "•Compressed = smaller size, less clarity\n"
+                              "•Recommended = between Low and High",
                           slider: Slider(
-                            value: getVideosViewModel
-                                .cfrQualitySlider.state /
-                                100,
+                            value:
+                                getVideosViewModel.cfrQualitySlider.state / 100,
                             min: 0,
                             max: 1,
                             divisions: 4,
-                            label:
-                            "${getVideosViewModel.cfrQualitySlider.state}%",
+                            label: getVideosViewModel.getLabelForCRFSlider(
+                                getVideosViewModel.cfrQualitySlider.state),
                             onChanged: (value) {
                               getVideosViewModel
                                   .updateGlobalQualitySlider(value);
@@ -208,24 +208,19 @@ class _VideosPageState extends State<VideosPage> {
                           tootTipMessage: "Choose a compression speed.\n"
                               "•Ultrafast = fastest, biggest file\n"
                               "•Very Slow = slower, smaller file\n"
-                              "The slower the compression speed,\n"
-                              "the more the size will be reduced",
+                              "•Recommended = between superfast and slow",
                           slider: Slider(
-                            value: getVideosViewModel
-                                .selectedPresetIndex.state
+                            value: getVideosViewModel.selectedPresetIndex.state
                                 .toDouble(),
                             min: 0,
-                            max: (getVideosViewModel.ffmpegPresets.length -
-                                1)
+                            max: (getVideosViewModel.ffmpegPresets.length - 1)
                                 .toDouble(),
                             divisions:
-                            getVideosViewModel.ffmpegPresets.length - 1,
+                                getVideosViewModel.ffmpegPresets.length - 1,
                             label: getVideosViewModel.ffmpegPresets[
-                            getVideosViewModel
-                                .selectedPresetIndex.state],
+                                getVideosViewModel.selectedPresetIndex.state],
                             onChanged: (value) {
-                              getVideosViewModel
-                                  .setPresetIndex(value.toInt());
+                              getVideosViewModel.setPresetIndex(value.toInt());
                             },
                           ),
                         ),
@@ -255,18 +250,38 @@ class _VideosPageState extends State<VideosPage> {
                 ? const CircularProgressIndicator()
                 : Container(),
             (getVideosViewModel.isCompressing.state)
-                ? CircularStepProgressIndicator(
-                    totalSteps: 100,
-                    currentStep: getVideosViewModel.percentageComplete.state,
-                    stepSize: 10,
-                    selectedColor: Theme.of(context).colorScheme.primary,
-                    unselectedColor:
-                        Theme.of(context).colorScheme.surfaceContainer,
-                    padding: 0,
-                    width: 200,
-                    height: 200,
-                    selectedStepSize: 30,
-                    roundedCap: (_, __) => true,
+                ? Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        height: 40,
+                      ),
+                      CircularStepProgressIndicator(
+                        totalSteps: 100,
+                        currentStep:
+                            getVideosViewModel.percentageComplete.state,
+                        stepSize: 10,
+                        selectedColor: Theme.of(context).colorScheme.primary,
+                        unselectedColor:
+                            Theme.of(context).colorScheme.surfaceContainer,
+                        padding: 0,
+                        width: 200,
+                        height: 200,
+                        selectedStepSize: 30,
+                        roundedCap: (_, __) => true,
+                      ),
+                      Text(
+                        "Please keep app open\nwhile compressing",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .primary
+                                .withValues(alpha: 0.8)),
+                      ),
+                    ],
                   )
                 : Container(),
             (getVideosViewModel.isCompressing.state)

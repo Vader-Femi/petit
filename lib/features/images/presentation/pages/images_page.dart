@@ -8,7 +8,7 @@ import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
 import '../../../../common/data/Summary_report.dart';
 import '../../../../common/widgets/CompressionSummaryDialog.dart';
-import '../widget/image_quality_slider_box.dart';
+import '../../../../common/widgets/slider_box.dart';
 
 class ImagesPage extends StatefulWidget {
   const ImagesPage({
@@ -106,7 +106,7 @@ class _ImagesPageState extends State<ImagesPage> {
                             }).toList(),
                             carouselController: carouselSliderController,
                             options: CarouselOptions(
-                                autoPlay: true,
+                                autoPlay: false,
                                 enlargeStrategy:
                                     CenterPageEnlargeStrategy.zoom,
                                 enlargeCenterPage: true,
@@ -133,24 +133,43 @@ class _ImagesPageState extends State<ImagesPage> {
                         SizedBox(height: 10),
 
                         if (getImagesViewModel.currentImage.state != null)
-                          ImageQualitySliderBox(
-                            sliderValue: (getImagesViewModel.globalQualitySlider.state ??
-                                getImagesViewModel.currentImage.state!.quality) /
-                                100,
-                            isGlobal: getImagesViewModel.globalQualitySlider.state != null,
+                          buildSliderBox(
+                            context: context,
+                            label: "Image Quality",
+                            minValue: "Compressed",
+                            maxValue: "Original Quality",
+                            tootTipMessage: "Adjust image quality.\n"
+                                "•Compressed = less clarity, smaller size\n"
+                                "•Original = same clarity, same size\n"
+                                "•Middle = same clarity, smaller size\n"
+                                "•Recommended = Between 20% - 98%",
+                            slider: Slider(
+                              value:((getImagesViewModel.globalQualitySlider.state ??
+                                        getImagesViewModel.currentImage.state!.quality) /
+                                        100).clamp(0.0, 1.0),
+                              min: 0,
+                              max: 1,
+                              divisions: 99,
+                              label: "${(getImagesViewModel.globalQualitySlider.state ??
+                                        getImagesViewModel.currentImage.state!.quality).round()}%",
+                              onChanged: (value) {
+                                if (getImagesViewModel
+                                        .globalQualitySlider.state !=
+                                    null) {
+                                  getImagesViewModel
+                                      .updateGlobalQualitySlider(value);
+                                } else {
+                                  getImagesViewModel
+                                      .updateCurrentImageQuality(value);
+                                }
+                              },
+                            ),
                             showGlobalSwitch: getImagesViewModel.pickedImages.length > 1,
-                            onSliderChanged: (value) {
-                              if (getImagesViewModel.globalQualitySlider.state != null) {
-                                getImagesViewModel.updateGlobalQualitySlider(value);
-                              } else {
-                                getImagesViewModel.updateCurrentImageQuality(value);
-                              }
-                            },
-                            onGlobalToggle: (value) {
+                            isGlobal: getImagesViewModel.globalQualitySlider.state != null,
+                            onGlobalToggle: (value){
                               getImagesViewModel.globalQualitySlider.state = value ? 90 : null;
                             },
                           ),
-
                         // Reserve space for FABs
                         const SizedBox(height: 72.0),
                       ],
@@ -193,19 +212,38 @@ class _ImagesPageState extends State<ImagesPage> {
                 : Container(),
             (getImagesViewModel.isLoading.state.isLoading &&
                     getImagesViewModel.isLoading.state.totalSteps != null)
-                ? CircularStepProgressIndicator(
-                    totalSteps:
-                        getImagesViewModel.isLoading.state.totalSteps ?? 1,
-                    stepSize: 20,
-                    selectedStepSize: 30,
-                    currentStep:
-                        getImagesViewModel.isLoading.state.completedSteps ?? 1,
-                    width: 180,
-                    height: 180,
-                    padding: 0.02,
-                    selectedColor: Colors.green,
-                    unselectedColor: Colors.red,
-                  )
+                ? Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                SizedBox(
+                  height: 40,
+                ),
+                CircularStepProgressIndicator(
+                        totalSteps:
+                            getImagesViewModel.isLoading.state.totalSteps ?? 1,
+                        stepSize: 20,
+                        selectedStepSize: 30,
+                        currentStep:
+                            getImagesViewModel.isLoading.state.completedSteps ?? 1,
+                        width: 180,
+                        height: 180,
+                        padding: 0.02,
+                        selectedColor: Colors.green,
+                        unselectedColor: Colors.red,
+                      ),
+                Text(
+                  "Please keep app open\nwhile compressing",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: Theme.of(context)
+                          .colorScheme
+                          .primary
+                          .withValues(alpha: 0.8)),
+                ),
+              ],
+                )
                 : Container(),
           ],
         );

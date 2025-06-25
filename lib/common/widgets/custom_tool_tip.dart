@@ -24,7 +24,7 @@ class _CustomTapTooltipState extends State<CustomTapTooltip> {
     final size = renderBox.size;
     final screenSize = overlay.semanticBounds.size;
 
-    const tooltipWidth = 200.0;
+    const tooltipWidth = 220.0;
     const tooltipHeight = 40.0;
     const padding = 8.0;
 
@@ -45,16 +45,16 @@ class _CustomTapTooltipState extends State<CustomTapTooltip> {
           color: Colors.transparent,
           child: AnimatedOpacity(
             opacity: 1,
-            duration: const Duration(milliseconds: 200),
+            duration: const Duration(milliseconds: 100),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.inverseSurface,
                 borderRadius: BorderRadius.circular(6),
               ),
               child: Text(
                 widget.message,
-                style: TextStyle(color: Theme.of(context).colorScheme.onInverseSurface, fontSize: 12),
+                style: TextStyle(color: Theme.of(context).colorScheme.onInverseSurface, fontSize: 11),
                 textAlign: TextAlign.center,
               ),
             ),
@@ -65,7 +65,7 @@ class _CustomTapTooltipState extends State<CustomTapTooltip> {
 
     Overlay.of(context).insert(_overlayEntry!);
 
-    Future.delayed(const Duration(seconds: 3), () {
+    Future.delayed(const Duration(seconds: 4), () {
       _hideTooltip();
     });
   }

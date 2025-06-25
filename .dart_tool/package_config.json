@@ -74,12 +74,6 @@
       "languageVersion": "3.1"
     },
     {
-      "name": "cupertino_icons",
-      "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/cupertino_icons-1.0.8",
-      "packageUri": "lib/",
-      "languageVersion": "3.1"
-    },
-    {
       "name": "dart_super",
       "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/dart_super-1.4.8",
       "packageUri": "lib/",
@@ -264,12 +258,6 @@
       "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/flutter_super-1.4.9",
       "packageUri": "lib/",
       "languageVersion": "3.0"
-    },
-    {
-      "name": "flutter_svg",
-      "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/flutter_svg-2.0.17",
-      "packageUri": "lib/",
-      "languageVersion": "3.4"
     },
     {
       "name": "flutter_test",
@@ -468,12 +456,6 @@
       "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/path-1.9.1",
       "packageUri": "lib/",
       "languageVersion": "3.4"
-    },
-    {
-      "name": "path_parsing",
-      "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/path_parsing-1.1.0",
-      "packageUri": "lib/",
-      "languageVersion": "3.3"
     },
     {
       "name": "path_provider",
@@ -692,24 +674,6 @@
       "languageVersion": "3.4"
     },
     {
-      "name": "vector_graphics",
-      "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/vector_graphics-1.1.15",
-      "packageUri": "lib/",
-      "languageVersion": "3.4"
-    },
-    {
-      "name": "vector_graphics_codec",
-      "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/vector_graphics_codec-1.1.13",
-      "packageUri": "lib/",
-      "languageVersion": "3.4"
-    },
-    {
-      "name": "vector_graphics_compiler",
-      "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/vector_graphics_compiler-1.1.16",
-      "packageUri": "lib/",
-      "languageVersion": "3.4"
-    },
-    {
       "name": "vector_math",
       "rootUri": "file:///C:/Users/Nosa/AppData/Local/Pub/Cache/hosted/pub.dev/vector_math-2.1.4",
       "packageUri": "lib/",
@@ -800,7 +764,7 @@
       "languageVersion": "3.5"
     }
   ],
-  "generated": "2025-06-24T06:35:57.740862Z",
+  "generated": "2025-06-25T18:55:18.803770Z",
   "generator": "pub",
   "generatorVersion": "3.7.2",
   "flutterRoot": "file:///D:/Sdk/flutter",

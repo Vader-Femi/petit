@@ -12,6 +12,8 @@ import 'package:petit/common/data/Summary_report.dart';
 import 'package:petit/features/videos/data/video_data.dart';
 import 'package:video_player/video_player.dart';
 
+import '../../data/codec_config.dart';
+
 // import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
 VideosViewModel get getVideosViewModel => Super.init(VideosViewModel());
@@ -22,22 +24,22 @@ class VideosViewModel {
   final videoFile = RxT<File?>(null);
   final videoController = RxT<VideoPlayerController?>(null);
   final isCompressing = RxBool(false);
-  final cfrQualitySlider = RxInt(75);
+  final cfrQualitySlider = RxInt(50);
   final isFabOpen = RxT<bool>(true);
   final percentageComplete = RxInt(0);
-  final selectedPresetIndex = RxInt(6);
+  final selectedPresetIndex = RxInt(3);
 
   Session? _currentSession;
   List<String> ffmpegPresets = [
-    'Ultrafast',
-    'Superfast',
-    'Very fast',
-    'Faster',
-    'Fast',
-    'Medium', // 🟢 good default
-    'Slow',
-    'Slower',
-    'Very slow',
+    'ultrafast',
+    'superfast',
+    'veryfast',
+    'faster',
+    'fast',
+    'medium', // 🟢 good default
+    'slow',
+    'slower',
+    'veryslow',
   ];
 
   String get selectedPreset => ffmpegPresets[selectedPresetIndex.state];
@@ -156,7 +158,7 @@ class VideosViewModel {
       percentageComplete.state = 0;
 
       final data = await getVideoData(originalFile);
-      if (data == null || data.frameRate == null || data.pixelHeight == null || data.pixelWidth == null) {
+      if (data == null || data.frameRate == null || data.pixelHeight == null || data.pixelWidth == null || data.videoCodec == null) {
         await showResult('Error retrieving video properties');
         setIsCompressing(false);
         return null;
@@ -165,8 +167,12 @@ class VideosViewModel {
       final outputDir = await getTemporaryDirectory();
       final outPath = '${outputDir.path}/compressed_${DateTime.now().millisecondsSinceEpoch}.mp4';
 
-      final crf = (28 - ((cfrQualitySlider.state / 100) * (28 - 18))).round();
-      final command = "-i ${originalFile.path} -vcodec libx264 -crf $crf -preset $selectedPreset $outPath";
+      final codecConfig = getVcodecConfigFromCodec(data.videoCodec!);
+
+
+      final crf = (codecConfig.maxCrf - ((cfrQualitySlider.state / 100) * (codecConfig.maxCrf - codecConfig.minCrf))).round();
+
+      final command = "-i ${originalFile.path} -vcodec ${codecConfig.vcodec} -crf $crf -preset $selectedPreset $outPath";
 
       _currentSession  = await FFmpegKit.executeAsync(
         command,
@@ -238,6 +244,7 @@ class VideosViewModel {
     try {
       final session = await FFprobeKit.getMediaInformation(videoFile.path);
       final info = session.getMediaInformation();
+      print(info?.getAllProperties());
 
       if (info != null) {
         final videoStreams = info.getStreams().where((s) =>
@@ -258,6 +265,7 @@ class VideosViewModel {
             videoFile: videoFile,
             pixelWidth: videoStream.getWidth(),
             pixelHeight: videoStream.getHeight(),
+            videoCodec: videoStream.getCodec(),
             frameRate: frameRate
         );
       } else {

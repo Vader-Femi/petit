@@ -3,7 +3,7 @@ description: "An image compression application capable of compressing images in 
 
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 1.0.18+18
+version: 1.0.19+19
 
 environment:
   sdk: ^3.5.3
@@ -12,9 +12,9 @@ dependencies:
   flutter:
     sdk: flutter
 
-  cupertino_icons: ^1.0.8
-
-  flutter_svg: ^2.0.11
+#  cupertino_icons: ^1.0.8
+#
+#  flutter_svg: ^2.0.11
 
   #Set app launcher icons
   icons_launcher: ^3.0.0
@@ -73,9 +73,6 @@ dependencies:
 
   # Video player
   video_player: ^2.8.1
-
-  # Video compresser
-#  video_compress: ^3.1.1
 
   #Get video info
   ffmpeg_kit_flutter_new: ^2.0.0
