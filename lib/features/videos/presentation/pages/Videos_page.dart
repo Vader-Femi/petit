@@ -278,8 +278,7 @@ class _VideosPageState extends State<VideosPage> {
                             fontWeight: FontWeight.w700,
                             color: Theme.of(context)
                                 .colorScheme
-                                .primary
-                                .withValues(alpha: 0.8)),
+                                .onPrimaryContainer),
                       ),
                     ],
                   )
@@ -291,6 +290,9 @@ class _VideosPageState extends State<VideosPage> {
                     style: TextStyle(
                       fontSize: 50,
                       fontWeight: FontWeight.w700,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onPrimaryContainer
                     ),
                   )
                 : Container(),

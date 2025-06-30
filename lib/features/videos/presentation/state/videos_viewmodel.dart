@@ -1,4 +1,5 @@
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/ffmpeg_session.dart';
 import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:ffmpeg_kit_flutter_new/session.dart';
@@ -29,7 +30,7 @@ class VideosViewModel {
   final percentageComplete = RxInt(0);
   final selectedPresetIndex = RxInt(3);
 
-  Session? _currentSession;
+  FFmpegSession? _currentSession;
   List<String> ffmpegPresets = [
     'ultrafast',
     'superfast',
@@ -93,7 +94,6 @@ class VideosViewModel {
         await videoController.state?.initialize();
         videoFile.state = file;
 
-
         setIsLoading(false);
       } else {
         await showResult("No file picked!");
@@ -150,7 +150,7 @@ class VideosViewModel {
 
   Future<SummaryReport?> compressVideo({
     required Function(SummaryReport summaryReport) onComplete,
-}) async {
+  }) async {
     try {
       if (videoFile.state == null) return null;
       final originalFile = videoFile.state!;
@@ -158,25 +158,34 @@ class VideosViewModel {
       percentageComplete.state = 0;
 
       final data = await getVideoData(originalFile);
-      if (data == null || data.frameRate == null || data.pixelHeight == null || data.pixelWidth == null || data.videoCodec == null) {
+      if (data == null ||
+          data.frameRate == null ||
+          data.pixelHeight == null ||
+          data.pixelWidth == null ||
+          data.videoCodec == null) {
         await showResult('Error retrieving video properties');
         setIsCompressing(false);
         return null;
       }
 
       final outputDir = await getTemporaryDirectory();
-      final outPath = '${outputDir.path}/compressed_${DateTime.now().millisecondsSinceEpoch}.mp4';
+      final outPath =
+          '${outputDir.path}/compressed_${DateTime.now().millisecondsSinceEpoch}.mp4';
 
       final codecConfig = getVcodecConfigFromCodec(data.videoCodec!);
 
+      final crf = (codecConfig.maxCrf -
+              ((cfrQualitySlider.state / 100) *
+                  (codecConfig.maxCrf - codecConfig.minCrf)))
+          .round();
 
-      final crf = (codecConfig.maxCrf - ((cfrQualitySlider.state / 100) * (codecConfig.maxCrf - codecConfig.minCrf))).round();
+      final command =
+          "-i ${originalFile.path} -vcodec ${codecConfig.vcodec} -crf $crf -preset $selectedPreset $outPath";
 
-      final command = "-i ${originalFile.path} -vcodec ${codecConfig.vcodec} -crf $crf -preset $selectedPreset $outPath";
-
-      _currentSession  = await FFmpegKit.executeAsync(
+      _currentSession = await FFmpegKit.executeAsync(
         command,
             (session) async {
+
           final returnCode = await session.getReturnCode();
           if (ReturnCode.isSuccess(returnCode)) {
             // ✅ Success
@@ -220,10 +229,11 @@ class VideosViewModel {
             setIsLoading(false);
           }
         },
-            (log) => debugPrint('FFmpeg log: ${log.getMessage()}'),
-            (statistics) {
+        (log) => debugPrint('FFmpeg log: ${log.getMessage()}'),
+        (statistics) {
           final progress = statistics.getTime();
-          final duration = videoController.state?.value.duration.inMilliseconds ?? 1;
+          final duration =
+              videoController.state?.value.duration.inMilliseconds ?? 1;
           final percent = (progress / duration * 100).clamp(0, 100).toInt();
           percentageComplete.state = percent;
         },
@@ -238,8 +248,6 @@ class VideosViewModel {
     return null; // or return the summary in the callback above
   }
 
-
-
   Future<VideoData?> getVideoData(File videoFile) async {
     try {
       final session = await FFprobeKit.getMediaInformation(videoFile.path);
@@ -247,8 +255,8 @@ class VideosViewModel {
       print(info?.getAllProperties());
 
       if (info != null) {
-        final videoStreams = info.getStreams().where((s) =>
-        s.getType() == 'video');
+        final videoStreams =
+            info.getStreams().where((s) => s.getType() == 'video');
         final videoStream = videoStreams.first;
 
         String? frameRateStr = videoStream.getAverageFrameRate();
@@ -266,17 +274,15 @@ class VideosViewModel {
             pixelWidth: videoStream.getWidth(),
             pixelHeight: videoStream.getHeight(),
             videoCodec: videoStream.getCodec(),
-            frameRate: frameRate
-        );
+            frameRate: frameRate);
       } else {
         showResult('Could not retrieve media information.');
       }
-    } catch (e){
+    } catch (e) {
       showResult('Error retrieving media information: $e');
     }
     return null;
   }
-
 
   Future<void> saveLocalVideo(File compressedImage) async {
     try {
@@ -337,7 +343,11 @@ class VideosViewModel {
   }
 
   void cancelCompressingVideo() {
-    _currentSession?.cancel();
+    if (_currentSession != null) {
+      _currentSession!.cancel();
+    } else {
+      debugPrint("⚠️ Tried to cancel but session was null");
+    }
     setIsCompressing(false);
     setIsLoading(false);
   }

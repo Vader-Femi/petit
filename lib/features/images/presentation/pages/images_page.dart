@@ -239,8 +239,7 @@ class _ImagesPageState extends State<ImagesPage> {
                       fontWeight: FontWeight.w700,
                       color: Theme.of(context)
                           .colorScheme
-                          .primary
-                          .withValues(alpha: 0.8)),
+                          .onPrimaryContainer),
                 ),
               ],
                 )
