@@ -15,6 +15,10 @@ class HomeViewModel {
     this.isLoading.state = isLoading;
   }
 
+  void changeTab(int newTab) {
+    currentTabIndex.state = newTab;
+  }
+
   Future<void> showResult(String? result) async {
     this.result.state = result;
   }

@@ -45,10 +45,37 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+
 	<!-- Image picker permission -->
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Pick an image from your library</string>
+	<string>This app needs access to photos to process shared images</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Pick an image from camera</string>
+	<string>This app needs access to shared images from camera</string>
+
+
+    <!-- Share Images and videos -->
+	<key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Images</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.image</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Videos</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.movie</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

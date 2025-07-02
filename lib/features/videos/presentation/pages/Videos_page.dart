@@ -184,7 +184,7 @@ class _VideosPageState extends State<VideosPage> {
                           tootTipMessage: "Adjusts the compression level.\n"
                               "•Lossless = larger size, more clarity\n"
                               "•Compressed = smaller size, less clarity\n"
-                              "•Recommended = between Low and High",
+                              "•Recommended = Compressed, Low or Medium",
                           slider: Slider(
                             value:
                                 getVideosViewModel.cfrQualitySlider.state / 100,
@@ -208,7 +208,7 @@ class _VideosPageState extends State<VideosPage> {
                           tootTipMessage: "Choose a compression speed.\n"
                               "•Ultrafast = fastest, biggest file\n"
                               "•Very Slow = slower, smaller file\n"
-                              "•Recommended = between superfast and slow",
+                              "•Recommended = between fast and very slow",
                           slider: Slider(
                             value: getVideosViewModel.selectedPresetIndex.state
                                 .toDouble(),
@@ -350,76 +350,79 @@ class _VideosPageState extends State<VideosPage> {
           } else {
             return SingleChildScrollView(
               scrollDirection: Axis.horizontal,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  if (getVideosViewModel.isFabOpen.state) ...[
-                    SizedBox(width: 30),
-                    getVideosViewModel.videoController.state != null &&
-                            getVideosViewModel
-                                .videoController.state!.value.isInitialized
-                        ? FloatingActionButton(
-                            onPressed: () {
-                              setState(() {
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    if (getVideosViewModel.isFabOpen.state) ...[
+                      SizedBox(width: 30),
+                      getVideosViewModel.videoController.state != null &&
+                              getVideosViewModel
+                                  .videoController.state!.value.isInitialized
+                          ? FloatingActionButton(
+                              onPressed: () {
+                                setState(() {
+                                  getVideosViewModel
+                                          .videoController.state!.value.isPlaying
+                                      ? getVideosViewModel.videoController.state!
+                                          .pause()
+                                      : getVideosViewModel.videoController.state!
+                                          .play();
+                                });
+                              },
+                              child: Icon(
                                 getVideosViewModel
                                         .videoController.state!.value.isPlaying
-                                    ? getVideosViewModel.videoController.state!
-                                        .pause()
-                                    : getVideosViewModel.videoController.state!
-                                        .play();
-                              });
-                            },
-                            child: Icon(
-                              getVideosViewModel
-                                      .videoController.state!.value.isPlaying
-                                  ? Icons.pause
-                                  : Icons.play_arrow,
-                            ),
-                          )
-                        : Container(),
-                    SizedBox(width: 10),
-                    FloatingActionButton.extended(
-                      icon: const Icon(Icons.delete_outline),
-                      tooltip: "Remove video",
-                      onPressed: () async {
-                        getVideosViewModel.removeVideo();
-                      },
-                      label: const Text('Remove video'),
-                    ),
-                    SizedBox(width: 10),
-                    FloatingActionButton.extended(
-                      icon: const Icon(Icons.compress_outlined),
-                      tooltip: "Compress Video",
-                      onPressed: () async {
-                        await getVideosViewModel.compressVideo(
-                            onComplete: (summaryReport) {
-                          if (mounted) {
-                            _showCompressionSummaryDialog(
-                                context: context, summaryReport: summaryReport);
-                          }
+                                    ? Icons.pause
+                                    : Icons.play_arrow,
+                              ),
+                            )
+                          : Container(),
+                      SizedBox(width: 10),
+                      FloatingActionButton.extended(
+                        icon: const Icon(Icons.delete_outline),
+                        tooltip: "Remove video",
+                        onPressed: () async {
+                          getVideosViewModel.removeVideo();
+                        },
+                        label: const Text('Remove video'),
+                      ),
+                      SizedBox(width: 10),
+                      FloatingActionButton.extended(
+                        icon: const Icon(Icons.compress_outlined),
+                        tooltip: "Compress Video",
+                        onPressed: () async {
+                          await getVideosViewModel.compressVideo(
+                              onComplete: (summaryReport) {
+                            if (mounted) {
+                              _showCompressionSummaryDialog(
+                                  context: context, summaryReport: summaryReport);
+                            }
+                          });
+                        },
+                        label: const Text('Compress'),
+                      ),
+                    ],
+                    const SizedBox(width: 10),
+                    FloatingActionButton(
+                      heroTag: "toggle_fab",
+                      onPressed: () {
+                        setState(() {
+                          getVideosViewModel.isFabOpen.state =
+                              !getVideosViewModel.isFabOpen.state;
                         });
                       },
-                      label: const Text('Compress'),
+                      tooltip: getVideosViewModel.isFabOpen.state
+                          ? "Close Actions"
+                          : "Show Actions",
+                      child: Icon(getVideosViewModel.isFabOpen.state
+                          ? Icons.close
+                          : Icons.compress_outlined),
                     ),
                   ],
-                  const SizedBox(width: 10),
-                  FloatingActionButton(
-                    heroTag: "toggle_fab",
-                    onPressed: () {
-                      setState(() {
-                        getVideosViewModel.isFabOpen.state =
-                            !getVideosViewModel.isFabOpen.state;
-                      });
-                    },
-                    tooltip: getVideosViewModel.isFabOpen.state
-                        ? "Close Actions"
-                        : "Show Actions",
-                    child: Icon(getVideosViewModel.isFabOpen.state
-                        ? Icons.close
-                        : Icons.compress_outlined),
-                  ),
-                ],
+                ),
               ),
             );
           }

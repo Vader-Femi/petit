@@ -11,6 +11,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:petit/common/data/Summary_report.dart';
 import 'package:petit/features/videos/data/video_data.dart';
+import 'package:share_handler_platform_interface/src/data/messages.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../data/codec_config.dart';
@@ -25,10 +26,10 @@ class VideosViewModel {
   final videoFile = RxT<File?>(null);
   final videoController = RxT<VideoPlayerController?>(null);
   final isCompressing = RxBool(false);
-  final cfrQualitySlider = RxInt(50);
+  final cfrQualitySlider = RxInt(25);
   final isFabOpen = RxT<bool>(true);
   final percentageComplete = RxInt(0);
-  final selectedPresetIndex = RxInt(3);
+  final selectedPresetIndex = RxInt(6);
 
   FFmpegSession? _currentSession;
   List<String> ffmpegPresets = [
@@ -105,47 +106,23 @@ class VideosViewModel {
     }
   }
 
-  Future<void> addSharedImages(// List<SharedMediaFile>? sharedFiles
-      ) async {
-    // if (sharedFiles != null && sharedFiles.isNotEmpty) {
-    //
-    //   setIsLoading(
-    //     LoadingData(
-    //         isLoading: true,
-    //         completedSteps: null,
-    //         totalSteps: null,
-    //         progressCounter: null),
-    //   );
-    //
-    //   try {
-    //     pickedImages.state = [];
-    //     currentImage.state = null;
-    //     globalQualitySlider.state = null;
-    //     List<ImageData> picked = [];
-    //
-    //     for (var sharedFile in sharedFiles) {
-    //       final file = File(sharedFile.path);
-    //
-    //       final imageBytes = await file.readAsBytes();
-    //       final decodedImage = img.decodeImage(imageBytes);
-    //
-    //       picked.add(ImageData(
-    //         imageFile: File(file.path),
-    //         pixelWidth: decodedImage?.width ?? 1080,
-    //         pixelHeight: decodedImage?.height ?? 1080,
-    //         quality: 90,
-    //       ));
-    //     }
-    //
-    //     pickedImages.state = picked;
-    //     currentImage.state = picked[0];
-    //     currentImageIndex.state = 0;
-    //     setIsLoading(LoadingData(isLoading: false));
-    //   } catch (e) {
-    //     await showResult("Cannot access shared files - ${e.toString()}");
-    //     setIsLoading(LoadingData(isLoading: false));
-    //   }
-    // }
+  Future<void> addSharedVideo(List<SharedAttachment>? sharedFiles) async {
+    if (sharedFiles != null && sharedFiles.isNotEmpty) {
+      if (isCompressing.state) return;
+      try {
+        setIsLoading(true);
+
+        final file = File(sharedFiles.elementAt(0).path);
+        videoController.state = VideoPlayerController.file(file);
+        await videoController.state?.initialize();
+        videoFile.state = file;
+
+        setIsLoading(false);
+      } catch (e) {
+        await showResult("An error ocurred - ${e.toString()}");
+        setIsLoading(false);
+      }
+    }
   }
 
   Future<SummaryReport?> compressVideo({
@@ -184,8 +161,7 @@ class VideosViewModel {
 
       _currentSession = await FFmpegKit.executeAsync(
         command,
-            (session) async {
-
+        (session) async {
           final returnCode = await session.getReturnCode();
           if (ReturnCode.isSuccess(returnCode)) {
             // ✅ Success

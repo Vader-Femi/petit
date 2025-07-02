@@ -20,7 +20,7 @@ Widget buildSliderBox({
       borderRadius: BorderRadius.circular(16),
       boxShadow: [
         BoxShadow(
-          color: Theme.of(context).colorScheme.shadow,
+          color: Theme.of(context).colorScheme.shadow.withValues(alpha: 0.3),
           blurRadius: 8,
           offset: Offset(0, 4),
         ),

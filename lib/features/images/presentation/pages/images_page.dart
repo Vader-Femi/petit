@@ -167,7 +167,7 @@ class _ImagesPageState extends State<ImagesPage> {
                             showGlobalSwitch: getImagesViewModel.pickedImages.length > 1,
                             isGlobal: getImagesViewModel.globalQualitySlider.state != null,
                             onGlobalToggle: (value){
-                              getImagesViewModel.globalQualitySlider.state = value ? 90 : null;
+                              getImagesViewModel.globalQualitySlider.state = value ? 50 : null;
                             },
                           ),
                         // Reserve space for FABs
@@ -278,60 +278,63 @@ class _ImagesPageState extends State<ImagesPage> {
             } else {
               return SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    if (getImagesViewModel.isFabOpen.state) ...[
-                      FloatingActionButton.extended(
-                        icon: const Icon(Icons.compress_outlined),
-                        tooltip: "Compress Images",
-                        onPressed: () async {
-                          getImagesViewModel.completer = CancelableCompleter(
-                            onCancel: getImagesViewModel.cancelCompressingAllImages,
-                          );
+                child: Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      if (getImagesViewModel.isFabOpen.state) ...[
+                        FloatingActionButton.extended(
+                          icon: const Icon(Icons.compress_outlined),
+                          tooltip: "Compress Images",
+                          onPressed: () async {
+                            getImagesViewModel.completer = CancelableCompleter(
+                              onCancel: getImagesViewModel.cancelCompressingAllImages,
+                            );
 
-                          getImagesViewModel.completer.complete(getImagesViewModel
-                              .compressAllSelectedImages()
-                              .then((summaryReport) {
-                            if (summaryReport != null) {
-                              if (mounted) {
-                                _showCompressionSummaryDialog(
-                                    context: context,
-                                    summaryReport: summaryReport);
+                            getImagesViewModel.completer.complete(getImagesViewModel
+                                .compressAllSelectedImages()
+                                .then((summaryReport) {
+                              if (summaryReport != null) {
+                                if (mounted) {
+                                  _showCompressionSummaryDialog(
+                                      context: context,
+                                      summaryReport: summaryReport);
+                                }
                               }
-                            }
-                          }));
+                            }));
+                          },
+                          label: const Text('Compress'),
+                        ),
+                        SizedBox(width: 10),
+                        FloatingActionButton.extended(
+                          icon: const Icon(Icons.delete_outline),
+                          tooltip: "Remove images",
+                          onPressed: () async {
+                            getImagesViewModel.cancelCompressingAllImages();
+                          },
+                          label: const Text('Clear'),
+                        ),
+                      ],
+                      const SizedBox(width: 10),
+                      FloatingActionButton(
+                        heroTag: "toggle_fab",
+                        onPressed: () {
+                          setState(() {
+                            getImagesViewModel.isFabOpen.state =
+                                !getImagesViewModel.isFabOpen.state;
+                          });
                         },
-                        label: const Text('Compress'),
-                      ),
-                      SizedBox(width: 10),
-                      FloatingActionButton.extended(
-                        icon: const Icon(Icons.delete_outline),
-                        tooltip: "Remove images",
-                        onPressed: () async {
-                          getImagesViewModel.cancelCompressingAllImages();
-                        },
-                        label: const Text('Clear'),
+                        tooltip: getImagesViewModel.isFabOpen.state
+                            ? "Close Actions"
+                            : "Show Actions",
+                        child: Icon(getImagesViewModel.isFabOpen.state
+                            ? Icons.close
+                            : Icons.compress_outlined),
                       ),
                     ],
-                    const SizedBox(width: 10),
-                    FloatingActionButton(
-                      heroTag: "toggle_fab",
-                      onPressed: () {
-                        setState(() {
-                          getImagesViewModel.isFabOpen.state =
-                              !getImagesViewModel.isFabOpen.state;
-                        });
-                      },
-                      tooltip: getImagesViewModel.isFabOpen.state
-                          ? "Close Actions"
-                          : "Show Actions",
-                      child: Icon(getImagesViewModel.isFabOpen.state
-                          ? Icons.close
-                          : Icons.compress_outlined),
-                    ),
-                  ],
+                  ),
                 ),
               );
             }
