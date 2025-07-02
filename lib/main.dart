@@ -54,9 +54,7 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
   StreamSubscription<SharedMedia>? _intentStreamSubscription;
-  SharedMedia? _sharedMedia;
   final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
-
 
   @override
   void initState() {
@@ -70,29 +68,12 @@ class _MyAppState extends State<MyApp> {
     // Listen for shared media while app is running
     _intentStreamSubscription =
         handler.sharedMediaStream.listen((SharedMedia media) {
-      if (kDebugMode) {
-        print("Shared media received:");
-        print("Content: ${media.content}");
-        if (media.attachments != null) {
-          for (var attachment in media.attachments!) {
-            print("Attachment: ${attachment?.path} (${attachment?.type})");
-          }
-        }
-      }
-
-      setState(() {
-        _sharedMedia = media;
-      });
       _handleSharedMedia(media);
     });
 
     // Check for initial shared media (when app is launched via share)
     handler.getInitialSharedMedia().then((SharedMedia? media) {
       if (media != null) {
-        debugPrint("Initial shared media found");
-        setState(() {
-          _sharedMedia = media;
-        });
         _handleSharedMedia(media);
       }
     });
@@ -101,8 +82,8 @@ class _MyAppState extends State<MyApp> {
   void _handleSharedMedia(SharedMedia media) {
     // Handle shared content based on what's available
     if (media.attachments != null && media.attachments!.isNotEmpty) {
-      // Convert List<Attachment> to List<SharedAttachment>
 
+      // Convert List<Attachment> to List<SharedAttachment>
       List<SharedAttachment> sharedAttachments = media.attachments!
           .map((attachment) => SharedAttachment(
                 path: attachment!.path,
@@ -177,13 +158,13 @@ class _MyAppState extends State<MyApp> {
       //       (Route<dynamic> route) => false, // removes all previous routes
       // );
 
-    //   Navigator.pushReplacement(
-    //     context,
-    //     MaterialPageRoute(
-    //         builder: (_) => HomeScreen(
-    //             sharedMedia: SharedMediaDetails(
-    //                 type: SharedMediaType.image, sharedAttachment: images))),
-    //   );
+      //   Navigator.pushReplacement(
+      //     context,
+      //     MaterialPageRoute(
+      //         builder: (_) => HomeScreen(
+      //             sharedMedia: SharedMediaDetails(
+      //                 type: SharedMediaType.image, sharedAttachment: images))),
+      //   );
 
       navigatorKey.currentState?.pushAndRemoveUntil(
         MaterialPageRoute(
@@ -194,7 +175,7 @@ class _MyAppState extends State<MyApp> {
             ),
           ),
         ),
-            (route) => false,
+        (route) => false,
       );
     });
   }
@@ -229,19 +210,24 @@ class _MyAppState extends State<MyApp> {
             ),
           ),
         ),
-            (route) => false,
+        (route) => false,
       );
     });
   }
 
   void showErrorMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        duration: const Duration(seconds: 3),
-      ),
-    );
-    debugPrint(message);
+    WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
+      final context = navigatorKey.currentContext;
+      if (context != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        debugPrint(message);
+      }
+    });
   }
 
   @override
