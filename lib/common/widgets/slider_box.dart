@@ -16,7 +16,7 @@ Widget buildSliderBox({
   return Container(
     padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
     decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.surfaceContainer,
+      color: Theme.of(context).colorScheme.surfaceContainer,//primaryContainer.withValues(alpha: 0.8),
       borderRadius: BorderRadius.circular(16),
       boxShadow: [
         BoxShadow(

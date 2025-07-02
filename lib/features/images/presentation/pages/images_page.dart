@@ -18,13 +18,11 @@ class ImagesPage extends StatefulWidget {
 
   // final List<SharedMediaFile>? sharedFiles;
 
-
   @override
   State<ImagesPage> createState() => _ImagesPageState();
 }
 
 class _ImagesPageState extends State<ImagesPage> {
-
   @override
   void initState() {
     super.initState();
@@ -32,7 +30,6 @@ class _ImagesPageState extends State<ImagesPage> {
         // widget.sharedFiles
         );
   }
-
 
   void _showCompressionSummaryDialog({
     required BuildContext context,
@@ -107,8 +104,7 @@ class _ImagesPageState extends State<ImagesPage> {
                             carouselController: carouselSliderController,
                             options: CarouselOptions(
                                 autoPlay: false,
-                                enlargeStrategy:
-                                    CenterPageEnlargeStrategy.zoom,
+                                enlargeStrategy: CenterPageEnlargeStrategy.zoom,
                                 enlargeCenterPage: true,
                                 pageSnapping: true,
                                 scrollDirection: Axis.horizontal,
@@ -144,14 +140,17 @@ class _ImagesPageState extends State<ImagesPage> {
                                 "•Middle = same clarity, smaller size\n"
                                 "•Recommended = Between 20% - 98%",
                             slider: Slider(
-                              value:((getImagesViewModel.globalQualitySlider.state ??
-                                        getImagesViewModel.currentImage.state!.quality) /
-                                        100).clamp(0.0, 1.0),
+                              value: ((getImagesViewModel
+                                              .globalQualitySlider.state ??
+                                          getImagesViewModel
+                                              .currentImage.state!.quality) /
+                                      100)
+                                  .clamp(0.0, 1.0),
                               min: 0,
                               max: 1,
                               divisions: 99,
-                              label: "${(getImagesViewModel.globalQualitySlider.state ??
-                                        getImagesViewModel.currentImage.state!.quality).round()}%",
+                              label:
+                                  "${(getImagesViewModel.globalQualitySlider.state ?? getImagesViewModel.currentImage.state!.quality).round()}%",
                               onChanged: (value) {
                                 if (getImagesViewModel
                                         .globalQualitySlider.state !=
@@ -164,10 +163,14 @@ class _ImagesPageState extends State<ImagesPage> {
                                 }
                               },
                             ),
-                            showGlobalSwitch: getImagesViewModel.pickedImages.length > 1,
-                            isGlobal: getImagesViewModel.globalQualitySlider.state != null,
-                            onGlobalToggle: (value){
-                              getImagesViewModel.globalQualitySlider.state = value ? 50 : null;
+                            showGlobalSwitch:
+                                getImagesViewModel.pickedImages.length > 1,
+                            isGlobal:
+                                getImagesViewModel.globalQualitySlider.state !=
+                                    null,
+                            onGlobalToggle: (value) {
+                              getImagesViewModel.globalQualitySlider.state =
+                                  value ? 50 : null;
                             },
                           ),
                         // Reserve space for FABs
@@ -177,7 +180,7 @@ class _ImagesPageState extends State<ImagesPage> {
                   ),
             getImagesViewModel.isLoading.state.isLoading
                 ? Container(
-                    color: Colors.black.withValues(alpha: 0.75),
+                    color: Colors.black.withValues(alpha: 0.85),
                   )
                 : Container(),
             getImagesViewModel.isLoading.state.isLoading
@@ -204,50 +207,48 @@ class _ImagesPageState extends State<ImagesPage> {
                           style: TextStyle(
                               fontSize: 30,
                               fontWeight: FontWeight.w900,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onPrimaryContainer),
+                              color: Theme.of(context).colorScheme.primary),
                         ),
                       )
                 : Container(),
             (getImagesViewModel.isLoading.state.isLoading &&
                     getImagesViewModel.isLoading.state.totalSteps != null)
                 ? Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                SizedBox(
-                  height: 40,
-                ),
-                CircularStepProgressIndicator(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        height: 40,
+                      ),
+                      CircularStepProgressIndicator(
                         totalSteps:
                             getImagesViewModel.isLoading.state.totalSteps ?? 1,
                         stepSize: 20,
                         selectedStepSize: 30,
                         currentStep:
-                            getImagesViewModel.isLoading.state.completedSteps ?? 1,
+                            getImagesViewModel.isLoading.state.completedSteps ??
+                                1,
                         width: 180,
                         height: 180,
                         padding: 0.02,
-                        selectedColor: Colors.green,
-                        unselectedColor: Colors.red,
+                        selectedColor: Theme.of(context).colorScheme.primary,
+                        unselectedColor: Theme.of(context).colorScheme.surfaceContainer,
                       ),
-                Text(
-                  "Please keep app open\nwhile compressing",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onPrimaryContainer),
-                ),
-              ],
-                )
+                      Text(
+                        "Please keep app open\nwhile compressing",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: Theme.of(context).colorScheme.primary
+
+                        ),
+                      ),
+                    ],
+                  )
                 : Container(),
           ],
         );
       }),
-
       floatingActionButton: SuperBuilder(
         builder: (context) {
           if (getImagesViewModel.pickedImages.isEmpty) {
@@ -290,12 +291,14 @@ class _ImagesPageState extends State<ImagesPage> {
                           tooltip: "Compress Images",
                           onPressed: () async {
                             getImagesViewModel.completer = CancelableCompleter(
-                              onCancel: getImagesViewModel.cancelCompressingAllImages,
+                              onCancel:
+                                  getImagesViewModel.cancelCompressingAllImages,
                             );
 
-                            getImagesViewModel.completer.complete(getImagesViewModel
-                                .compressAllSelectedImages()
-                                .then((summaryReport) {
+                            getImagesViewModel.completer.complete(
+                                getImagesViewModel
+                                    .compressAllSelectedImages()
+                                    .then((summaryReport) {
                               if (summaryReport != null) {
                                 if (mounted) {
                                   _showCompressionSummaryDialog(

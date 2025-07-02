@@ -243,7 +243,7 @@ class _VideosPageState extends State<VideosPage> {
             (getVideosViewModel.isLoading.state ||
                     getVideosViewModel.isCompressing.state)
                 ? Container(
-                    color: Colors.black.withValues(alpha: 0.75),
+                    color: Colors.black.withValues(alpha: 0.85),
                   )
                 : Container(),
             (getVideosViewModel.isLoading.state)
@@ -276,9 +276,7 @@ class _VideosPageState extends State<VideosPage> {
                         style: TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.w700,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onPrimaryContainer),
+                            color: Theme.of(context).colorScheme.primary),
                       ),
                     ],
                   )
@@ -288,12 +286,9 @@ class _VideosPageState extends State<VideosPage> {
                     "${getVideosViewModel.percentageComplete.state}%",
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      fontSize: 50,
-                      fontWeight: FontWeight.w700,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onPrimaryContainer
-                    ),
+                        fontSize: 50,
+                        fontWeight: FontWeight.w700,
+                        color: Theme.of(context).colorScheme.primary),
                   )
                 : Container(),
             // else ...[
@@ -335,18 +330,22 @@ class _VideosPageState extends State<VideosPage> {
           );
         } else {
           if (getVideosViewModel.isCompressing.state) {
-            return FloatingActionButton.extended(
-              icon: const Icon(Icons.clear),
-              tooltip: "Cancel compression ",
-              onPressed: () async {
-                try {
-                  getVideosViewModel.cancelCompressingVideo();
-                } catch (e) {
-                  debugPrint('Error during cancel: $e');
-                }
-              },
-              label: const Text('Cancel'),
-            );
+            if (getVideosViewModel.currentSession.state != null ) {
+              return FloatingActionButton.extended(
+                icon: const Icon(Icons.clear),
+                tooltip: "Cancel compression ",
+                onPressed: () async {
+                  try {
+                    getVideosViewModel.cancelCompressingVideo();
+                  } catch (e) {
+                    debugPrint('Error during cancel: $e');
+                  }
+                },
+                label: const Text('Cancel'),
+              );
+            } else {
+              return Container();
+            }
           } else {
             return SingleChildScrollView(
               scrollDirection: Axis.horizontal,
@@ -364,11 +363,13 @@ class _VideosPageState extends State<VideosPage> {
                           ? FloatingActionButton(
                               onPressed: () {
                                 setState(() {
-                                  getVideosViewModel
-                                          .videoController.state!.value.isPlaying
-                                      ? getVideosViewModel.videoController.state!
+                                  getVideosViewModel.videoController.state!
+                                          .value.isPlaying
+                                      ? getVideosViewModel
+                                          .videoController.state!
                                           .pause()
-                                      : getVideosViewModel.videoController.state!
+                                      : getVideosViewModel
+                                          .videoController.state!
                                           .play();
                                 });
                               },
@@ -398,7 +399,8 @@ class _VideosPageState extends State<VideosPage> {
                               onComplete: (summaryReport) {
                             if (mounted) {
                               _showCompressionSummaryDialog(
-                                  context: context, summaryReport: summaryReport);
+                                  context: context,
+                                  summaryReport: summaryReport);
                             }
                           });
                         },

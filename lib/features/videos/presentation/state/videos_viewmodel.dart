@@ -30,8 +30,8 @@ class VideosViewModel {
   final isFabOpen = RxT<bool>(true);
   final percentageComplete = RxInt(0);
   final selectedPresetIndex = RxInt(6);
+  final currentSession = RxT<FFmpegSession?>(null);
 
-  FFmpegSession? _currentSession;
   List<String> ffmpegPresets = [
     'ultrafast',
     'superfast',
@@ -129,6 +129,8 @@ class VideosViewModel {
     required Function(SummaryReport summaryReport) onComplete,
   }) async {
     try {
+      currentSession.state?.cancel();
+      currentSession.state = null;
       if (videoFile.state == null) return null;
       final originalFile = videoFile.state!;
       setIsCompressing(true);
@@ -159,7 +161,7 @@ class VideosViewModel {
       final command =
           "-i ${originalFile.path} -vcodec ${codecConfig.vcodec} -crf $crf -preset $selectedPreset $outPath";
 
-      _currentSession = await FFmpegKit.executeAsync(
+      currentSession.state = await FFmpegKit.executeAsync(
         command,
         (session) async {
           final returnCode = await session.getReturnCode();
@@ -319,12 +321,13 @@ class VideosViewModel {
   }
 
   void cancelCompressingVideo() {
-    if (_currentSession != null) {
-      _currentSession!.cancel();
+    if (currentSession.state != null) {
+      currentSession.state!.cancel();
+      currentSession.state = null;
+      setIsCompressing(false);
+      setIsLoading(false);
     } else {
       debugPrint("⚠️ Tried to cancel but session was null");
     }
-    setIsCompressing(false);
-    setIsLoading(false);
   }
 }
