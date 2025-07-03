@@ -1,5 +1,5 @@
 import 'dart:ui';
-import 'package:async/src/cancelable_operation.dart';
+import 'package:async/async.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'dart:io';
@@ -12,9 +12,7 @@ import 'package:image_size_getter/file_input.dart';
 import 'package:image_size_getter/image_size_getter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:petit/features/images/data/image_data.dart';
-import 'package:share_handler_platform_interface/src/data/messages.dart';
-
-// import 'package:receive_sharing_intent/receive_sharing_intent.dart';
+import 'package:share_handler/share_handler.dart';
 import '../../data/loading_data.dart';
 import '../../../../common/data/Summary_report.dart';
 

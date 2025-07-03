@@ -154,7 +154,7 @@ class _HomeScreenState extends State<HomeScreen> {
               NavigationDestination(
                 icon: Icon(Icons.videocam_outlined),
                 selectedIcon: Icon(Icons.videocam),
-                label: 'Videos (Beta)',
+                label: 'Videos',
               ),
             ],
           ),

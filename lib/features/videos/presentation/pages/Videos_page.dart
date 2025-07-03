@@ -179,20 +179,20 @@ class _VideosPageState extends State<VideosPage> {
                         buildSliderBox(
                           context: context,
                           label: "Compression Level",
-                          minValue: "Compressed",
-                          maxValue: "Lossless",
+                          minValue: getVideosViewModel.getLabelForCRFSlider(0),
+                          maxValue: getVideosViewModel.getLabelForCRFSlider(100),
                           tootTipMessage: "Adjusts the compression level.\n"
-                              "•Lossless = larger size, more clarity\n"
-                              "•Compressed = smaller size, less clarity\n"
-                              "•Recommended = Compressed, Low or Medium",
+                              "•${getVideosViewModel.getLabelForCRFSlider(0)} = smallest size, less clarity\n"
+                              "•${getVideosViewModel.getLabelForCRFSlider(80)} = smaller size, more clarity\n"
+                              "•Recommended = ${getVideosViewModel.getLabelForCRFSlider(60)}",
                           slider: Slider(
                             value:
                                 getVideosViewModel.cfrQualitySlider.state / 100,
                             min: 0,
                             max: 1,
                             divisions: 4,
-                            label: getVideosViewModel.getLabelForCRFSlider(
-                                getVideosViewModel.cfrQualitySlider.state),
+                            label: "${getVideosViewModel.getLabelForCRFSlider(
+                                getVideosViewModel.cfrQualitySlider.state)} Compression",
                             onChanged: (value) {
                               getVideosViewModel
                                   .updateGlobalQualitySlider(value);
@@ -202,13 +202,13 @@ class _VideosPageState extends State<VideosPage> {
                         const SizedBox(height: 12),
                         buildSliderBox(
                           context: context,
-                          label: "Compression Speed",
-                          minValue: "Ultra fast",
-                          maxValue: "Very Slow",
-                          tootTipMessage: "Choose a compression speed.\n"
-                              "•Ultrafast = fastest, biggest file\n"
-                              "•Very Slow = slower, smaller file\n"
-                              "•Recommended = between fast and very slow",
+                          label: "Desired File Size",
+                          minValue: getVideosViewModel.ffmpegPresets.first.desc,
+                          maxValue: getVideosViewModel.ffmpegPresets.last.desc,
+                          tootTipMessage: //"Choose a desired file size.\n"
+                              "•${getVideosViewModel.ffmpegPresets.first.desc} = For quick sharing\n"
+                              "•${getVideosViewModel.ffmpegPresets[1].desc} = For social media\n"
+                              "•${getVideosViewModel.ffmpegPresets.last.desc} = For archival",
                           slider: Slider(
                             value: getVideosViewModel.selectedPresetIndex.state
                                 .toDouble(),
@@ -218,7 +218,7 @@ class _VideosPageState extends State<VideosPage> {
                             divisions:
                                 getVideosViewModel.ffmpegPresets.length - 1,
                             label: getVideosViewModel.ffmpegPresets[
-                                getVideosViewModel.selectedPresetIndex.state],
+                                getVideosViewModel.selectedPresetIndex.state].desc,
                             onChanged: (value) {
                               getVideosViewModel.setPresetIndex(value.toInt());
                             },

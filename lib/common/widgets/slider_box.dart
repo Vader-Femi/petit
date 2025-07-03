@@ -7,8 +7,8 @@ Widget buildSliderBox({
   required String label,
   required String minValue,
   required String maxValue,
-  required String tootTipMessage,
   required Widget slider,
+  String? tootTipMessage,
   bool showGlobalSwitch = false,
   bool isGlobal = false,
   ValueChanged<bool>? onGlobalToggle,
@@ -44,7 +44,7 @@ Widget buildSliderBox({
             //   showDuration: Duration(seconds: 5),
             //   child: Icon(Icons.info_outline, size: 18),
             // ),
-
+            if (tootTipMessage != null)
             CustomTapTooltip(
               message: tootTipMessage,
               child: Icon(Icons.info_outline, size: 18),

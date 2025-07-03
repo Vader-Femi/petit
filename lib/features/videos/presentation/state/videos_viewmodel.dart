@@ -2,7 +2,6 @@ import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_session.dart';
 import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
-import 'package:ffmpeg_kit_flutter_new/session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'dart:io';
@@ -10,13 +9,11 @@ import 'package:gallery_saver_plus/gallery_saver.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:petit/common/data/Summary_report.dart';
+import 'package:petit/features/videos/data/slider_value.dart';
 import 'package:petit/features/videos/data/video_data.dart';
-import 'package:share_handler_platform_interface/src/data/messages.dart';
+import 'package:share_handler/share_handler.dart';
 import 'package:video_player/video_player.dart';
-
 import '../../data/codec_config.dart';
-
-// import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
 VideosViewModel get getVideosViewModel => Super.init(VideosViewModel());
 
@@ -26,32 +23,30 @@ class VideosViewModel {
   final videoFile = RxT<File?>(null);
   final videoController = RxT<VideoPlayerController?>(null);
   final isCompressing = RxBool(false);
-  final cfrQualitySlider = RxInt(25);
-  final isFabOpen = RxT<bool>(true);
+  final cfrQualitySlider = RxInt(60);
   final percentageComplete = RxInt(0);
-  final selectedPresetIndex = RxInt(6);
+  final selectedPresetIndex = RxInt(1);
+  final isFabOpen = RxT<bool>(true);
   final currentSession = RxT<FFmpegSession?>(null);
 
-  List<String> ffmpegPresets = [
-    'ultrafast',
-    'superfast',
-    'veryfast',
-    'faster',
-    'fast',
-    'medium', // 🟢 good default
-    'slow',
-    'slower',
-    'veryslow',
+  List<SliderValue> ffmpegPresets = [
+    // SliderValue(value: "ultrafast", desc: "ultrafast"),
+    // SliderValue(value: "superfast", desc: "superfast"),
+    // SliderValue(value: "veryfast", desc: "veryfast"),
+    // SliderValue(value: "faster", desc: "faster"),
+    SliderValue(value: "fast", desc: "Smallest File"),
+    SliderValue(value: "medium", desc: "Balanced File"), // 🟢 good default
+    SliderValue(value: "slow", desc: "Best Quality"),
+    // SliderValue(value: "slower", desc: "slower"),
+    // SliderValue(value: "veryslow", desc: "veryslow"),
   ];
 
-  String get selectedPreset => ffmpegPresets[selectedPresetIndex.state];
-
   String getLabelForCRFSlider(int value) {
-    if (value <= 10) return "Compressed";
-    if (value <= 25) return "Low";
-    if (value <= 50) return "Medium";
-    if (value <= 75) return "High";
-    return "Lossless";
+    if (value <= 20) return "Heavy";        // 0-20 (CRF 28-26)
+    if (value <= 40) return "Moderate";         // 21-40 (CRF 25-23)
+    if (value <= 60) return "Light";         // 41-60 (CRF 23-21)
+    if (value <= 80) return "Very Light";    // 61-80 (CRF 21-19)
+    return "Minimal";                       // 81-100 (CRF 19-18)
   }
 
   void setIsLoading(bool isLoading) {
@@ -69,10 +64,6 @@ class VideosViewModel {
   void setPresetIndex(int index) {
     selectedPresetIndex.state = index;
   }
-
-  // void setPreset(String newPreset) {
-  //   selectedPreset = newPreset;
-  // }
 
   Future<void> showResult(String? result) async {
     this.result.state = result;
@@ -101,7 +92,7 @@ class VideosViewModel {
         setIsLoading(false);
       }
     } catch (e) {
-      await showResult("An error ocurred - ${e.toString()}");
+      await showResult("An error occurred - ${e.toString()}");
       setIsLoading(false);
     }
   }
@@ -119,7 +110,7 @@ class VideosViewModel {
 
         setIsLoading(false);
       } catch (e) {
-        await showResult("An error ocurred - ${e.toString()}");
+        await showResult("An error occurred - ${e.toString()}");
         setIsLoading(false);
       }
     }
@@ -153,10 +144,14 @@ class VideosViewModel {
 
       final codecConfig = getVcodecConfigFromCodec(data.videoCodec!);
 
-      final crf = (codecConfig.maxCrf -
+      final crf = (codecConfig.minCrf +
               ((cfrQualitySlider.state / 100) *
                   (codecConfig.maxCrf - codecConfig.minCrf)))
           .round();
+
+      debugPrint("CRF: $crf");
+
+      final selectedPreset = ffmpegPresets[selectedPresetIndex.state].value;
 
       final command =
           "-i ${originalFile.path} -vcodec ${codecConfig.vcodec} -crf $crf -preset $selectedPreset $outPath";
@@ -189,7 +184,7 @@ class VideosViewModel {
             setIsCompressing(false);
             setIsLoading(false);
 
-            final path = Platform.isAndroid ? "Pictures/Petit" : "Photos";
+            final path = Platform.isAndroid ? "Movies/Petit" : "Photos";
             final summary = SummaryReport(
               originalSizeBytes: formatBytes(sizeBefore),
               compressedSizeBytes: formatBytes(sizeAfter),
@@ -230,7 +225,6 @@ class VideosViewModel {
     try {
       final session = await FFprobeKit.getMediaInformation(videoFile.path);
       final info = session.getMediaInformation();
-      print(info?.getAllProperties());
 
       if (info != null) {
         final videoStreams =
@@ -266,7 +260,7 @@ class VideosViewModel {
     try {
       await GallerySaver.saveVideo(compressedImage.path, albumName: "Petit");
     } catch (e) {
-      await showResult("Error ocurred - ${e.toString()}");
+      await showResult("Error occurred - ${e.toString()}");
     }
   }
 

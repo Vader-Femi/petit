@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'package:flutter_super/flutter_super.dart';
 
-class VideoData with SuperModel {
+class VideoData {
   final File videoFile;
   final int? pixelWidth;
   final int? pixelHeight;
