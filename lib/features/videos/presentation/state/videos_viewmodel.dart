@@ -23,7 +23,7 @@ class VideosViewModel {
   final videoFile = RxT<File?>(null);
   final videoController = RxT<VideoPlayerController?>(null);
   final isCompressing = RxBool(false);
-  final cfrQualitySlider = RxInt(60);
+  final cfrQualitySlider = RxInt(80);
   final percentageComplete = RxInt(0);
   final selectedPresetIndex = RxInt(1);
   final isFabOpen = RxT<bool>(true);
@@ -34,19 +34,19 @@ class VideosViewModel {
     // SliderValue(value: "superfast", desc: "superfast"),
     // SliderValue(value: "veryfast", desc: "veryfast"),
     // SliderValue(value: "faster", desc: "faster"),
-    SliderValue(value: "fast", desc: "Smallest File"),
+    SliderValue(value: "fast", desc: "Best Quality"),
     SliderValue(value: "medium", desc: "Balanced File"), // 🟢 good default
-    SliderValue(value: "slow", desc: "Best Quality"),
+    SliderValue(value: "slow", desc: "Smallest File"),
     // SliderValue(value: "slower", desc: "slower"),
     // SliderValue(value: "veryslow", desc: "veryslow"),
   ];
 
   String getLabelForCRFSlider(int value) {
-    if (value <= 20) return "Heavy";        // 0-20 (CRF 28-26)
-    if (value <= 40) return "Moderate";         // 21-40 (CRF 25-23)
-    if (value <= 60) return "Light";         // 41-60 (CRF 23-21)
-    if (value <= 80) return "Very Light";    // 61-80 (CRF 21-19)
-    return "Minimal";                       // 81-100 (CRF 19-18)
+    if (value <= 20) return "Minimal";
+    if (value <= 40) return "Very Light";
+    if (value <= 60) return "Light";
+    if (value <= 80) return "Moderate";
+    return "Heavy";
   }
 
   void setIsLoading(bool isLoading) {
@@ -69,7 +69,7 @@ class VideosViewModel {
     this.result.state = result;
   }
 
-  void updateGlobalQualitySlider(double value) {
+  void updateCfrQualitySlider(double value) {
     cfrQualitySlider.state = (value * 100).toInt();
   }
 
@@ -148,8 +148,6 @@ class VideosViewModel {
               ((cfrQualitySlider.state / 100) *
                   (codecConfig.maxCrf - codecConfig.minCrf)))
           .round();
-
-      debugPrint("CRF: $crf");
 
       final selectedPreset = ffmpegPresets[selectedPresetIndex.state].value;
 

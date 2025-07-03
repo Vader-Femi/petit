@@ -84,93 +84,6 @@ class _VideosPageState extends State<VideosPage> {
                         ),
                       ),
                     ),
-                    // Row(
-                    //   children: [
-                    //     Text(
-                    //         "Quality: ${getVideosViewModel.globalQualitySlider.state}%"),
-                    //     Expanded(
-                    //         child: Slider(
-                    //             value: ((getVideosViewModel
-                    //                     .globalQualitySlider.state
-                    //                     .toDouble()) /
-                    //                 100),
-                    //             onChanged: (value) => getVideosViewModel
-                    //                 .updateGlobalQualitySlider(value)))
-                    //   ],
-                    // ),
-
-                    /*
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: const [
-                            Text("Compressed"), // CRF 35
-                            // Text("Low"),         // CRF 30
-                            // Text("Medium"),      // CRF 26
-                            // Text("High"),        // CRF 22
-                            Text("Ultra"), // CRF 35
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Slider(
-                          value: getVideosViewModel.globalQualitySlider.state
-                              .toDouble(),
-                          min: 0,
-                          max: 100,
-                          divisions: 4,
-                          // 5 points = 4 divisions
-                          label: getVideosViewModel.getLabelForSlider(
-                              getVideosViewModel.globalQualitySlider.state),
-                          onChanged: (value) {
-                            final snapped = (value / 25).round() * 25;
-                            getVideosViewModel
-                                .updateGlobalQualitySlider(snapped / 100);
-                          },
-                        ),
-                      ],
-                    ),
-
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text("Speed"),
-                            Text("Quality"),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Slider(
-                          value: getVideosViewModel.selectedPresetIndex.state
-                              .toDouble(),
-                          min: 0,
-                          max: (getVideosViewModel.ffmpegPresets.length - 1)
-                              .toDouble(),
-                          divisions:
-                              getVideosViewModel.ffmpegPresets.length - 1,
-                          label: getVideosViewModel.selectedPreset,
-                          onChanged: (value) {
-                            getVideosViewModel.setPresetIndex(value.round());
-                          },
-                        ),
-
-                      ],
-                    ),
-
-                    // Tooltip(
-                    //   message: "Choose a compression preset.\n"
-                    //       "• ultrafast = fastest, biggest file\n"
-                    //       "• slower = slower, smaller file\n"
-                    //       "Higher compression = smaller size but slower.",
-                    //   waitDuration: Duration(milliseconds: 300),
-                    //   showDuration: Duration(seconds: 5),
-                    //   child: Icon(Icons.info_outline, size: 18),
-                    // ),
-
-                    */
 
                     const SizedBox(height: 12),
 
@@ -182,9 +95,9 @@ class _VideosPageState extends State<VideosPage> {
                           minValue: getVideosViewModel.getLabelForCRFSlider(0),
                           maxValue: getVideosViewModel.getLabelForCRFSlider(100),
                           tootTipMessage: "Adjusts the compression level.\n"
-                              "•${getVideosViewModel.getLabelForCRFSlider(0)} = smallest size, less clarity\n"
-                              "•${getVideosViewModel.getLabelForCRFSlider(80)} = smaller size, more clarity\n"
-                              "•Recommended = ${getVideosViewModel.getLabelForCRFSlider(60)}",
+                              "•${getVideosViewModel.getLabelForCRFSlider(100)} = smallest size, less clarity\n"
+                              "•${getVideosViewModel.getLabelForCRFSlider(0)} = smaller size, more clarity\n"
+                              "•Recommended = ${getVideosViewModel.getLabelForCRFSlider(80)}",
                           slider: Slider(
                             value:
                                 getVideosViewModel.cfrQualitySlider.state / 100,
@@ -195,7 +108,7 @@ class _VideosPageState extends State<VideosPage> {
                                 getVideosViewModel.cfrQualitySlider.state)} Compression",
                             onChanged: (value) {
                               getVideosViewModel
-                                  .updateGlobalQualitySlider(value);
+                                  .updateCfrQualitySlider(value);
                             },
                           ),
                         ),
@@ -206,9 +119,9 @@ class _VideosPageState extends State<VideosPage> {
                           minValue: getVideosViewModel.ffmpegPresets.first.desc,
                           maxValue: getVideosViewModel.ffmpegPresets.last.desc,
                           tootTipMessage: //"Choose a desired file size.\n"
-                              "•${getVideosViewModel.ffmpegPresets.first.desc} = For quick sharing\n"
+                              "•${getVideosViewModel.ffmpegPresets.first.desc} = For archival\n"
                               "•${getVideosViewModel.ffmpegPresets[1].desc} = For social media\n"
-                              "•${getVideosViewModel.ffmpegPresets.last.desc} = For archival",
+                              "•${getVideosViewModel.ffmpegPresets.last.desc} = For quick sharing",
                           slider: Slider(
                             value: getVideosViewModel.selectedPresetIndex.state
                                 .toDouble(),
