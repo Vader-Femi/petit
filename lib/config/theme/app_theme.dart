@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:petit/config/theme/theme.dart';
 
+
 class AppTheme {
   static final lightColourScheme = MaterialTheme.lightMediumContrastScheme();
   static final darkColourScheme = MaterialTheme.darkScheme();

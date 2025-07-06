@@ -22,7 +22,7 @@ A Flutter image and video compression application capable of compressing videos 
 ---
 This app makes your images and videos smaller in size so they take up less space and send faster — without losing quality. And it works completely offline.
 
-It works with different types of images like JPG, PNG, HEIF, and HEIC.
+It works with different types of images like JPG, PNG, HEIF, and HEIC or videos like H265, H265 or VP9.
 
 Just choose your pictures or video, pick the quality you want, tap “Compress,” and your smaller images will be saved automatically.
 
