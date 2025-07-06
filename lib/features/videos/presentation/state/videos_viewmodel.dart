@@ -2,6 +2,7 @@ import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_session.dart';
 import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'dart:io';
@@ -182,7 +183,13 @@ class VideosViewModel {
             setIsCompressing(false);
             setIsLoading(false);
 
-            final path = Platform.isAndroid ? "Movies/Petit" : "Photos";
+            final String path;
+            if (!kIsWeb) {
+            path = Platform.isAndroid ? "Movies/Petit" : "Photos";
+            } else {
+              path = "Probably downloads";
+            }
+
             final summary = SummaryReport(
               originalSizeBytes: formatBytes(sizeBefore),
               compressedSizeBytes: formatBytes(sizeAfter),

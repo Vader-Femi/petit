@@ -9,10 +9,10 @@ class AppRoutes {
       case '/':
         return _materialRoute(const HomeScreen());
 
-      case '/Images':
+      case '/images':
         return _materialRoute(const ImagesPage());
 
-      case '/Videos':
+      case '/videos':
         return _materialRoute(const VideosPage());
         
       default:

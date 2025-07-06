@@ -1,5 +1,6 @@
 import 'dart:ui';
 import 'package:async/async.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'dart:io';
@@ -426,7 +427,12 @@ class ImagesViewModel {
       final savedPercent =
           (savedBytes / sizeBeforeCompression).clamp(0, 1).toDouble();
 
-      final path = Platform.isAndroid ? "Pictures/Petit" : "Photos";
+      final String path;
+      if (!kIsWeb) {
+        path = Platform.isAndroid ? "Pictures/Petit" : "Photos";
+      } else {
+        path = "Probably downloads";
+      }
       return SummaryReport(
           originalSizeBytes: formatBytes(sizeBeforeCompression),
           compressedSizeBytes: formatBytes(sizeAfterCompression),

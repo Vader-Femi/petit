@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui';
+import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:flutter/foundation.dart';
@@ -17,6 +17,10 @@ import 'config/theme/App_theme.dart';
 import 'firebase_options.dart';
 
 Future<void> main() async {
+
+  // This is crucial for correct web routing:
+  setUrlStrategy(PathUrlStrategy());
+
   WidgetsFlutterBinding.ensureInitialized();
 
   FlutterError.onError = (errorDetails) {
@@ -147,24 +151,6 @@ class _MyAppState extends State<MyApp> {
 
   void _handleImages(List<SharedAttachment> images) {
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-      // Navigator.pushAndRemoveUntil(
-      //   context,
-      //   MaterialPageRoute(builder: (_) =>
-      //       HomeScreen(
-      //           sharedMedia: SharedMediaDetails(
-      //               type: SharedMediaType.image,
-      //               sharedAttachment: images)
-      //       )),
-      //       (Route<dynamic> route) => false, // removes all previous routes
-      // );
-
-      //   Navigator.pushReplacement(
-      //     context,
-      //     MaterialPageRoute(
-      //         builder: (_) => HomeScreen(
-      //             sharedMedia: SharedMediaDetails(
-      //                 type: SharedMediaType.image, sharedAttachment: images))),
-      //   );
 
       navigatorKey.currentState?.pushAndRemoveUntil(
         MaterialPageRoute(
@@ -182,24 +168,6 @@ class _MyAppState extends State<MyApp> {
 
   void _handleVideo(List<SharedAttachment> video) {
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-      // Navigator.pushAndRemoveUntil(
-      //   context,
-      //   MaterialPageRoute(builder: (_) =>
-      //       HomeScreen(
-      //           sharedMedia: SharedMediaDetails(
-      //               type: SharedMediaType.video,
-      //               sharedAttachment: video)
-      //       )),
-      //       (Route<dynamic> route) => false, // removes all previous routes
-      // );
-
-      // Navigator.pushReplacement(
-      //     context,
-      //     MaterialPageRoute(
-      //       builder: (_) => HomeScreen(
-      //           sharedMedia: SharedMediaDetails(
-      //               type: SharedMediaType.video, sharedAttachment: video)),
-      //     ));
 
       navigatorKey.currentState?.pushAndRemoveUntil(
         MaterialPageRoute(
@@ -250,17 +218,20 @@ class _MyAppState extends State<MyApp> {
           darkTheme: darkTheme,
           themeMode: ThemeMode.system,
           navigatorKey: navigatorKey,
+          initialRoute: '/',
           onGenerateRoute: AppRoutes.onGenerateRoutes,
-          home: Platform.isIOS
+          home: kIsWeb
+              ? HomeScreen()
+              : Platform.isIOS
               ? UpgradeAlert(
-                  upgrader: Upgrader(
-                    dialogStyle: UpgradeDialogStyle.material,
-                    showIgnore: false,
-                    showLater: true,
-                    durationUntilAlertAgain: const Duration(days: 3),
-                  ),
-                  child: HomeScreen(),
-                )
+            upgrader: Upgrader(
+              dialogStyle: UpgradeDialogStyle.material,
+              showIgnore: false,
+              showLater: true,
+              durationUntilAlertAgain: const Duration(days: 3),
+            ),
+            child: HomeScreen(),
+          )
               : HomeScreen(),
         );
       },

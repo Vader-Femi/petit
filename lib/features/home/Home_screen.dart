@@ -30,10 +30,12 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
 
     _checkFirstLaunch();
+    if (!kIsWeb) {
     if (Platform.isAndroid) {
       if (!kDebugMode) {
         _checkAndroidFlexibleUpdate();
       }
+    }
     }
 
     _handleSharedAttachment();

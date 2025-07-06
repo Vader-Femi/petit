@@ -17,6 +17,7 @@
         "flutter",
         "flutter_image_compress",
         "flutter_super",
+        "flutter_web_plugins",
         "gallery_saver_plus",
         "get_it",
         "heif_converter_plus",
@@ -302,6 +303,18 @@
         "flutter",
         "flutter_test",
         "material_color_utilities"
+      ]
+    },
+    {
+      "name": "flutter_web_plugins",
+      "version": "0.0.0",
+      "dependencies": [
+        "characters",
+        "collection",
+        "flutter",
+        "material_color_utilities",
+        "meta",
+        "vector_math"
       ]
     },
     {
@@ -960,18 +973,6 @@
       "name": "web",
       "version": "1.1.0",
       "dependencies": []
-    },
-    {
-      "name": "flutter_web_plugins",
-      "version": "0.0.0",
-      "dependencies": [
-        "characters",
-        "collection",
-        "flutter",
-        "material_color_utilities",
-        "meta",
-        "vector_math"
-      ]
     },
     {
       "name": "csslib",
