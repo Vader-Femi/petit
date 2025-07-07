@@ -21,8 +21,14 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build Flutter web
-        run: flutter build web --base-href="/petit/"
+      - name: Analyze project
+        run: flutter analyze
+
+      - name: Build Flutter web (verbose)
+        run: flutter build web --base-href="/petit/" -v
+
+#      - name: Build Flutter web
+#        run: flutter build web --base-href="/petit/"
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
