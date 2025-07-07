@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'package:flutter_super/flutter_super.dart';
 
 class VideoData {
   final File videoFile;
@@ -27,6 +26,5 @@ class VideoData {
     );
   }
 
-  @override
   List<Object?> get props => [videoFile, pixelHeight, pixelWidth, frameRate];
 }

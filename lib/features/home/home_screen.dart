@@ -6,14 +6,14 @@ import 'package:flutter_super/flutter_super.dart';
 import 'package:in_app_update/in_app_update.dart';
 import 'package:petit/features/home/presentation/state/home_viewmodel.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
-import 'package:petit/features/videos/presentation/pages/Videos_page.dart';
+import 'package:petit/features/videos/presentation/pages/videos_page.dart';
 import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../common/data/shared_media_details.dart';
 import '../../core/constants/consts.dart';
 import '../../service_locator.dart';
 import '../images/presentation/pages/images_page.dart';
-import '../images/presentation/widget/IntroCarouselDialog.dart';
+import '../images/presentation/widget/intro_carousel_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, this.sharedMedia});

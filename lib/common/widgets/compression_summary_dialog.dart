@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:petit/common/data/summary_report.dart';
-import '../../features/images/presentation/widget/SummaryRow.dart';
+import '../../features/images/presentation/widget/summary_row.dart';
 
 class CompressionSummaryDialog extends StatelessWidget {
   const CompressionSummaryDialog({super.key, required this.summaryReport});
