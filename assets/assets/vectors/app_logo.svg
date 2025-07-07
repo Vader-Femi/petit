@@ -1,0 +1,15 @@
+<svg width="200" height="200" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="25" y="25" width="150" height="150" rx="30" fill="#6C538C"/>
+    <rect x="30" y="30" width="140" height="140" rx="25" fill="#FFFFFF"/>
+
+    <!-- Outer larger square (representing original image) -->
+    <rect x="45" y="45" width="110" height="110" rx="15" stroke="#6C538C" stroke-width="4" fill="none"/>
+
+    <!-- Inner smaller square (representing compressed image) -->
+    <rect x="72" y="72" width="55" height="55" rx="10" fill="#6C538C"/>
+
+    <!-- Compression arrows -->
+    <path d="M60 90L50 100L60 110" stroke="#6C538C" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M140 90L150 100L140 110" stroke="#6C538C" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+
+</svg>
