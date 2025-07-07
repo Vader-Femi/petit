@@ -9,7 +9,7 @@ import 'dart:io';
 import 'package:gallery_saver_plus/gallery_saver.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:petit/common/data/Summary_report.dart';
+import 'package:petit/common/data/summary_report.dart';
 import 'package:petit/features/videos/data/slider_value.dart';
 import 'package:petit/features/videos/data/video_data.dart';
 import 'package:share_handler/share_handler.dart';

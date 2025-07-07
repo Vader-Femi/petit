@@ -6,8 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
-import '../../../../common/data/Summary_report.dart';
-import '../../../../common/widgets/CompressionSummaryDialog.dart';
+import '../../../../common/data/summary_report.dart';
+import '../../../../common/widgets/compression_summary_dialog.dart';
 import '../../../../common/widgets/slider_box.dart';
 
 class ImagesPage extends StatefulWidget {
@@ -45,7 +45,6 @@ class _ImagesPageState extends State<ImagesPage> {
 
   @override
   Widget build(BuildContext context) {
-    final carouselHeight = MediaQuery.sizeOf(context).height / 2.3;
 
     final carouselSliderController = CarouselSliderController();
 
@@ -185,7 +184,7 @@ class _ImagesPageState extends State<ImagesPage> {
                             },
                           ),
                         // Reserve space for FABs
-                        const SizedBox(height: 72.0),
+                        const SizedBox(height: fabHeight),
                       ],
                     ),
                   ),
@@ -311,7 +310,7 @@ class _ImagesPageState extends State<ImagesPage> {
                                     .compressAllSelectedImages()
                                     .then((summaryReport) {
                               if (summaryReport != null) {
-                                if (mounted) {
+                                if (context.mounted) {
                                   _showCompressionSummaryDialog(
                                       context: context,
                                       summaryReport: summaryReport);

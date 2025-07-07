@@ -9,10 +9,10 @@ import 'package:flutter_super/flutter_super.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:petit/common/data/shared_media_details.dart';
 import 'package:share_handler/share_handler.dart';
-import 'package:petit/features/home/Home_screen.dart';
+import 'package:petit/features/home/home_screen.dart';
 import 'package:petit/service_locator.dart';
 import 'package:upgrader/upgrader.dart';
-import 'config/routes/App_routes.dart';
+import 'config/routes/app_routes.dart';
 import 'config/theme/App_theme.dart';
 import 'firebase_options.dart';
 

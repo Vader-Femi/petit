@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:petit/common/data/Summary_report.dart';
+import 'package:petit/common/data/summary_report.dart';
 import '../../features/images/presentation/widget/SummaryRow.dart';
 
 class CompressionSummaryDialog extends StatelessWidget {

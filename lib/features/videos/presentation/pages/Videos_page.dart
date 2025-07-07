@@ -4,8 +4,8 @@ import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
 import 'package:video_player/video_player.dart';
 
-import '../../../../common/data/Summary_report.dart';
-import '../../../../common/widgets/CompressionSummaryDialog.dart';
+import '../../../../common/data/summary_report.dart';
+import '../../../../common/widgets/compression_summary_dialog.dart';
 import '../../../../common/widgets/slider_box.dart';
 
 class VideosPagePlaceholder extends StatelessWidget {

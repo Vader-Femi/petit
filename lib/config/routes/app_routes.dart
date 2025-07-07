@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:petit/features/home/Home_screen.dart';
+import 'package:petit/features/home/home_screen.dart';
 import 'package:petit/features/images/presentation/pages/images_page.dart';
 import 'package:petit/features/videos/presentation/pages/Videos_page.dart';
 
