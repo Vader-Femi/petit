@@ -1,6 +1,26 @@
-<body>
-<!-- Splash Screen -->
-<div id="splash-screen">
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="A new Flutter project.">
+
+  <!-- Required base href placeholder -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="petit">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>petit</title>
+  <link rel="manifest" href="manifest.json">
+
+  <!-- Splash screen styles (optional) -->
   <style>
     #splash-screen {
       position: fixed;
@@ -12,29 +32,35 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      font-family: sans-serif;
-      font-size: 24px;
-      color: #555;
+      flex-direction: column;
       z-index: 9999;
+      font-family: sans-serif;
     }
 
     #splash-screen img {
       width: 100px;
       height: 100px;
-      margin-bottom: 20px;
+      margin-bottom: 16px;
+    }
+
+    #splash-screen span {
+      font-size: 20px;
+      color: #444;
     }
   </style>
-  <!-- Optional logo -->
-  <div style="text-align:center">
-    <img src="icons/Icon-192.png" alt="App Logo" />
-    <div>Loading...</div>
-  </div>
+</head>
+
+<body>
+<!-- Splash screen -->
+<div id="splash-screen">
+  <img src="icons/Icon-192.png" alt="App Logo" />
+  <span>Loading petit...</span>
 </div>
 
-<!-- Load Flutter App -->
+<!-- Flutter app -->
 <script src="flutter_bootstrap.js" async></script>
 
-<!-- Remove splash screen once app loads -->
+<!-- Remove splash after Flutter loads -->
 <script>
   window.addEventListener('flutter-first-frame', function () {
     const splash = document.getElementById('splash-screen');
@@ -42,3 +68,4 @@
   });
 </script>
 </body>
+</html>
