@@ -3,7 +3,6 @@ import 'package:flutter_super/flutter_super.dart';
 import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
 import 'package:video_player/video_player.dart';
-
 import '../../../../common/data/summary_report.dart';
 import '../../../../common/widgets/compression_summary_dialog.dart';
 import '../../../../common/widgets/slider_box.dart';
@@ -204,31 +203,6 @@ class _VideosPageState extends State<VideosPage> {
                         color: Theme.of(context).colorScheme.primary),
                   )
                 : Container(),
-            // else ...[
-            //   ElevatedButton.icon(
-            //     onPressed: () async {
-            //       await getVideosViewModel.pickVideo();
-            //     },
-            //     icon: const Icon(Icons.video_library),
-            //     label: const Text('Pick Video'),
-            //   ),
-            //   const SizedBox(height: 10),
-            //   ElevatedButton.icon(
-            //     onPressed: () async {
-            //       final summaryReport =
-            //           await getVideosViewModel.compressVideo();
-            //       if (summaryReport != null) {
-            //         if (mounted) {
-            //           _showCompressionSummaryDialog(
-            //               context: context, summaryReport: summaryReport);
-            //         }
-            //       }
-            //     },
-            //     icon: const Icon(Icons.compress),
-            //     label: const Text('Compress Video'),
-            //   ),
-            // ],
-            // const SizedBox(height: 20),
           ],
         );
       }),

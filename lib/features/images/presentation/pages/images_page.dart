@@ -81,21 +81,7 @@ class _ImagesPageState extends State<ImagesPage> {
                                 .map((imageData) {
                               return ClipRRect(
                                 borderRadius: BorderRadius.circular(12),
-                                child: kIsWeb
-                                    ? Image.memory(
-                                  imageData.imageFile.readAsBytesSync(),
-                                  frameBuilder: (BuildContext context, Widget child, int? frame, bool? wasSynchronouslyLoaded) {
-                                    return AnimatedOpacity(
-                                      opacity: frame == null ? 0 : 1,
-                                      duration: Duration(milliseconds: 200),
-                                      curve: Curves.easeIn,
-                                      child: child,
-                                    );
-                                  },
-                                  fit: BoxFit.contain,
-                                  filterQuality: FilterQuality.none,
-                                )
-                                    : Image.file(
+                                child: Image.file(
                                   imageData.imageFile,
                                   frameBuilder: (BuildContext context, Widget child, int? frame, bool? wasSynchronouslyLoaded) {
                                     return AnimatedOpacity(
