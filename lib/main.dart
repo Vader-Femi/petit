@@ -13,7 +13,7 @@ import 'package:petit/features/home/home_screen.dart';
 import 'package:petit/service_locator.dart';
 import 'package:upgrader/upgrader.dart';
 import 'config/routes/app_routes.dart';
-import 'config/theme/App_theme.dart';
+import 'config/theme/app_theme.dart';
 import 'firebase_options.dart';
 
 Future<void> main() async {
