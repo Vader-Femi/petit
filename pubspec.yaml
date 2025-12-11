@@ -20,71 +20,71 @@ dependencies:
 #  flutter_svg: ^2.0.11
 
   #Material You dynamic colours
-  dynamic_color: ^1.7.0
+  dynamic_color: ^1.8.1
 
   #Set app launcher icons
-  icons_launcher: ^3.0.0
+  icons_launcher: ^3.0.3
 
   #Service locator
-  get_it: ^8.0.2
+  get_it: ^9.2.0
 
   #State management
-  flutter_super: ^1.4.9
+  flutter_super: ^1.4.10
 
   #Image carousel slider
-  carousel_slider: ^5.0.0
+  carousel_slider: ^5.1.1
 
   #Image compression
   flutter_image_compress: ^2.4.0
 
   #Get image properties
-  image_size_getter: ^2.1.1
+  image_size_getter: ^2.4.1
 
   #Progress Indicator
   step_progress_indicator: ^1.0.2
 
   #For encoding and decoding
-  image: ^4.5.2
+  image: ^4.5.4
 
   #For converting heic/heif to jpg/png
   heif_converter_plus: ^1.0.2
 
   #Image Picker
-  image_picker: ^1.1.2
+  image_picker: ^1.2.1
 
   #Gallery Saver
-  gallery_saver_plus: ^3.2.8
+  gallery_saver_plus: ^3.2.9
 
   #For cancelable operation (To cancel a future)
-  async: ^2.11.0
+  async: ^2.13.0
 
   #Firebase
-  firebase_core: ^3.6.0
+  firebase_core: ^4.2.1
 
   #Firebase Crashlytics and others
-  firebase_crashlytics: ^4.1.5
-  firebase_analytics: ^11.3.5
+  firebase_crashlytics: ^5.0.5
+  firebase_analytics: ^12.0.4
 
   #Pref
-  shared_preferences: ^2.2.2
+  shared_preferences: ^2.5.4
 
   #In app update - Android
-  in_app_update: ^4.2.2
+  in_app_update: ^4.2.5
 
   #In app update - IOS and IOS but only used for IOS
-  upgrader: ^8.1.1
+  upgrader: ^12.3.0
 
   #Get temp cache directory
-  path_provider: ^2.1.0
+  path_provider: ^2.1.5
 
   # Video player
-  video_player: ^2.8.1
+  video_player: ^2.10.1
 
   #Get video info
-  ffmpeg_kit_flutter_new: ^2.0.0
+  ffmpeg_kit_flutter_new: ^4.1.0
 
   #Receive files by sharing
-  share_handler: ^0.0.22
+  share_handler: ^0.0.25
 
 dev_dependencies:
   flutter_test:
@@ -95,7 +95,7 @@ dev_dependencies:
   # activated in the `analysis_options.yaml` file located at the root of your
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
-  flutter_lints: ^5.0.0
+  flutter_lints: ^6.0.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

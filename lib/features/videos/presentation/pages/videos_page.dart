@@ -7,19 +7,6 @@ import '../../../../common/data/summary_report.dart';
 import '../../../../common/widgets/compression_summary_dialog.dart';
 import '../../../../common/widgets/slider_box.dart';
 
-class VideosPagePlaceholder extends StatelessWidget {
-  const VideosPagePlaceholder({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(
-      child: Text(
-        'Coming Soon',
-        style: TextStyle(fontSize: 24),
-      ),
-    );
-  }
-}
 
 class VideosPage extends StatefulWidget {
   const VideosPage({super.key});

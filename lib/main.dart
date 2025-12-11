@@ -9,11 +9,12 @@ import 'package:flutter_super/flutter_super.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:petit/common/data/shared_media_details.dart';
 import 'package:share_handler/share_handler.dart';
-import 'package:petit/features/home/home_screen.dart';
+import 'package:petit/features/home/presentation/pages/home_screen.dart';
 import 'package:petit/service_locator.dart';
 import 'package:upgrader/upgrader.dart';
 import 'config/routes/app_routes.dart';
 import 'config/theme/app_theme.dart';
+import 'features/home/presentation/pages/home_screen_web.dart';
 import 'firebase_options.dart';
 
 Future<void> main() async {
@@ -221,13 +222,13 @@ class _MyAppState extends State<MyApp> {
           initialRoute: '/',
           onGenerateRoute: AppRoutes.onGenerateRoutes,
           home: kIsWeb
-              ? HomeScreen()
+              ? HomeScreenWeb()
               : Platform.isIOS
               ? UpgradeAlert(
+            dialogStyle: UpgradeDialogStyle.material,
+            showIgnore: false,
+            showLater: true,
             upgrader: Upgrader(
-              dialogStyle: UpgradeDialogStyle.material,
-              showIgnore: false,
-              showLater: true,
               durationUntilAlertAgain: const Duration(days: 3),
             ),
             child: HomeScreen(),

@@ -13,6 +13,16 @@ class LoadingData with SuperModel {
     required this.isLoading,
   });
 
+  LoadingData copyWith(
+      {int? progressCounter, int? totalSteps, int? completedSteps, bool? isLoading}) {
+    return LoadingData(
+      progressCounter: progressCounter ?? this.progressCounter,
+      totalSteps: totalSteps ?? this.totalSteps,
+      completedSteps: completedSteps ?? this.completedSteps,
+      isLoading: isLoading ?? this.isLoading,
+    );
+  }
+
   @override
   List<Object?> get props => [progressCounter, totalSteps, completedSteps, isLoading];
 

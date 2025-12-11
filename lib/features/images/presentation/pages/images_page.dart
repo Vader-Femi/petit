@@ -1,6 +1,5 @@
 import 'package:async/async.dart';
 import 'package:carousel_slider/carousel_slider.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
