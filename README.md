@@ -3,12 +3,8 @@
 
 <br />
 <div>
-  &emsp;&emsp;&emsp;
-  <a href="https://play.google.com/store/apps/details?id=com.outsidetheide.petit" target="_blank" rel="nofollow noopener noreferrer"
-aria-label="Live Demo - Play Store"> <u>Live Demo 🚀 - Play Store</u></a>
-  &emsp;&emsp;&emsp;&emsp;
-  <a href="https://appetize.io/app/b_5q7h4bxybf3vgeckafpxufi7xe?device=pixel7&osVersion=15.0" target="_blank"
-rel="nofollow noopener noreferrer" aria-label="Live Demo - Appetize.io"><u>Live Demo 🚀 - Appetize.io</u></a>  
+  <a href="https://appetize.io/app/b_fgilfsz7geymqqlykl7zv2ejsi?device=pixel7&osVersion=13.0&toolbar=true" target="_blank"
+rel="nofollow noopener noreferrer" aria-label="Live Demo - Appetize.io"><u>Live Demo</u></a>  
 </div>
 <br />
 
