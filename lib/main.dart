@@ -24,19 +24,24 @@ Future<void> main() async {
 
   WidgetsFlutterBinding.ensureInitialized();
 
-  FlutterError.onError = (errorDetails) {
-    FirebaseCrashlytics.instance.recordFlutterFatalError(errorDetails);
-  };
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
 
-  PlatformDispatcher.instance.onError = (error, stack) {
-    FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
-    return true;
-  };
+    // ONLY set these up after successful init
+    FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
 
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
-  FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
+    PlatformDispatcher.instance.onError = (error, stack) {
+      FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+      return true;
+    };
+
+  } catch (e, stack) {
+    // If Firebase fails, print to console so you can see it in 'adb logcat'
+    debugPrint("Failed to initialize Firebase: $e");
+    debugPrint(stack.toString());
+  }
 
   try {
     await initializeDependencies();

@@ -1,0 +1,1 @@
+ /Volumes/Minato/Dev/Flutter/Petit/.dart_tool/flutter_build/1b075cdd81fc0a91a6e2bde86455af9b/native_assets.json: 
