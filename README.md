@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://appetize.io/app/b_fgilfsz7geymqqlykl7zv2ejsi?device=pixel9pro&osVersion=16.0&toolbar=true"
+  <a href="https://appetize.io/app/b_65kxb4suify3o3f7zhydwf6fei?device=pixel9pro&osVersion=16.0&toolbar=true"
      target="_blank"
      rel="nofollow noopener noreferrer"
      aria-label="Live Demo - Appetize.io">
