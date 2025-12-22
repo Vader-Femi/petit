@@ -1,82 +1,128 @@
-<img src="dev/assets/images/petit_feature_graphic.png" alt="Watchlist Image" width="1024" />
+<p align="center">
+  <img src="dev/assets/images/petit_feature_graphic.png" alt="PETIT Feature Graphic" width="1024" />
+</p>
 
+<p align="center">
+  <a href="https://appetize.io/app/b_fgilfsz7geymqqlykl7zv2ejsi?device=pixel7&osVersion=13.0&toolbar=true"
+     target="_blank"
+     rel="nofollow noopener noreferrer"
+     aria-label="Live Demo - Appetize.io">
+    <strong><u>Live Demo 🚀</u></strong>
+  </a>
+</p>
 
-<br />
-<div>
-  <a href="https://appetize.io/app/b_fgilfsz7geymqqlykl7zv2ejsi?device=pixel7&osVersion=13.0&toolbar=true" target="_blank"
-rel="nofollow noopener noreferrer" aria-label="Live Demo - Appetize.io"><u>Live Demo</u></a>  
-</div>
-<br />
-
-
-# PETIT
-
-A Flutter image and video compression application capable of compressing videos and images of various formats, like HEIC, HEIF, PNG, and JPG, for efficient storage and faster file transfers without compromising quality
-
---- 
-### Or
 ---
-This app makes your images and videos smaller in size so they take up less space and send faster — without losing quality. And it works completely offline.
 
-It works with different types of images like JPG, PNG, HEIF, and HEIC or videos like H265, H265 or VP9.
+# 🧩 PETIT
 
-Just choose your pictures or video, pick the quality you want, tap “Compress,” and your smaller images will be saved automatically.
+**PETIT** is a **Flutter image and video compression application** that reduces file sizes for faster sharing and efficient storage—**without compromising quality**.
 
---- 
-### Note
+It works **completely offline** and supports multiple image and video formats.
+
 ---
-(webp compression is not very effecient)
 
-## Screenshots
-<br />
-<div>
-  &emsp;&emsp;&emsp;
-  <img src="dev/assets/images/7_inch_tab_app_dark_mode.png" alt="Light theme" width="2204">
-  &emsp;&emsp;&emsp;&emsp;
-  <img src="dev/assets/images/phone_listing_1.png" alt="Dark theme" width="1024">  
-</div>
-<br />
+## 📌 What PETIT Does (In Simple Terms)
 
-<br />
-<div>
-  &emsp;&emsp;&emsp;
-  <img src="dev/assets/images/7_inch_tab_app_dark_mode_2.png" alt="Light theme" width="2204">
-  &emsp;&emsp;&emsp;&emsp;
-  <img src="dev/assets/images/phone_app_light_mode.png" alt="Dark theme" width="1080">  
-</div>
-<br />
+PETIT makes your **images and videos smaller**, so they:
 
-<img src="dev/assets/images/10_inch_tab_app_light_mode.png" alt="Light theme" width="1600">
+* Take up less space
+* Send faster
+* Maintain visual quality
 
+### Supported Formats
 
-### Packages
-- [Flutter Super] for state management  
-- [Image Picker] to select images to compress both locally and cloud (on android)
-- [Flutter Image Compress] for compressing WEBP (may not be efficient), PNG, and JPG
-- [Heif Converter Plus] to convert HEIF and HEVC to JPEG because [Flutter Image Compress] does not support HEVC or HEIF at the time
-- [Gallery Saver Plus] to save the compressed files to phone storage after compression
-- [Image] to decode/encode image files for functions like getting resolution details and resizing
-- [Step Progress Indicator] to show a customised progress bar
-- [Carousel Slider] to show the images to be compressed in a beautiful scrollable carousel
+**Images**
 
-[Flutter Super]: https://pub.dev/documentation/flutter_super/latest/
-[Image Picker]: https://pub.dev/packages/image_picker
-[Flutter Image Compress]: https://pub.dev/packages/flutter_image_compress
-[Heif Converter Plus]: https://pub.dev/packages/heif_converter_plus
-[Gallery Saver Plus]: https://pub.dev/packages/gallery_saver_plus
-[crashlytics]: https://pub.dev/packages/image
-[Step Progress Indicator]: https://pub.dev/documentation/step_progress_indicator/latest/
-[Carousel Slider]: https://pub.dev/packages/carousel_slider
+* JPG
+* PNG
+* HEIF
+* HEIC
 
-# First Run
+**Videos**
 
-After installing the package dependencies with
+* H.264
+* H.265 (HEVC)
+* VP9
 
-```
+### How It Works
+
+1. Select images or videos
+2. Choose your preferred quality
+3. Tap **Compress**
+4. Compressed files are saved automatically to your device
+
+---
+
+## ⚠️ Note
+
+* **WEBP compression is currently not very efficient**
+
+---
+
+## 📸 Screenshots
+
+<p align="center">
+  <img src="dev/assets/images/7_inch_tab_app_dark_mode.png" alt="Tablet Dark Mode" width="480" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="dev/assets/images/phone_listing_1.png" alt="Phone Listing" width="240" />
+</p>
+
+<p align="center">
+  <img src="dev/assets/images/7_inch_tab_app_dark_mode_2.png" alt="Tablet Dark Mode 2" width="480" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="dev/assets/images/phone_app_light_mode.png" alt="Phone Light Mode" width="240" />
+</p>
+
+<p align="center">
+  <img src="dev/assets/images/10_inch_tab_app_light_mode.png" alt="Large Tablet Light Mode" width="640" />
+</p>
+
+---
+
+## 📦 Packages Used
+
+* **[Flutter Super]** – State management
+* **[Image Picker]** – Select images locally or from cloud (Android)
+* **[Flutter Image Compress]** – Compress PNG, JPG, and WEBP *(WEBP may be inefficient)*
+* **[Heif Converter Plus]** – Convert HEIF / HEVC to JPEG
+* **[Gallery Saver Plus]** – Save compressed files to device storage
+* **[Image]** – Image decoding/encoding (resolution, resizing)
+* **[Step Progress Indicator]** – Custom compression progress bar
+* **[Carousel Slider]** – Scrollable image preview carousel
+
+---
+
+## 🔗 Package Links
+
+* [Flutter Super]: https://pub.dev/documentation/flutter_super/latest/
+* [Image Picker]: https://pub.dev/packages/image_picker
+* [Flutter Image Compress]: https://pub.dev/packages/flutter_image_compress
+* [Heif Converter Plus]: https://pub.dev/packages/heif_converter_plus
+* [Gallery Saver Plus]: https://pub.dev/packages/gallery_saver_plus
+* [Image]: https://pub.dev/packages/image
+* [Step Progress Indicator]: https://pub.dev/documentation/step_progress_indicator/latest/
+* [Carousel Slider]: https://pub.dev/packages/carousel_slider
+
+---
+
+## ▶️ First Run
+
+After cloning the project, install dependencies:
+
+```bash
 flutter pub get
 ```
 
-```
+Then run code generation:
+
+```bash
 flutter pub run build_runner build
 ```
 
+---
+
+If you want, I can:
+
+* Rewrite this as a **Google Play Store listing**
+* Add a **Features** and **Architecture** section
+* Turn this into a **case study** for your portfolio
