@@ -6,7 +6,7 @@ on:
       - production
 
 permissions:
-  contents: write # Required to create GitHub Releases and upload assets
+  contents: write
 
 jobs:
   build-android:
@@ -18,12 +18,15 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: '17'
-      - uses: subosito/flutter-action@v2
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.47.7'
           channel: 'stable'
       - run: flutter pub get
       - run: flutter pub run build_runner build --delete-conflicting-outputs
       - run: flutter build apk --release
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
@@ -35,15 +38,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.47.7'
           channel: 'stable'
       - run: flutter config --enable-windows-desktop
       - run: flutter pub get
       - run: flutter pub run build_runner build --delete-conflicting-outputs
       - run: flutter build windows --release
 
-      # Flutter outputs a folder, not a single .exe. We zip it for distribution.
       - name: Compress to ZIP
         run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath petit-windows.zip
 
@@ -58,8 +62,10 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.47.7'
           channel: 'stable'
       - run: flutter config --enable-macos-desktop --enable-ios
       - run: flutter pub get
@@ -81,7 +87,7 @@ jobs:
             "petit-macos.dmg" \
             "build/macos/Build/Products/Release/petit.app"
 
-      # iOS Build (Unsigned for CI artifact purposes)
+      # iOS Build (Unsigned)
       - run: flutter build ipa --release --no-codesign
       - name: Rename IPA
         run: mv build/ios/ipa/*.ipa petit-ios.ipa || echo "No IPA found"
@@ -102,13 +108,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Download all artifacts from the previous jobs
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
 
-      # Create a new GitHub Release and attach all files
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
