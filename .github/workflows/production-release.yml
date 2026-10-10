@@ -1,0 +1,125 @@
+name: Production Release
+
+on:
+  push:
+    branches:
+      - production
+
+permissions:
+  contents: write # Required to create GitHub Releases and upload assets
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+      - run: flutter pub get
+      - run: flutter pub run build_runner build --delete-conflicting-outputs
+      - run: flutter build apk --release
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: petit-android-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+  build-windows:
+    name: Build Windows App
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+      - run: flutter config --enable-windows-desktop
+      - run: flutter pub get
+      - run: flutter pub run build_runner build --delete-conflicting-outputs
+      - run: flutter build windows --release
+
+      # Flutter outputs a folder, not a single .exe. We zip it for distribution.
+      - name: Compress to ZIP
+        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath petit-windows.zip
+
+      - name: Upload Windows ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: petit-windows-zip
+          path: petit-windows.zip
+
+  build-macos-ios:
+    name: Build macOS & iOS Apps
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+      - run: flutter config --enable-macos-desktop --enable-ios
+      - run: flutter pub get
+      - run: flutter pub run build_runner build --delete-conflicting-outputs
+
+      # macOS Build
+      - run: flutter build macos --release
+      - name: Create macOS ZIP
+        run: ditto -c -k --keepParent build/macos/Build/Products/Release/petit.app petit-macos.zip
+      - name: Create macOS DMG
+        run: |
+          brew install create-dmg
+          create-dmg \
+            --volname "Petit" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --app-drop-link 400 185 \
+            "petit-macos.dmg" \
+            "build/macos/Build/Products/Release/petit.app"
+
+      # iOS Build (Unsigned for CI artifact purposes)
+      - run: flutter build ipa --release --no-codesign
+      - name: Rename IPA
+        run: mv build/ios/ipa/*.ipa petit-ios.ipa || echo "No IPA found"
+
+      - name: Upload macOS & iOS Assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: petit-apple-assets
+          path: |
+            petit-macos.zip
+            petit-macos.dmg
+            petit-ios.ipa
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-android, build-windows, build-macos-ios]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Download all artifacts from the previous jobs
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      # Create a new GitHub Release and attach all files
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "release-${{ github.sha }}"
+          name: "Petit Production Release"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-assets/app-release.apk
+            release-assets/petit-windows.zip
+            release-assets/petit-macos.zip
+            release-assets/petit-macos.dmg
+            release-assets/petit-ios.ipa
