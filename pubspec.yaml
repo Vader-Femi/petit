@@ -77,11 +77,14 @@ dependencies:
   #Get temp cache directory
   path_provider: ^2.1.5
 
+  #Cross-platform path handling (separators, base names, extensions)
+  path: ^1.9.0
+
   # Video player
   video_player: ^2.10.1
 
-  #Get video info
-  ffmpeg_kit_flutter_new: ^4.1.0
+  #Video info and compression (Android, iOS, macOS, Windows, Linux). Full-GPL build.
+  ffmpeg_kit_flutter_new: ^4.6.1
 
   #Receive files by sharing
   share_handler: ^0.0.25

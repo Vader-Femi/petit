@@ -36,3 +36,9 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# Flutter/Dart generated files (do not commit; they contain local paths)
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.DS_Store

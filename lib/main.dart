@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:petit/common/data/shared_media_details.dart';
+import 'package:petit/core/utils/platform_utils.dart';
 import 'package:share_handler/share_handler.dart';
 import 'package:petit/features/home/presentation/pages/home_screen.dart';
 import 'package:petit/service_locator.dart';
@@ -24,24 +25,7 @@ Future<void> main() async {
 
   WidgetsFlutterBinding.ensureInitialized();
 
-  try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-
-    // ONLY set these up after successful init
-    FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
-
-    PlatformDispatcher.instance.onError = (error, stack) {
-      FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
-      return true;
-    };
-
-  } catch (e, stack) {
-    // If Firebase fails, print to console so you can see it in 'adb logcat'
-    debugPrint("Failed to initialize Firebase: $e");
-    debugPrint(stack.toString());
-  }
+  await _initFirebase();
 
   try {
     await initializeDependencies();
@@ -53,6 +37,32 @@ Future<void> main() async {
   }
 
   runApp(const SuperApp(child: MyApp()));
+}
+
+/// Firebase is not configured for Linux, and Crashlytics has no Windows or
+/// Linux implementation, so both are skipped there instead of failing quietly.
+Future<void> _initFirebase() async {
+  if (PlatformInfo.isLinux) return;
+
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+
+    // ONLY set these up after successful init
+    if (PlatformInfo.supportsCrashlytics) {
+      FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
+
+      PlatformDispatcher.instance.onError = (error, stack) {
+        FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+        return true;
+      };
+    }
+  } catch (e, stack) {
+    // If Firebase fails, print to console so you can see it in 'adb logcat'
+    debugPrint("Failed to initialize Firebase: $e");
+    debugPrint(stack.toString());
+  }
 }
 
 class MyApp extends StatefulWidget {
@@ -73,6 +83,9 @@ class _MyAppState extends State<MyApp> {
   }
 
   void _initShareHandler() {
+    // share_handler has no desktop implementation.
+    if (PlatformInfo.isDesktop) return;
+
     final handler = ShareHandler.instance;
 
     // Listen for shared media while app is running

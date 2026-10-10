@@ -10,7 +10,9 @@ import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:image_size_getter/file_input.dart';
 import 'package:image_size_getter/image_size_getter.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
+import 'package:petit/core/utils/media_formats.dart';
+import 'package:petit/core/utils/work_dir.dart';
 import 'package:petit/features/images/data/image_data.dart';
 import 'package:share_handler/share_handler.dart';
 import '../../data/loading_data.dart';
@@ -111,6 +113,30 @@ class ImagesViewModel {
     }
   }
 
+  /// Reads the pixel size of [path]. HEIC/HEIF files are converted to a
+  /// temporary JPEG first because image_size_getter cannot read them.
+  /// Falls back to 1080x1080 (the previous behaviour) when the size is unknown.
+  Future<({int width, int height})> _readImageSize(String path) async {
+    var width = 1080;
+    var height = 1080;
+
+    String? readablePath;
+    if (isImageSizeGetterSupported(path)) {
+      readablePath = path;
+    } else if (isHeif(path)) {
+      readablePath = await HeifConverter.convert(path, format: "jpg");
+    }
+
+    if (readablePath != null) {
+      final size =
+          ImageSizeGetter.getSizeResult(FileInput(File(readablePath))).size;
+      width = size.width;
+      height = size.height;
+    }
+
+    return (width: width, height: height);
+  }
+
   Future<void> addSharedImages([List<SharedAttachment>? sharedFiles]) async {
     if (sharedFiles != null && sharedFiles.isNotEmpty) {
       if (isLoading.state.isLoading) return;
@@ -131,41 +157,12 @@ class ImagesViewModel {
 
         for (var file in sharedFiles) {
           final path = file.path;
-          int width = 1080;
-          int height = 1080;
-
-          final imageGetterSsupportedFormatIndex =
-          path.lastIndexOf(RegExp(r'(.png|.webp|.jp|.gif|.bmp)'));
-          if (imageGetterSsupportedFormatIndex == -1) {
-            // Check if is HEIF or HEIC
-            final isHeicOrHeif = path.toLowerCase().endsWith(".heic") ||
-                path.toLowerCase().endsWith(".heif");
-
-            if (isHeicOrHeif) {
-              String? jpgPath = await HeifConverter.convert(
-                  path, format: "jpg");
-              if (jpgPath != null) {
-                final size =
-                    ImageSizeGetter
-                        .getSizeResult(FileInput(File(jpgPath)))
-                        .size;
-                width = size.width;
-                height = size.height;
-              }
-            }
-          } else {
-            final size =
-                ImageSizeGetter
-                    .getSizeResult(FileInput(File(path)))
-                    .size;
-            width = size.width;
-            height = size.height;
-          }
+          final size = await _readImageSize(path);
 
           picked.add(ImageData(
             imageFile: File(path),
-            pixelWidth: width,
-            pixelHeight: height,
+            pixelWidth: size.width,
+            pixelHeight: size.height,
             quality: 50,
           ));
         }
@@ -201,41 +198,12 @@ class ImagesViewModel {
 
         for (var file in result) {
           final path = file.path;
-          int width = 1080;
-          int height = 1080;
-
-          final imageGetterSsupportedFormatIndex =
-          path.lastIndexOf(RegExp(r'(.png|.webp|.jp|.gif|.bmp)'));
-          if (imageGetterSsupportedFormatIndex == -1) {
-            // Check if is HEIF or HEIC
-            final isHeicOrHeif = path.toLowerCase().endsWith(".heic") ||
-                path.toLowerCase().endsWith(".heif");
-
-            if (isHeicOrHeif) {
-              String? jpgPath = await HeifConverter.convert(
-                  path, format: "jpg");
-              if (jpgPath != null) {
-                final size =
-                    ImageSizeGetter
-                        .getSizeResult(FileInput(File(jpgPath)))
-                        .size;
-                width = size.width;
-                height = size.height;
-              }
-            }
-          } else {
-            final size =
-                ImageSizeGetter
-                    .getSizeResult(FileInput(File(path)))
-                    .size;
-            width = size.width;
-            height = size.height;
-          }
+          final size = await _readImageSize(path);
 
           picked.add(ImageData(
             imageFile: File(path),
-            pixelWidth: width,
-            pixelHeight: height,
+            pixelWidth: size.width,
+            pixelHeight: size.height,
             quality: 50,
           ));
         }
@@ -258,54 +226,50 @@ class ImagesViewModel {
   Future<XFile?> compressImage({required ImageData imageData}) async {
     try {
       var filePath = imageData.imageFile.path;
-      final supportedFormatIndex =
-          filePath.lastIndexOf(RegExp(r'(.png|.webp|.jp|.heic|.heif)'));
-      if (supportedFormatIndex == -1) {
+      if (!isCompressibleImage(filePath)) {
         await showResult(
             "Unsupported- Only supports png,webp,jpeg,jpg,heic and heif");
         setIsLoading(LoadingData(isLoading: false));
+        return null;
       }
 
-      var lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
-      if (lastIndex == -1) {
-        // This means it's not jpeg/jpg
-        //Check if is heic/heif then handle it
-        final heifOrHeicIndex = filePath.lastIndexOf(RegExp(r'(.heic|.heif)'));
-        if (heifOrHeicIndex != -1) {
-          String? jpgPath =
-              await HeifConverter.convert(filePath, format: "jpg");
-          if (jpgPath != null) {
-            //Resize, Rotate, then Replace the file path and index
-            final jpgImage = img.decodeImage(await File(jpgPath).readAsBytes());
-            final resizedImage = img.copyResize(jpgImage!,
-                width: imageData.pixelWidth, height: imageData.pixelHeight);
-            final rotatedJpgImage = img.copyRotate(resizedImage, angle: 90);
+      // Intermediate and output files go into a private job folder, never
+      // next to the user's original file (which could overwrite a real photo
+      // on desktop, e.g. photo.png -> photo.jpg).
+      final jobDir = await createJobDir();
+      final baseName = p.basenameWithoutExtension(filePath);
 
-            final splitted = filePath.substring(0, (heifOrHeicIndex));
-            final file = File("$splitted.jpg")
-              ..writeAsBytesSync(img.encodeJpg(rotatedJpgImage));
+      if (!isJpeg(filePath)) {
+        final jpgFile = File(p.join(jobDir.path, "$baseName.jpg"));
 
-            filePath = file.path;
-            lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
-          } else {
+        if (isHeif(filePath)) {
+          final jpgPath = await HeifConverter.convert(filePath, format: "jpg");
+          if (jpgPath == null) {
             await showResult("Invalid HEIC/HEIF file");
             setIsLoading(LoadingData(isLoading: false));
+            return null;
           }
-        } else {
-          //Re encode to jpg
-          final image = img.decodeImage(imageData.imageFile.readAsBytesSync())!;
-          lastIndex = filePath.lastIndexOf(RegExp(r'(.png|.webp)'));
-          final splitted = filePath.substring(0, (lastIndex));
-          final file = File("$splitted.jpg")
-            ..writeAsBytesSync(img.encodeJpg(image));
 
-          //Replace file path and index
-          filePath = file.path;
-          lastIndex = filePath.lastIndexOf(RegExp(r'.jp'));
+          //Resize, Rotate, then replace the file path
+          final jpgImage = img.decodeImage(await File(jpgPath).readAsBytes());
+          final resizedImage = img.copyResize(jpgImage!,
+              width: imageData.pixelWidth, height: imageData.pixelHeight);
+          // TODO: this hardcoded 90 degree rotation is kept from the old code;
+          // verify it per platform (orientation differs on desktop).
+          final rotatedJpgImage = img.copyRotate(resizedImage, angle: 90);
+
+          await jpgFile.writeAsBytes(img.encodeJpg(rotatedJpgImage));
+        } else {
+          //Re encode png/webp to jpg
+          final image = img.decodeImage(await imageData.imageFile.readAsBytes())!;
+          await jpgFile.writeAsBytes(img.encodeJpg(image));
         }
+
+        filePath = jpgFile.path;
       }
-      final splitted = filePath.substring(0, (lastIndex));
-      final outPath = "${splitted}_compressed${filePath.substring(lastIndex)}";
+
+      final outPath = p.join(
+          jobDir.path, "${baseName}_compressed${p.extension(filePath)}");
 
       final compressedImage = await FlutterImageCompress.compressAndGetFile(
         filePath,
@@ -410,7 +374,7 @@ class ImagesViewModel {
       currentImageIndex.state = 0;
       globalQualitySlider.state = null;
 
-      await clearCacheDir();
+      await clearTempFiles();
 
       pickedImages.state = [];
 
@@ -448,39 +412,6 @@ class ImagesViewModel {
     final i = (bytes == 0) ? 0 : (bytes.bitLength / 10).floor();
     final size = bytes / (1 << (10 * i));
     return '${size.toStringAsFixed(decimals)} ${suffixes[i]}';
-  }
-
-  Future<void> clearCacheDir() async {
-    final tempDir = await getTemporaryDirectory();
-
-    if (await tempDir.exists()) {
-      try {
-        final tempDir = await getTemporaryDirectory();
-
-        if (!await tempDir.exists()) return;
-
-        final entities = tempDir.listSync(recursive: true);
-
-        for (final entity in entities) {
-          try {
-            if (entity is File && await entity.exists()) {
-              await entity.delete();
-              debugPrint("🗑️ Deleted file: ${entity.path}");
-            } else if (entity is Directory && await entity.exists()) {
-              await entity.delete(recursive: true);
-              debugPrint("🗑️ Deleted directory: ${entity.path}");
-            } else {
-              debugPrint("⚠️ Skipped (not found): ${entity.path}");
-            }
-          } catch (e) {
-            debugPrint("❌ Failed to delete ${entity.path}: $e");
-          }
-        }
-        debugPrint('Cache cleared');
-      } catch (e) {
-        debugPrint('Error clearing cache: $e');
-      }
-    }
   }
 
   Future<void> selectImageButtonUseCase() async {

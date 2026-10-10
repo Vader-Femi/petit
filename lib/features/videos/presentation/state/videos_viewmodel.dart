@@ -7,7 +7,8 @@ import 'package:flutter_super/flutter_super.dart';
 import 'dart:io';
 import 'package:gallery_saver_plus/gallery_saver.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
+import 'package:petit/core/utils/work_dir.dart';
 import 'package:petit/common/data/summary_report.dart';
 import 'package:petit/features/videos/data/slider_value.dart';
 import 'package:petit/features/videos/data/video_data.dart';
@@ -138,9 +139,9 @@ class VideosViewModel {
         return null;
       }
 
-      final outputDir = await getTemporaryDirectory();
-      final outPath =
-          '${outputDir.path}/compressed_${DateTime.now().millisecondsSinceEpoch}.mp4';
+      final jobDir = await createJobDir();
+      final outPath = p.join(
+          jobDir.path, 'compressed_${DateTime.now().millisecondsSinceEpoch}.mp4');
 
       final codecConfig = getVcodecConfigFromCodec(data.videoCodec!);
 
@@ -151,11 +152,21 @@ class VideosViewModel {
 
       final selectedPreset = ffmpegPresets[selectedPresetIndex.state].value;
 
-      final command =
-          "-i ${originalFile.path} -vcodec ${codecConfig.vcodec} -crf $crf -preset $selectedPreset $outPath";
+      // Passed as a list (not one string) so paths with spaces work on every OS.
+      final arguments = <String>[
+        '-i',
+        originalFile.path,
+        '-vcodec',
+        codecConfig.vcodec,
+        '-crf',
+        '$crf',
+        '-preset',
+        selectedPreset,
+        outPath,
+      ];
 
-      currentSession.state = await FFmpegKit.executeAsync(
-        command,
+      currentSession.state = await FFmpegKit.executeWithArgumentsAsync(
+        arguments,
         (session) async {
           final returnCode = await session.getReturnCode();
           if (ReturnCode.isSuccess(returnCode)) {
@@ -177,7 +188,7 @@ class VideosViewModel {
 
             await saveLocalVideo(finalFile);
             removeVideo();
-            clearCacheDir();
+            await clearTempFiles();
 
             setIsCompressing(false);
             setIsLoading(false);
@@ -274,39 +285,6 @@ class VideosViewModel {
     final i = (bytes == 0) ? 0 : (bytes.bitLength / 10).floor();
     final size = bytes / (1 << (10 * i));
     return '${size.toStringAsFixed(decimals)} ${suffixes[i]}';
-  }
-
-  Future<void> clearCacheDir() async {
-    final tempDir = await getTemporaryDirectory();
-
-    if (await tempDir.exists()) {
-      try {
-        final tempDir = await getTemporaryDirectory();
-
-        if (!await tempDir.exists()) return;
-
-        final entities = tempDir.listSync(recursive: true);
-
-        for (final entity in entities) {
-          try {
-            if (entity is File && await entity.exists()) {
-              await entity.delete();
-              debugPrint("🗑️ Deleted file: ${entity.path}");
-            } else if (entity is Directory && await entity.exists()) {
-              await entity.delete(recursive: true);
-              debugPrint("🗑️ Deleted directory: ${entity.path}");
-            } else {
-              debugPrint("⚠️ Skipped (not found): ${entity.path}");
-            }
-          } catch (e) {
-            debugPrint("❌ Failed to delete ${entity.path}: $e");
-          }
-        }
-        debugPrint('Cache cleared');
-      } catch (e) {
-        debugPrint('Error clearing cache: $e');
-      }
-    }
   }
 
   void removeVideo() {
