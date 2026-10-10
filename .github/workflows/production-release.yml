@@ -73,7 +73,7 @@ jobs:
         with:
           flutter-version: '3.41.2'
           channel: 'stable'
-      - run: flutter config --enable-macos-desktop --enable-ios
+      - run: flutter config --enable-macos-desktop --enable-ios --no-enable-swift-package-manager
       - run: flutter pub get
       - run: dart run build_runner build --delete-conflicting-outputs
 
