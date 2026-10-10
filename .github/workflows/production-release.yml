@@ -21,10 +21,10 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.47.7'
+          flutter-version: '3.41.2'
           channel: 'stable'
       - run: flutter pub get
-      - run: flutter pub run build_runner build --delete-conflicting-outputs
+      - run: dart run build_runner build --delete-conflicting-outputs
       - run: flutter build apk --release
 
       - name: Upload APK
@@ -41,11 +41,11 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.47.7'
+          flutter-version: '3.41.2'
           channel: 'stable'
       - run: flutter config --enable-windows-desktop
       - run: flutter pub get
-      - run: flutter pub run build_runner build --delete-conflicting-outputs
+      - run: dart run build_runner build --delete-conflicting-outputs
       - run: flutter build windows --release
 
       - name: Compress to ZIP
@@ -65,11 +65,11 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.47.7'
+          flutter-version: '3.41.2'
           channel: 'stable'
       - run: flutter config --enable-macos-desktop --enable-ios
       - run: flutter pub get
-      - run: flutter pub run build_runner build --delete-conflicting-outputs
+      - run: dart run build_runner build --delete-conflicting-outputs
 
       # macOS Build
       - run: flutter build macos --release
@@ -88,9 +88,9 @@ jobs:
             "build/macos/Build/Products/Release/petit.app"
 
       # iOS Build (Unsigned)
-      - run: flutter build ipa --release --no-codesign
-      - name: Rename IPA
-        run: mv build/ios/ipa/*.ipa petit-ios.ipa || echo "No IPA found"
+      - run: flutter build ios --release --no-codesign
+      - name: Create iOS ZIP
+        run: ditto -c -k --keepParent build/ios/iphoneos/Runner.app petit-ios.zip || echo "No app found"
 
       - name: Upload macOS & iOS Assets
         uses: actions/upload-artifact@v4
@@ -99,7 +99,7 @@ jobs:
           path: |
             petit-macos.zip
             petit-macos.dmg
-            petit-ios.ipa
+            petit-ios.zip
 
   create-release:
     name: Create GitHub Release
@@ -126,4 +126,4 @@ jobs:
             release-assets/petit-windows.zip
             release-assets/petit-macos.zip
             release-assets/petit-macos.dmg
-            release-assets/petit-ios.ipa
+            release-assets/petit-ios.zip
