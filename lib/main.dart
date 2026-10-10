@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
@@ -19,7 +20,6 @@ import 'features/home/presentation/pages/home_screen_web.dart';
 import 'firebase_options.dart';
 
 Future<void> main() async {
-
   // This is crucial for correct web routing:
   setUrlStrategy(PathUrlStrategy());
 
@@ -51,7 +51,8 @@ Future<void> _initFirebase() async {
 
     // ONLY set these up after successful init
     if (PlatformInfo.supportsCrashlytics) {
-      FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
+      FlutterError.onError =
+          FirebaseCrashlytics.instance.recordFlutterFatalError;
 
       PlatformDispatcher.instance.onError = (error, stack) {
         FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
@@ -75,6 +76,9 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   StreamSubscription<SharedMedia>? _intentStreamSubscription;
   final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+  static FirebaseAnalytics analytics = FirebaseAnalytics.instance;
+  static FirebaseAnalyticsObserver observer =
+      FirebaseAnalyticsObserver(analytics: analytics);
 
   @override
   void initState() {
@@ -105,7 +109,6 @@ class _MyAppState extends State<MyApp> {
   void _handleSharedMedia(SharedMedia media) {
     // Handle shared content based on what's available
     if (media.attachments != null && media.attachments!.isNotEmpty) {
-
       // Convert List<Attachment> to List<SharedAttachment>
       List<SharedAttachment> sharedAttachments = media.attachments!
           .map((attachment) => SharedAttachment(
@@ -170,7 +173,6 @@ class _MyAppState extends State<MyApp> {
 
   void _handleImages(List<SharedAttachment> images) {
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-
       navigatorKey.currentState?.pushAndRemoveUntil(
         MaterialPageRoute(
           builder: (_) => HomeScreen(
@@ -187,7 +189,6 @@ class _MyAppState extends State<MyApp> {
 
   void _handleVideo(List<SharedAttachment> video) {
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-
       navigatorKey.currentState?.pushAndRemoveUntil(
         MaterialPageRoute(
           builder: (_) => HomeScreen(
@@ -237,21 +238,22 @@ class _MyAppState extends State<MyApp> {
           darkTheme: darkTheme,
           themeMode: ThemeMode.system,
           navigatorKey: navigatorKey,
+          navigatorObservers: [observer],
           initialRoute: '/',
           onGenerateRoute: AppRoutes.onGenerateRoutes,
           home: kIsWeb
               ? HomeScreenWeb()
               : Platform.isIOS
-              ? UpgradeAlert(
-            dialogStyle: UpgradeDialogStyle.material,
-            showIgnore: false,
-            showLater: true,
-            upgrader: Upgrader(
-              durationUntilAlertAgain: const Duration(days: 3),
-            ),
-            child: HomeScreen(),
-          )
-              : HomeScreen(),
+                  ? UpgradeAlert(
+                      dialogStyle: UpgradeDialogStyle.material,
+                      showIgnore: false,
+                      showLater: true,
+                      upgrader: Upgrader(
+                        durationUntilAlertAgain: const Duration(days: 3),
+                      ),
+                      child: HomeScreen(),
+                    )
+                  : HomeScreen(),
         );
       },
     );
