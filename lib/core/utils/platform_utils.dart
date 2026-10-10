@@ -18,4 +18,8 @@ class PlatformInfo {
 
   /// Firebase Crashlytics has no Windows or Linux implementation.
   static bool get supportsCrashlytics => !(isWindows || isLinux);
+
+  /// Firebase Analytics is skipped on Windows and Linux (Firebase is not
+  /// initialised on Linux and there is no verified Windows implementation).
+  static bool get supportsAnalytics => !(isWindows || isLinux);
 }

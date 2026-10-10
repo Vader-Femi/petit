@@ -204,7 +204,7 @@ class _VideosPageState extends State<VideosPage> {
           );
         } else {
           if (getVideosViewModel.isCompressing.state) {
-            if (getVideosViewModel.currentSession.state != null ) {
+            if (getVideosViewModel.currentTask.state != null) {
               return FloatingActionButton.extended(
                 icon: const Icon(Icons.clear),
                 tooltip: "Cancel compression ",

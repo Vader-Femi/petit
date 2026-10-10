@@ -1,0 +1,2174 @@
+diff --git a/docs/architecture.md b/docs/architecture.md
+new file mode 100644
+index 0000000..acb3115
+--- /dev/null
++++ b/docs/architecture.md
+@@ -0,0 +1,34 @@
++# Architecture
++
++Petit follows a feature-first clean architecture with ViewModels.
++
++```
++lib/
++  common/
++    domain/        MediaPicker, MediaSaver, Workspace, MediaException
++    data/services/ mobile implementations (image_picker, gallery_saver_plus, temp files)
++  features/
++    images/
++      domain/      ImageData, ImageCompressor (interface), ReadImages / CompressImages use cases
++      data/        FlutterImageCompressor (flutter_image_compress + HEIC)
++      presentation/ ImagesViewModel (state only), pages
++    videos/
++      domain/      VideoData, CodecConfig, VideoCompressor (interface), CompressVideo use case
++      data/        FfmpegVideoCompressor (ffmpeg_kit_flutter_new)
++      presentation/ VideosViewModel (state only), pages
++  service_locator.dart   wires interfaces to implementations (get_it)
++```
++
++Rules
++
++- `domain/` is plain Dart: no Flutter, no plugins, no state-management package.
++- ViewModels talk to use cases and domain interfaces only. They never import a plugin
++  for picking, compressing or saving.
++- Platform differences live in `data/` and are chosen in `service_locator.dart`.
++  To support a new platform, add an implementation of the interface and register it
++  there (see the `TODO(desktop)` comment).
++- Files created while compressing go into the work folder (`core/utils/work_dir.dart`),
++  never next to the user's originals.
++- The `*_web.dart` files are a frozen, separate web implementation. The old
++  `features/*/data/{image_data,video_data,codec_config}.dart` files only re-export
++  the domain entities so those web files keep compiling.
+diff --git a/lib/common/data/services/gallery_media_saver.dart b/lib/common/data/services/gallery_media_saver.dart
+new file mode 100644
+index 0000000..ad00f1b
+--- /dev/null
++++ b/lib/common/data/services/gallery_media_saver.dart
+@@ -0,0 +1,25 @@
++import 'package:gallery_saver_plus/gallery_saver.dart';
++import 'package:petit/common/domain/services/media_saver.dart';
++import 'package:petit/core/utils/platform_utils.dart';
++
++class GalleryMediaSaver implements MediaSaver {
++  static const _album = "Petit";
++
++  @override
++  Future<void> saveImage(String path) async {
++    await GallerySaver.saveImage(path, albumName: _album);
++  }
++
++  @override
++  Future<void> saveVideo(String path) async {
++    await GallerySaver.saveVideo(path, albumName: _album);
++  }
++
++  @override
++  String get imageDestinationLabel =>
++      PlatformInfo.isAndroid ? "Pictures/Petit" : "Photos";
++
++  @override
++  String get videoDestinationLabel =>
++      PlatformInfo.isAndroid ? "Movies/Petit" : "Photos";
++}
+diff --git a/lib/common/data/services/image_picker_media_picker.dart b/lib/common/data/services/image_picker_media_picker.dart
+new file mode 100644
+index 0000000..7b02e98
+--- /dev/null
++++ b/lib/common/data/services/image_picker_media_picker.dart
+@@ -0,0 +1,18 @@
++import 'package:image_picker/image_picker.dart';
++import 'package:petit/common/domain/services/media_picker.dart';
++
++class ImagePickerMediaPicker implements MediaPicker {
++  final ImagePicker _picker = ImagePicker();
++
++  @override
++  Future<List<String>> pickImages() async {
++    final files = await _picker.pickMultiImage();
++    return files.map((file) => file.path).toList();
++  }
++
++  @override
++  Future<String?> pickVideo() async {
++    final file = await _picker.pickVideo(source: ImageSource.gallery);
++    return file?.path;
++  }
++}
+diff --git a/lib/common/data/services/temp_workspace.dart b/lib/common/data/services/temp_workspace.dart
+new file mode 100644
+index 0000000..5436cc9
+--- /dev/null
++++ b/lib/common/data/services/temp_workspace.dart
+@@ -0,0 +1,7 @@
++import 'package:petit/common/domain/services/workspace.dart';
++import 'package:petit/core/utils/work_dir.dart';
++
++class TempWorkspace implements Workspace {
++  @override
++  Future<void> clear() => clearTempFiles();
++}
+diff --git a/lib/common/domain/media_exception.dart b/lib/common/domain/media_exception.dart
+new file mode 100644
+index 0000000..c5e69ab
+--- /dev/null
++++ b/lib/common/domain/media_exception.dart
+@@ -0,0 +1,9 @@
++/// A failure whose [message] is safe to show to the user.
++class MediaException implements Exception {
++  final String message;
++
++  const MediaException(this.message);
++
++  @override
++  String toString() => message;
++}
+diff --git a/lib/common/domain/services/media_picker.dart b/lib/common/domain/services/media_picker.dart
+new file mode 100644
+index 0000000..21f02e3
+--- /dev/null
++++ b/lib/common/domain/services/media_picker.dart
+@@ -0,0 +1,9 @@
++/// Lets the user choose media. Implementations return plain file paths so the
++/// domain layer does not depend on any picker plugin.
++abstract interface class MediaPicker {
++  /// Paths of the chosen images; empty if nothing was picked.
++  Future<List<String>> pickImages();
++
++  /// Path of the chosen video, or null if nothing was picked.
++  Future<String?> pickVideo();
++}
+diff --git a/lib/common/domain/services/media_saver.dart b/lib/common/domain/services/media_saver.dart
+new file mode 100644
+index 0000000..f59bce7
+--- /dev/null
++++ b/lib/common/domain/services/media_saver.dart
+@@ -0,0 +1,12 @@
++/// Saves finished files where the user can find them (gallery on mobile,
++/// a chosen folder on desktop).
++abstract interface class MediaSaver {
++  Future<void> saveImage(String path);
++
++  Future<void> saveVideo(String path);
++
++  /// Human readable location shown in the summary dialog.
++  String get imageDestinationLabel;
++
++  String get videoDestinationLabel;
++}
+diff --git a/lib/common/domain/services/workspace.dart b/lib/common/domain/services/workspace.dart
+new file mode 100644
+index 0000000..eb5a153
+--- /dev/null
++++ b/lib/common/domain/services/workspace.dart
+@@ -0,0 +1,5 @@
++/// Owns the temporary files created while compressing.
++abstract interface class Workspace {
++  /// Deletes temporary files. Must never touch the user's own files.
++  Future<void> clear();
++}
+diff --git a/lib/core/utils/platform_utils.dart b/lib/core/utils/platform_utils.dart
+index c927094..bdcf20b 100644
+--- a/lib/core/utils/platform_utils.dart
++++ b/lib/core/utils/platform_utils.dart
+@@ -18,4 +18,8 @@ class PlatformInfo {
+ 
+   /// Firebase Crashlytics has no Windows or Linux implementation.
+   static bool get supportsCrashlytics => !(isWindows || isLinux);
++
++  /// Firebase Analytics is skipped on Windows and Linux (Firebase is not
++  /// initialised on Linux and there is no verified Windows implementation).
++  static bool get supportsAnalytics => !(isWindows || isLinux);
+ }
+diff --git a/lib/features/images/data/image_data.dart b/lib/features/images/data/image_data.dart
+index 05ca3de..c3ec23d 100644
+--- a/lib/features/images/data/image_data.dart
++++ b/lib/features/images/data/image_data.dart
+@@ -1,29 +1,3 @@
+-import 'dart:io';
+-import 'package:flutter_super/flutter_super.dart';
+-
+-class ImageData with SuperModel {
+-  final File imageFile;
+-  final int pixelWidth;
+-  final int pixelHeight;
+-  final int quality;
+-
+-  const ImageData({
+-    required this.imageFile,
+-    required this.pixelWidth,
+-    required this.pixelHeight,
+-    required this.quality,
+-  });
+-
+-  ImageData copyWith(
+-      {File? imageFile, int? pixelWidth, int? pixelHeight, int? quality,}) {
+-    return ImageData(
+-      imageFile: imageFile ?? this.imageFile,
+-      pixelWidth: pixelWidth ?? this.pixelWidth,
+-      pixelHeight: pixelHeight ?? this.pixelHeight,
+-      quality: quality ?? this.quality,
+-    );
+-  }
+-
+-  @override
+-  List<Object?> get props => [imageFile, pixelHeight, pixelWidth, quality];
+-}
++// Moved to the domain layer. Kept so the web variants keep compiling;
++// new code should import the domain entity directly.
++export 'package:petit/features/images/domain/entities/image_data.dart';
+diff --git a/lib/features/images/data/services/flutter_image_compressor.dart b/lib/features/images/data/services/flutter_image_compressor.dart
+new file mode 100644
+index 0000000..092fd04
+--- /dev/null
++++ b/lib/features/images/data/services/flutter_image_compressor.dart
+@@ -0,0 +1,112 @@
++import 'dart:io';
++
++import 'package:flutter_image_compress/flutter_image_compress.dart';
++import 'package:heif_converter_plus/heif_converter.dart';
++import 'package:image/image.dart' as img;
++import 'package:image_size_getter/file_input.dart';
++import 'package:image_size_getter/image_size_getter.dart';
++import 'package:path/path.dart' as p;
++import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/core/utils/media_formats.dart';
++import 'package:petit/core/utils/work_dir.dart';
++import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/entities/image_size.dart';
++import 'package:petit/features/images/domain/services/image_compressor.dart';
++
++/// Mobile implementation: flutter_image_compress plus heif_converter_plus.
++class FlutterImageCompressor implements ImageCompressor {
++  @override
++  Future<ImageSize> readSize(String path) async {
++    var width = 1080;
++    var height = 1080;
++
++    String? readablePath;
++    if (isImageSizeGetterSupported(path)) {
++      readablePath = path;
++    } else if (isHeif(path)) {
++      // image_size_getter cannot read HEIC/HEIF, so convert first.
++      readablePath = await HeifConverter.convert(path, format: "jpg");
++    }
++
++    if (readablePath != null) {
++      final size =
++          ImageSizeGetter.getSizeResult(FileInput(File(readablePath))).size;
++      width = size.width;
++      height = size.height;
++    }
++
++    return ImageSize(width, height);
++  }
++
++  @override
++  Future<File> compress(ImageData image, {required int quality}) async {
++    try {
++      var filePath = image.imageFile.path;
++      if (!isCompressibleImage(filePath)) {
++        throw const MediaException(
++            "Unsupported- Only supports png,webp,jpeg,jpg,heic and heif");
++      }
++
++      // Intermediate and output files go into a private job folder, never
++      // next to the user's original file (which could overwrite a real photo
++      // on desktop, e.g. photo.png -> photo.jpg).
++      final jobDir = await createJobDir();
++      final baseName = p.basenameWithoutExtension(filePath);
++
++      if (!isJpeg(filePath)) {
++        final jpgFile = File(p.join(jobDir.path, "$baseName.jpg"));
++
++        if (isHeif(filePath)) {
++          final jpgPath = await HeifConverter.convert(filePath, format: "jpg");
++          if (jpgPath == null) {
++            throw const MediaException("Invalid HEIC/HEIF file");
++          }
++
++          //Resize, Rotate, then replace the file path
++          final jpgImage = img.decodeImage(await File(jpgPath).readAsBytes());
++          final resizedImage = img.copyResize(jpgImage!,
++              width: image.pixelWidth, height: image.pixelHeight);
++          // TODO: this hardcoded 90 degree rotation is kept from the old code;
++          // verify it per platform (orientation differs on desktop).
++          final rotatedJpgImage = img.copyRotate(resizedImage, angle: 90);
++
++          await jpgFile.writeAsBytes(img.encodeJpg(rotatedJpgImage));
++        } else {
++          //Re encode png/webp to jpg
++          final decoded = img.decodeImage(await image.imageFile.readAsBytes())!;
++          await jpgFile.writeAsBytes(img.encodeJpg(decoded));
++        }
++
++        filePath = jpgFile.path;
++      }
++
++      final outPath = p.join(
++          jobDir.path, "${baseName}_compressed${p.extension(filePath)}");
++
++      final compressedImage = await FlutterImageCompress.compressAndGetFile(
++        filePath,
++        outPath,
++        minWidth: image.pixelWidth,
++        minHeight: image.pixelHeight,
++        quality: quality,
++        keepExif: true,
++      );
++
++      if (compressedImage == null) {
++        throw const MediaException("Error compressing image!");
++      }
++
++      final originalSize = await File(filePath).length();
++      final compressedSize = await compressedImage.length();
++
++      // Compressed is larger or equal: hand back the original.
++      return compressedSize < originalSize
++          ? File(compressedImage.path)
++          : image.imageFile;
++    } on MediaException {
++      rethrow;
++    } catch (e) {
++      throw MediaException("Error compressing image - $e");
++    }
++  }
++}
+diff --git a/lib/features/images/domain/entities/image_data.dart b/lib/features/images/domain/entities/image_data.dart
+new file mode 100644
+index 0000000..46325d4
+--- /dev/null
++++ b/lib/features/images/domain/entities/image_data.dart
+@@ -0,0 +1,45 @@
++import 'dart:io';
++
++/// An image selected for compression.
++///
++/// Plain Dart: value equality is implemented here instead of through a
++/// state-management mixin, so the domain layer does not depend on one.
++class ImageData {
++  final File imageFile;
++  final int pixelWidth;
++  final int pixelHeight;
++  final int quality;
++
++  const ImageData({
++    required this.imageFile,
++    required this.pixelWidth,
++    required this.pixelHeight,
++    required this.quality,
++  });
++
++  ImageData copyWith({
++    File? imageFile,
++    int? pixelWidth,
++    int? pixelHeight,
++    int? quality,
++  }) {
++    return ImageData(
++      imageFile: imageFile ?? this.imageFile,
++      pixelWidth: pixelWidth ?? this.pixelWidth,
++      pixelHeight: pixelHeight ?? this.pixelHeight,
++      quality: quality ?? this.quality,
++    );
++  }
++
++  @override
++  bool operator ==(Object other) =>
++      identical(this, other) ||
++      other is ImageData &&
++          other.imageFile == imageFile &&
++          other.pixelHeight == pixelHeight &&
++          other.pixelWidth == pixelWidth &&
++          other.quality == quality;
++
++  @override
++  int get hashCode => Object.hash(imageFile, pixelHeight, pixelWidth, quality);
++}
+diff --git a/lib/features/images/domain/entities/image_size.dart b/lib/features/images/domain/entities/image_size.dart
+new file mode 100644
+index 0000000..bf95971
+--- /dev/null
++++ b/lib/features/images/domain/entities/image_size.dart
+@@ -0,0 +1,6 @@
++class ImageSize {
++  final int width;
++  final int height;
++
++  const ImageSize(this.width, this.height);
++}
+diff --git a/lib/features/images/domain/services/image_compressor.dart b/lib/features/images/domain/services/image_compressor.dart
+new file mode 100644
+index 0000000..c748443
+--- /dev/null
++++ b/lib/features/images/domain/services/image_compressor.dart
+@@ -0,0 +1,15 @@
++import 'dart:io';
++
++import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/entities/image_size.dart';
++
++abstract interface class ImageCompressor {
++  /// Pixel size of the image at [path] (HEIC/HEIF included). Implementations
++  /// return 1080x1080 when the size cannot be determined.
++  Future<ImageSize> readSize(String path);
++
++  /// Compresses [image] and returns the file that should be saved: the
++  /// compressed file, or the original when compression did not make it
++  /// smaller. Throws a [MediaException] with a user-facing message on failure.
++  Future<File> compress(ImageData image, {required int quality});
++}
+diff --git a/lib/features/images/domain/usecases/compress_images.dart b/lib/features/images/domain/usecases/compress_images.dart
+new file mode 100644
+index 0000000..ec4a46b
+--- /dev/null
++++ b/lib/features/images/domain/usecases/compress_images.dart
+@@ -0,0 +1,118 @@
++import 'dart:io';
++
++import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/common/domain/services/media_saver.dart';
++import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/services/image_compressor.dart';
++
++class BatchProgress {
++  final int completedSteps;
++  final int totalSteps;
++  final int percent;
++
++  const BatchProgress({
++    required this.completedSteps,
++    required this.totalSteps,
++    required this.percent,
++  });
++}
++
++class ImageBatchResult {
++  final int originalBytes;
++  final int compressedBytes;
++  final String destinationLabel;
++
++  const ImageBatchResult({
++    required this.originalBytes,
++    required this.compressedBytes,
++    required this.destinationLabel,
++  });
++
++  int get savedBytes => originalBytes - compressedBytes;
++
++  /// Fraction (0..1) of the original size that was saved.
++  double get savedFraction => originalBytes <= 0
++      ? 0.0
++      : (savedBytes / originalBytes).clamp(0, 1).toDouble();
++}
++
++/// Compresses and saves a batch of images, reporting progress as it goes.
++///
++/// Failures on a single image are reported through [onError] and do not stop
++/// the batch. Clearing temporary files is left to the caller so it can tear
++/// down its UI first.
++class CompressImagesUseCase {
++  CompressImagesUseCase(this._compressor, this._saver);
++
++  final ImageCompressor _compressor;
++  final MediaSaver _saver;
++
++  Future<ImageBatchResult> call({
++    required List<ImageData> images,
++    int? globalQuality,
++    required bool Function() isCancelled,
++    required void Function(BatchProgress progress) onProgress,
++    required void Function(String message) onError,
++  }) async {
++    final total = images.length;
++    var progress = total == 1 ? 50 : 0;
++    var sizeBefore = 0;
++    var sizeAfter = 0;
++
++    for (final (index, image) in images.indexed) {
++      if (isCancelled()) break;
++
++      onProgress(BatchProgress(
++        completedSteps: index,
++        totalSteps: total,
++        percent: progress,
++      ));
++
++      final originalSize = await image.imageFile.length();
++      sizeBefore += originalSize;
++
++      if (isCancelled()) break;
++
++      final File compressed;
++      try {
++        compressed = await _compressor.compress(
++          image,
++          quality: globalQuality ?? image.quality,
++        );
++      } on MediaException catch (e) {
++        sizeBefore -= originalSize;
++        onError(e.message);
++        continue;
++      } catch (e) {
++        sizeBefore -= originalSize;
++        onError("Error compressing image - $e");
++        continue;
++      }
++
++      if (isCancelled()) break;
++
++      try {
++        await _saver.saveImage(compressed.path);
++      } catch (e) {
++        onError("Error ocurred - $e");
++      }
++
++      sizeAfter += await compressed.length();
++
++      if (isCancelled()) break;
++
++      progress = (((index + 1) / total) * 100).round();
++      onProgress(BatchProgress(
++        completedSteps: index + 1,
++        totalSteps: total,
++        percent: progress,
++      ));
++    }
++
++    return ImageBatchResult(
++      originalBytes: sizeBefore,
++      compressedBytes: sizeAfter,
++      destinationLabel: _saver.imageDestinationLabel,
++    );
++  }
++}
+diff --git a/lib/features/images/domain/usecases/read_images.dart b/lib/features/images/domain/usecases/read_images.dart
+new file mode 100644
+index 0000000..cc9cc55
+--- /dev/null
++++ b/lib/features/images/domain/usecases/read_images.dart
+@@ -0,0 +1,27 @@
++import 'dart:io';
++
++import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/services/image_compressor.dart';
++
++/// Turns file paths (picked or shared) into [ImageData] with their size.
++class ReadImagesUseCase {
++  ReadImagesUseCase(this._compressor);
++
++  final ImageCompressor _compressor;
++
++  static const defaultQuality = 50;
++
++  Future<List<ImageData>> call(List<String> paths) async {
++    final images = <ImageData>[];
++    for (final path in paths) {
++      final size = await _compressor.readSize(path);
++      images.add(ImageData(
++        imageFile: File(path),
++        pixelWidth: size.width,
++        pixelHeight: size.height,
++        quality: defaultQuality,
++      ));
++    }
++    return images;
++  }
++}
+diff --git a/lib/features/images/presentation/state/images_viewmodel.dart b/lib/features/images/presentation/state/images_viewmodel.dart
+index 0510eb8..f1d8883 100644
+--- a/lib/features/images/presentation/state/images_viewmodel.dart
++++ b/lib/features/images/presentation/state/images_viewmodel.dart
+@@ -1,25 +1,19 @@
+-import 'dart:ui';
+ import 'package:async/async.dart';
+-import 'package:flutter/foundation.dart';
+ import 'package:flutter_super/flutter_super.dart';
+-import 'dart:io';
+-import 'package:flutter_image_compress/flutter_image_compress.dart';
+-import 'package:gallery_saver_plus/gallery_saver.dart';
+-import 'package:heif_converter_plus/heif_converter.dart';
+-import 'package:image/image.dart' as img;
+-import 'package:image_picker/image_picker.dart';
+-import 'package:image_size_getter/file_input.dart';
+-import 'package:image_size_getter/image_size_getter.dart';
+-import 'package:path/path.dart' as p;
+-import 'package:petit/core/utils/media_formats.dart';
+-import 'package:petit/core/utils/work_dir.dart';
+-import 'package:petit/features/images/data/image_data.dart';
++import 'package:petit/common/domain/services/media_picker.dart';
++import 'package:petit/common/domain/services/workspace.dart';
++import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/usecases/compress_images.dart';
++import 'package:petit/features/images/domain/usecases/read_images.dart';
++import 'package:petit/service_locator.dart';
+ import 'package:share_handler/share_handler.dart';
+ import '../../data/loading_data.dart';
+ import '../../../../common/data/summary_report.dart';
+ 
+ ImagesViewModel get getImagesViewModel => Super.init(ImagesViewModel());
+ 
++/// UI state for the image tab. Picking, reading, compressing and saving live
++/// in the domain use cases; this class only holds state and reacts to them.
+ class ImagesViewModel {
+   final result = RxT<String?>(null);
+   final isLoading = RxT<LoadingData>(LoadingData(isLoading: false));
+@@ -31,6 +25,14 @@ class ImagesViewModel {
+ 
+   CancelableCompleter<void> completer = CancelableCompleter();
+ 
++  // Resolved lazily: `getImagesViewModel` constructs a new instance on every
++  // access, so nothing may be looked up in the constructor.
++  late final MediaPicker _picker = sl<MediaPicker>();
++  late final Workspace _workspace = sl<Workspace>();
++  late final ReadImagesUseCase _readImages = sl<ReadImagesUseCase>();
++  late final CompressImagesUseCase _compressImages =
++      sl<CompressImagesUseCase>();
++
+   void setIsLoading(LoadingData loadingData) {
+     isLoading.state = loadingData;
+   }
+@@ -65,78 +67,6 @@ class ImagesViewModel {
+     globalQualitySlider.state = (value * 100).toInt();
+   }
+ 
+-  Future<void> pickSingleImage() async {
+-
+-    try {
+-      setIsLoading(
+-        LoadingData(
+-            isLoading: true,
+-            completedSteps: null,
+-            totalSteps: null,
+-            progressCounter: null),
+-      );
+-
+-      final result = await ImagePicker().pickImage(source: ImageSource.gallery);
+-
+-      if (result != null) {
+-        pickedImages.state = [];
+-        currentImage.state = null;
+-        currentImageIndex.state = null;
+-        globalQualitySlider.state = null;
+-
+-        final imageBytes = await result.readAsBytes();
+-        final buffer = await ImmutableBuffer.fromUint8List(imageBytes);
+-        final descriptor = await ImageDescriptor.encoded(buffer);
+-
+-        pickedImages.state = [
+-          ImageData(
+-            imageFile: File(result.path),
+-            pixelWidth: descriptor.width,
+-            pixelHeight: descriptor.height,
+-            quality: 50,
+-          ),
+-        ];
+-
+-        currentImage.state = pickedImages[0];
+-        currentImageIndex.state = 0;
+-        setIsLoading(LoadingData(isLoading: false));
+-
+-        descriptor.dispose();
+-        buffer.dispose();
+-      } else {
+-        await showResult("No file picked!");
+-        setIsLoading(LoadingData(isLoading: false));
+-      }
+-    } catch (e){
+-      await showResult("An error ocurred - ${e.toString()}");
+-      setIsLoading(LoadingData(isLoading: false));
+-    }
+-  }
+-
+-  /// Reads the pixel size of [path]. HEIC/HEIF files are converted to a
+-  /// temporary JPEG first because image_size_getter cannot read them.
+-  /// Falls back to 1080x1080 (the previous behaviour) when the size is unknown.
+-  Future<({int width, int height})> _readImageSize(String path) async {
+-    var width = 1080;
+-    var height = 1080;
+-
+-    String? readablePath;
+-    if (isImageSizeGetterSupported(path)) {
+-      readablePath = path;
+-    } else if (isHeif(path)) {
+-      readablePath = await HeifConverter.convert(path, format: "jpg");
+-    }
+-
+-    if (readablePath != null) {
+-      final size =
+-          ImageSizeGetter.getSizeResult(FileInput(File(readablePath))).size;
+-      width = size.width;
+-      height = size.height;
+-    }
+-
+-    return (width: width, height: height);
+-  }
+-
+   Future<void> addSharedImages([List<SharedAttachment>? sharedFiles]) async {
+     if (sharedFiles != null && sharedFiles.isNotEmpty) {
+       if (isLoading.state.isLoading) return;
+@@ -153,19 +83,9 @@ class ImagesViewModel {
+         pickedImages.state = [];
+         currentImage.state = null;
+         globalQualitySlider.state = null;
+-        List<ImageData> picked = [];
+ 
+-        for (var file in sharedFiles) {
+-          final path = file.path;
+-          final size = await _readImageSize(path);
+-
+-          picked.add(ImageData(
+-            imageFile: File(path),
+-            pixelWidth: size.width,
+-            pixelHeight: size.height,
+-            quality: 50,
+-          ));
+-        }
++        final picked =
++            await _readImages(sharedFiles.map((file) => file.path).toList());
+ 
+         pickedImages.state = picked;
+         currentImage.state = picked[0];
+@@ -188,25 +108,14 @@ class ImagesViewModel {
+             progressCounter: null),
+       );
+ 
+-      final result = await ImagePicker().pickMultiImage();
++      final paths = await _picker.pickImages();
+ 
+-      if (result.isNotEmpty) {
++      if (paths.isNotEmpty) {
+         pickedImages.state = [];
+         currentImage.state = null;
+         globalQualitySlider.state = null;
+-        List<ImageData> picked = [];
+-
+-        for (var file in result) {
+-          final path = file.path;
+-          final size = await _readImageSize(path);
+ 
+-          picked.add(ImageData(
+-            imageFile: File(path),
+-            pixelWidth: size.width,
+-            pixelHeight: size.height,
+-            quality: 50,
+-          ));
+-        }
++        final picked = await _readImages(paths);
+ 
+         pickedImages.state = picked;
+         currentImage.state = picked[0];
+@@ -217,95 +126,9 @@ class ImagesViewModel {
+         setIsLoading(LoadingData(isLoading: false));
+         return;
+       }
+-    } catch (e){
+-      await showResult("An error ocurred - ${e.toString()}");
+-      setIsLoading(LoadingData(isLoading: false));
+-    }
+-  }
+-
+-  Future<XFile?> compressImage({required ImageData imageData}) async {
+-    try {
+-      var filePath = imageData.imageFile.path;
+-      if (!isCompressibleImage(filePath)) {
+-        await showResult(
+-            "Unsupported- Only supports png,webp,jpeg,jpg,heic and heif");
+-        setIsLoading(LoadingData(isLoading: false));
+-        return null;
+-      }
+-
+-      // Intermediate and output files go into a private job folder, never
+-      // next to the user's original file (which could overwrite a real photo
+-      // on desktop, e.g. photo.png -> photo.jpg).
+-      final jobDir = await createJobDir();
+-      final baseName = p.basenameWithoutExtension(filePath);
+-
+-      if (!isJpeg(filePath)) {
+-        final jpgFile = File(p.join(jobDir.path, "$baseName.jpg"));
+-
+-        if (isHeif(filePath)) {
+-          final jpgPath = await HeifConverter.convert(filePath, format: "jpg");
+-          if (jpgPath == null) {
+-            await showResult("Invalid HEIC/HEIF file");
+-            setIsLoading(LoadingData(isLoading: false));
+-            return null;
+-          }
+-
+-          //Resize, Rotate, then replace the file path
+-          final jpgImage = img.decodeImage(await File(jpgPath).readAsBytes());
+-          final resizedImage = img.copyResize(jpgImage!,
+-              width: imageData.pixelWidth, height: imageData.pixelHeight);
+-          // TODO: this hardcoded 90 degree rotation is kept from the old code;
+-          // verify it per platform (orientation differs on desktop).
+-          final rotatedJpgImage = img.copyRotate(resizedImage, angle: 90);
+-
+-          await jpgFile.writeAsBytes(img.encodeJpg(rotatedJpgImage));
+-        } else {
+-          //Re encode png/webp to jpg
+-          final image = img.decodeImage(await imageData.imageFile.readAsBytes())!;
+-          await jpgFile.writeAsBytes(img.encodeJpg(image));
+-        }
+-
+-        filePath = jpgFile.path;
+-      }
+-
+-      final outPath = p.join(
+-          jobDir.path, "${baseName}_compressed${p.extension(filePath)}");
+-
+-      final compressedImage = await FlutterImageCompress.compressAndGetFile(
+-        filePath,
+-        outPath,
+-        minWidth: imageData.pixelWidth,
+-        minHeight: imageData.pixelHeight,
+-        quality: globalQualitySlider.state ?? imageData.quality,
+-        keepExif: true
+-      );
+-
+-      if (compressedImage != null) {
+-        final originalSize = await File(filePath).length();
+-        final compressedSize = await compressedImage.length();
+-
+-        if (compressedSize < originalSize) {
+-          return compressedImage;
+-        } else {
+-          // Compressed is larger or equal; return original
+-          return XFile(imageData.imageFile.path);
+-        }
+-      } else {
+-        await showResult("Error compressing image!");
+-      }
+-    } catch (e) {
+-      await showResult("Error compressing image - ${e.toString()}");
+-      setIsLoading(LoadingData(isLoading: false));
+-    }
+-    return null;
+-  }
+-
+-  Future<void> saveLocalImage(XFile compressedImage) async {
+-    try {
+-      await GallerySaver.saveImage(compressedImage.path, albumName: "Petit");
+     } catch (e) {
++      await showResult("An error ocurred - ${e.toString()}");
+       setIsLoading(LoadingData(isLoading: false));
+-      await showResult("Error ocurred - ${e.toString()}");
+     }
+   }
+ 
+@@ -317,64 +140,26 @@ class ImagesViewModel {
+       }
+ 
+       final totalLength = pickedImages.state.length;
+-      var progress = totalLength == 1 ? 50 : 0;
+-      var sizeBeforeCompression = 0;
+-      var sizeAfterCompression = 0;
+-
+-      for (final (index, imageData) in pickedImages.state.indexed) {
+-        if (completer.isCanceled == true) {
+-          break;
+-        } else {
+-          setIsLoading(
+-            LoadingData(
+-                isLoading: true,
+-                completedSteps: index,
+-                totalSteps: totalLength,
+-                progressCounter: progress),
+-          );
+-
+-          sizeBeforeCompression += imageData.imageFile.lengthSync();
+-
+-          if (completer.isCanceled == true) break;
+-
+-          final compressedFile = await compressImage(imageData: imageData);
+-          if (compressedFile == null) {
+-            sizeBeforeCompression -= imageData.imageFile.lengthSync();
+-            continue;
+-          }
+-
+-          if (completer.isCanceled == true) break;
+-
+-          await saveLocalImage(compressedFile);
+-
+-          sizeAfterCompression += await compressedFile.length();
+-
+-          if (completer.isCanceled == true) break;
+-
+-          // await getHomeViewModel
+-          //     .compressImage(imageData: imageData)
+-          //     .then((compressedFile) async {
+-          //   await saveLocalImage(compressedFile);
+-          //   sizeAfterCompression += await compressedFile.length();
+-          // });
+-
+-          progress = (((index + 1) / totalLength) * 100).round();
+-
+-          setIsLoading(
+-            LoadingData(
+-                isLoading: true,
+-                completedSteps: index + 1,
+-                totalSteps: totalLength,
+-                progressCounter: progress),
+-          );
+-        }
+-      }
++
++      final batch = await _compressImages(
++        images: List.of(pickedImages.state),
++        globalQuality: globalQualitySlider.state,
++        isCancelled: () => completer.isCanceled == true,
++        onProgress: (progress) => setIsLoading(
++          LoadingData(
++              isLoading: true,
++              completedSteps: progress.completedSteps,
++              totalSteps: progress.totalSteps,
++              progressCounter: progress.percent),
++        ),
++        onError: showResult,
++      );
+ 
+       currentImage.state = null;
+       currentImageIndex.state = 0;
+       globalQualitySlider.state = null;
+ 
+-      await clearTempFiles();
++      await _workspace.clear();
+ 
+       pickedImages.state = [];
+ 
+@@ -386,22 +171,12 @@ class ImagesViewModel {
+             totalSteps: totalLength),
+       );
+ 
+-      final savedBytes = sizeBeforeCompression - sizeAfterCompression;
+-      final savedPercent =
+-          (savedBytes / sizeBeforeCompression).clamp(0, 1).toDouble();
+-
+-      final String path;
+-      if (!kIsWeb) {
+-        path = Platform.isAndroid ? "Pictures/Petit" : "Photos";
+-      } else {
+-        path = "Probably downloads";
+-      }
+       return SummaryReport(
+-          originalSizeBytes: formatBytes(sizeBeforeCompression),
+-          compressedSizeBytes: formatBytes(sizeAfterCompression),
+-          savedBytes: formatBytes(savedBytes),
+-          savedPercent: savedPercent,
+-          path: path);
++          originalSizeBytes: formatBytes(batch.originalBytes),
++          compressedSizeBytes: formatBytes(batch.compressedBytes),
++          savedBytes: formatBytes(batch.savedBytes),
++          savedPercent: batch.savedFraction,
++          path: batch.destinationLabel);
+     }
+     return null;
+   }
+diff --git a/lib/features/videos/data/codec_config.dart b/lib/features/videos/data/codec_config.dart
+index d3ceaf6..2ea0518 100644
+--- a/lib/features/videos/data/codec_config.dart
++++ b/lib/features/videos/data/codec_config.dart
+@@ -1,26 +1,3 @@
+-class CodecConfig {
+-  final String vcodec;
+-  final int minCrf;
+-  final int maxCrf;
+-
+-  CodecConfig({
+-    required this.vcodec,
+-    required this.minCrf,
+-    required this.maxCrf,
+-  });
+-}
+-
+-CodecConfig getVcodecConfigFromCodec(String codec) {
+-  switch (codec.toLowerCase()) {
+-    case 'hevc':
+-    case 'h265':
+-      return CodecConfig(vcodec: 'libx265', minCrf: 20, maxCrf: 30);
+-    case 'h264':
+-    case 'avc1':
+-      return CodecConfig(vcodec: 'libx264', minCrf: 18, maxCrf: 28);
+-    case 'vp9':
+-      return CodecConfig(vcodec: 'libvpx-vp9', minCrf: 20, maxCrf: 30);
+-    default:
+-      return CodecConfig(vcodec: 'libx264', minCrf: 18, maxCrf: 28); // fallback
+-  }
+-}
++// Moved to the domain layer. Kept so the web variants keep compiling;
++// new code should import the domain entity directly.
++export 'package:petit/features/videos/domain/entities/codec_config.dart';
+diff --git a/lib/features/videos/data/services/ffmpeg_video_compressor.dart b/lib/features/videos/data/services/ffmpeg_video_compressor.dart
+new file mode 100644
+index 0000000..4262dcf
+--- /dev/null
++++ b/lib/features/videos/data/services/ffmpeg_video_compressor.dart
+@@ -0,0 +1,118 @@
++import 'dart:async';
++import 'dart:io';
++
++import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
++import 'package:ffmpeg_kit_flutter_new/ffmpeg_session.dart';
++import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
++import 'package:ffmpeg_kit_flutter_new/return_code.dart';
++import 'package:flutter/foundation.dart';
++import 'package:path/path.dart' as p;
++import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/core/utils/work_dir.dart';
++import 'package:petit/features/videos/domain/entities/video_data.dart';
++import 'package:petit/features/videos/domain/services/video_compressor.dart';
++
++class FfmpegVideoCompressor implements VideoCompressor {
++  @override
++  Future<VideoData> probe(File video) async {
++    try {
++      final session = await FFprobeKit.getMediaInformation(video.path);
++      final info = session.getMediaInformation();
++
++      if (info == null) {
++        throw const MediaException('Could not retrieve media information.');
++      }
++
++      final videoStreams =
++          info.getStreams().where((s) => s.getType() == 'video');
++      final videoStream = videoStreams.first;
++
++      String? frameRateStr = videoStream.getAverageFrameRate();
++      List<String>? parts = frameRateStr?.split('/');
++
++      int? frameRate;
++      if (parts != null && parts.length == 2) {
++        double numerator = double.tryParse(parts[0]) ?? 0;
++        double denominator = double.tryParse(parts[1]) ?? 1;
++        frameRate = (numerator / denominator).round();
++      }
++
++      return VideoData(
++        videoFile: video,
++        pixelWidth: videoStream.getWidth(),
++        pixelHeight: videoStream.getHeight(),
++        videoCodec: videoStream.getCodec(),
++        frameRate: frameRate,
++      );
++    } on MediaException catch (e) {
++      debugPrint('Video probe failed: ${e.message}');
++      rethrow;
++    } catch (e) {
++      debugPrint('Video probe failed: $e');
++      throw MediaException('Error retrieving media information: $e');
++    }
++  }
++
++  @override
++  Future<VideoCompressionTask> start({
++    required File input,
++    required String videoCodec,
++    required int crf,
++    required String preset,
++    required int totalDurationMs,
++    required void Function(int percent) onProgress,
++  }) async {
++    final jobDir = await createJobDir();
++    final outPath = p.join(
++        jobDir.path, 'compressed_${DateTime.now().millisecondsSinceEpoch}.mp4');
++
++    // Passed as a list (not one string) so paths with spaces work on every OS.
++    final arguments = <String>[
++      '-i',
++      input.path,
++      '-vcodec',
++      videoCodec,
++      '-crf',
++      '$crf',
++      '-preset',
++      preset,
++      outPath,
++    ];
++
++    final completer = Completer<File>();
++
++    final session = await FFmpegKit.executeWithArgumentsAsync(
++      arguments,
++      (session) async {
++        final returnCode = await session.getReturnCode();
++        if (ReturnCode.isSuccess(returnCode)) {
++          completer.complete(File(outPath));
++        } else {
++          completer.completeError(const MediaException('Compression failed.'));
++        }
++      },
++      (log) => debugPrint('FFmpeg log: ${log.getMessage()}'),
++      (statistics) {
++        final progress = statistics.getTime();
++        final percent = (progress / totalDurationMs * 100).clamp(0, 100).toInt();
++        onProgress(percent);
++      },
++    );
++
++    return _FfmpegTask(session, completer.future);
++  }
++}
++
++class _FfmpegTask implements VideoCompressionTask {
++  _FfmpegTask(this._session, this.result);
++
++  final FFmpegSession _session;
++
++  @override
++  final Future<File> result;
++
++  @override
++  Future<void> cancel() async {
++    await _session.cancel();
++  }
++}
+diff --git a/lib/features/videos/data/video_data.dart b/lib/features/videos/data/video_data.dart
+index e30f227..1a9ee01 100644
+--- a/lib/features/videos/data/video_data.dart
++++ b/lib/features/videos/data/video_data.dart
+@@ -1,30 +1,3 @@
+-import 'dart:io';
+-
+-class VideoData {
+-  final File videoFile;
+-  final int? pixelWidth;
+-  final int? pixelHeight;
+-  final String? videoCodec;
+-  final int? frameRate;
+-
+-  const VideoData({
+-    required this.videoFile,
+-    required this.pixelWidth,
+-    required this.pixelHeight,
+-    required this.videoCodec,
+-    required this.frameRate,
+-  });
+-
+-  VideoData copyWith(
+-      {File? videoFile, int? pixelWidth, int? pixelHeight, String? videoCodec, int? frameRate}) {
+-    return VideoData(
+-      videoFile: videoFile ?? this.videoFile,
+-      pixelWidth: pixelWidth ?? this.pixelWidth,
+-      pixelHeight: pixelHeight ?? this.pixelHeight,
+-      videoCodec: videoCodec ?? this.videoCodec,
+-      frameRate: frameRate ?? this.frameRate,
+-    );
+-  }
+-
+-  List<Object?> get props => [videoFile, pixelHeight, pixelWidth, frameRate];
+-}
++// Moved to the domain layer. Kept so the web variants keep compiling;
++// new code should import the domain entity directly.
++export 'package:petit/features/videos/domain/entities/video_data.dart';
+diff --git a/lib/features/videos/domain/entities/codec_config.dart b/lib/features/videos/domain/entities/codec_config.dart
+new file mode 100644
+index 0000000..d3ceaf6
+--- /dev/null
++++ b/lib/features/videos/domain/entities/codec_config.dart
+@@ -0,0 +1,26 @@
++class CodecConfig {
++  final String vcodec;
++  final int minCrf;
++  final int maxCrf;
++
++  CodecConfig({
++    required this.vcodec,
++    required this.minCrf,
++    required this.maxCrf,
++  });
++}
++
++CodecConfig getVcodecConfigFromCodec(String codec) {
++  switch (codec.toLowerCase()) {
++    case 'hevc':
++    case 'h265':
++      return CodecConfig(vcodec: 'libx265', minCrf: 20, maxCrf: 30);
++    case 'h264':
++    case 'avc1':
++      return CodecConfig(vcodec: 'libx264', minCrf: 18, maxCrf: 28);
++    case 'vp9':
++      return CodecConfig(vcodec: 'libvpx-vp9', minCrf: 20, maxCrf: 30);
++    default:
++      return CodecConfig(vcodec: 'libx264', minCrf: 18, maxCrf: 28); // fallback
++  }
++}
+diff --git a/lib/features/videos/domain/entities/video_data.dart b/lib/features/videos/domain/entities/video_data.dart
+new file mode 100644
+index 0000000..e30f227
+--- /dev/null
++++ b/lib/features/videos/domain/entities/video_data.dart
+@@ -0,0 +1,30 @@
++import 'dart:io';
++
++class VideoData {
++  final File videoFile;
++  final int? pixelWidth;
++  final int? pixelHeight;
++  final String? videoCodec;
++  final int? frameRate;
++
++  const VideoData({
++    required this.videoFile,
++    required this.pixelWidth,
++    required this.pixelHeight,
++    required this.videoCodec,
++    required this.frameRate,
++  });
++
++  VideoData copyWith(
++      {File? videoFile, int? pixelWidth, int? pixelHeight, String? videoCodec, int? frameRate}) {
++    return VideoData(
++      videoFile: videoFile ?? this.videoFile,
++      pixelWidth: pixelWidth ?? this.pixelWidth,
++      pixelHeight: pixelHeight ?? this.pixelHeight,
++      videoCodec: videoCodec ?? this.videoCodec,
++      frameRate: frameRate ?? this.frameRate,
++    );
++  }
++
++  List<Object?> get props => [videoFile, pixelHeight, pixelWidth, frameRate];
++}
+diff --git a/lib/features/videos/domain/services/video_compressor.dart b/lib/features/videos/domain/services/video_compressor.dart
+new file mode 100644
+index 0000000..209c6d8
+--- /dev/null
++++ b/lib/features/videos/domain/services/video_compressor.dart
+@@ -0,0 +1,27 @@
++import 'dart:io';
++
++import 'package:petit/features/videos/domain/entities/video_data.dart';
++
++/// A running compression.
++abstract interface class VideoCompressionTask {
++  /// Completes with the compressed file. Completes with a [MediaException]
++  /// if compression failed or was cancelled.
++  Future<File> get result;
++
++  Future<void> cancel();
++}
++
++abstract interface class VideoCompressor {
++  /// Reads the video's properties. Throws a [MediaException] on failure.
++  Future<VideoData> probe(File video);
++
++  /// Starts compressing [input]. [onProgress] receives 0..100.
++  Future<VideoCompressionTask> start({
++    required File input,
++    required String videoCodec,
++    required int crf,
++    required String preset,
++    required int totalDurationMs,
++    required void Function(int percent) onProgress,
++  });
++}
+diff --git a/lib/features/videos/domain/usecases/compress_video.dart b/lib/features/videos/domain/usecases/compress_video.dart
+new file mode 100644
+index 0000000..7ac3d95
+--- /dev/null
++++ b/lib/features/videos/domain/usecases/compress_video.dart
+@@ -0,0 +1,119 @@
++import 'dart:io';
++
++import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/common/domain/services/media_saver.dart';
++import 'package:petit/features/videos/domain/entities/codec_config.dart';
++import 'package:petit/features/videos/domain/entities/video_data.dart';
++import 'package:petit/features/videos/domain/services/video_compressor.dart';
++
++class VideoCompressionOutcome {
++  final int originalBytes;
++  final int compressedBytes;
++  final String destinationLabel;
++
++  const VideoCompressionOutcome({
++    required this.originalBytes,
++    required this.compressedBytes,
++    required this.destinationLabel,
++  });
++
++  int get savedBytes => originalBytes - compressedBytes;
++
++  /// Fraction (0..1) of the original size that was saved.
++  double get savedFraction => originalBytes <= 0
++      ? 0.0
++      : (savedBytes / originalBytes).clamp(0, 1).toDouble();
++}
++
++/// A compression in progress: cancel it, or await [outcome].
++class VideoCompressionJob {
++  VideoCompressionJob(this._task, this.outcome);
++
++  final VideoCompressionTask _task;
++
++  /// Completes once the video is compressed and saved. Completes with a
++  /// [MediaException] if compression failed or was cancelled.
++  final Future<VideoCompressionOutcome> outcome;
++
++  Future<void> cancel() => _task.cancel();
++}
++
++class CompressVideoUseCase {
++  CompressVideoUseCase(this._compressor, this._saver);
++
++  final VideoCompressor _compressor;
++  final MediaSaver _saver;
++
++  /// Probes [input], picks encoder settings from its codec, and starts
++  /// compressing. [qualityPercent] is the 0..100 slider value.
++  Future<VideoCompressionJob> call({
++    required File input,
++    required int qualityPercent,
++    required String preset,
++    required int totalDurationMs,
++    required void Function(int percent) onProgress,
++    required void Function(String message) onError,
++  }) async {
++    final VideoData data;
++    try {
++      data = await _compressor.probe(input);
++    } on MediaException {
++      throw const MediaException('Error retrieving video properties');
++    }
++
++    if (data.frameRate == null ||
++        data.pixelHeight == null ||
++        data.pixelWidth == null ||
++        data.videoCodec == null) {
++      throw const MediaException('Error retrieving video properties');
++    }
++
++    final config = getVcodecConfigFromCodec(data.videoCodec!);
++    final crf = (config.minCrf +
++            ((qualityPercent / 100) * (config.maxCrf - config.minCrf)))
++        .round();
++
++    final task = await _compressor.start(
++      input: input,
++      videoCodec: config.vcodec,
++      crf: crf,
++      preset: preset,
++      totalDurationMs: totalDurationMs,
++      onProgress: onProgress,
++    );
++
++    return VideoCompressionJob(task, _finish(task, input, onError));
++  }
++
++  Future<VideoCompressionOutcome> _finish(
++    VideoCompressionTask task,
++    File input,
++    void Function(String message) onError,
++  ) async {
++    final compressed = await task.result;
++
++    final sizeBefore = await input.length();
++    var sizeAfter = await compressed.length();
++
++    // Keep the original if compressing did not make it smaller.
++    final File finalFile;
++    if (sizeAfter >= sizeBefore) {
++      finalFile = input;
++      sizeAfter = sizeBefore;
++    } else {
++      finalFile = compressed;
++    }
++
++    try {
++      await _saver.saveVideo(finalFile.path);
++    } catch (e) {
++      onError("Error occurred - $e");
++    }
++
++    return VideoCompressionOutcome(
++      originalBytes: sizeBefore,
++      compressedBytes: sizeAfter,
++      destinationLabel: _saver.videoDestinationLabel,
++    );
++  }
++}
+diff --git a/lib/features/videos/presentation/pages/videos_page.dart b/lib/features/videos/presentation/pages/videos_page.dart
+index 7f46833..05d371d 100644
+--- a/lib/features/videos/presentation/pages/videos_page.dart
++++ b/lib/features/videos/presentation/pages/videos_page.dart
+@@ -204,7 +204,7 @@ class _VideosPageState extends State<VideosPage> {
+           );
+         } else {
+           if (getVideosViewModel.isCompressing.state) {
+-            if (getVideosViewModel.currentSession.state != null ) {
++            if (getVideosViewModel.currentTask.state != null) {
+               return FloatingActionButton.extended(
+                 icon: const Icon(Icons.clear),
+                 tooltip: "Cancel compression ",
+diff --git a/lib/features/videos/presentation/state/videos_viewmodel.dart b/lib/features/videos/presentation/state/videos_viewmodel.dart
+index 85f0f04..5acbdba 100644
+--- a/lib/features/videos/presentation/state/videos_viewmodel.dart
++++ b/lib/features/videos/presentation/state/videos_viewmodel.dart
+@@ -1,23 +1,22 @@
+-import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
+-import 'package:ffmpeg_kit_flutter_new/ffmpeg_session.dart';
+-import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
+-import 'package:ffmpeg_kit_flutter_new/return_code.dart';
++import 'dart:async';
++import 'dart:io';
++
+ import 'package:flutter/foundation.dart';
+ import 'package:flutter_super/flutter_super.dart';
+-import 'dart:io';
+-import 'package:gallery_saver_plus/gallery_saver.dart';
+-import 'package:image_picker/image_picker.dart';
+-import 'package:path/path.dart' as p;
+-import 'package:petit/core/utils/work_dir.dart';
+ import 'package:petit/common/data/summary_report.dart';
++import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/common/domain/services/media_picker.dart';
++import 'package:petit/common/domain/services/workspace.dart';
+ import 'package:petit/features/videos/data/slider_value.dart';
+-import 'package:petit/features/videos/data/video_data.dart';
++import 'package:petit/features/videos/domain/usecases/compress_video.dart';
++import 'package:petit/service_locator.dart';
+ import 'package:share_handler/share_handler.dart';
+ import 'package:video_player/video_player.dart';
+-import '../../data/codec_config.dart';
+ 
+ VideosViewModel get getVideosViewModel => Super.init(VideosViewModel());
+ 
++/// UI state for the video tab. Probing, compressing and saving live in
++/// [CompressVideoUseCase]; this class only holds state and reacts to it.
+ class VideosViewModel {
+   final result = RxT<String?>(null);
+   final isLoading = RxBool(false);
+@@ -28,7 +27,13 @@ class VideosViewModel {
+   final percentageComplete = RxInt(0);
+   final selectedPresetIndex = RxInt(1);
+   final isFabOpen = RxT<bool>(true);
+-  final currentSession = RxT<FFmpegSession?>(null);
++  final currentTask = RxT<VideoCompressionJob?>(null);
++
++  // Resolved lazily: `getVideosViewModel` constructs a new instance on every
++  // access, so nothing may be looked up in the constructor.
++  late final MediaPicker _picker = sl<MediaPicker>();
++  late final Workspace _workspace = sl<Workspace>();
++  late final CompressVideoUseCase _compressVideo = sl<CompressVideoUseCase>();
+ 
+   List<SliderValue> ffmpegPresets = [
+     // SliderValue(value: "ultrafast", desc: "ultrafast"),
+@@ -79,10 +84,10 @@ class VideosViewModel {
+     try {
+       setIsLoading(true);
+ 
+-      final result = await ImagePicker().pickVideo(source: ImageSource.gallery);
++      final path = await _picker.pickVideo();
+ 
+-      if (result != null) {
+-        final file = File(result.path);
++      if (path != null) {
++        final file = File(path);
+         videoController.state = VideoPlayerController.file(file);
+         await videoController.state?.initialize();
+         videoFile.state = file;
+@@ -117,165 +122,73 @@ class VideosViewModel {
+     }
+   }
+ 
++  /// Starts compressing the selected video. Returns immediately; the summary
++  /// is delivered through [onComplete] when compression finishes.
+   Future<SummaryReport?> compressVideo({
+     required Function(SummaryReport summaryReport) onComplete,
+   }) async {
+     try {
+-      currentSession.state?.cancel();
+-      currentSession.state = null;
++      currentTask.state?.cancel();
++      currentTask.state = null;
+       if (videoFile.state == null) return null;
+       final originalFile = videoFile.state!;
+       setIsCompressing(true);
+       percentageComplete.state = 0;
+ 
+-      final data = await getVideoData(originalFile);
+-      if (data == null ||
+-          data.frameRate == null ||
+-          data.pixelHeight == null ||
+-          data.pixelWidth == null ||
+-          data.videoCodec == null) {
+-        await showResult('Error retrieving video properties');
+-        setIsCompressing(false);
+-        return null;
+-      }
+-
+-      final jobDir = await createJobDir();
+-      final outPath = p.join(
+-          jobDir.path, 'compressed_${DateTime.now().millisecondsSinceEpoch}.mp4');
+-
+-      final codecConfig = getVcodecConfigFromCodec(data.videoCodec!);
+-
+-      final crf = (codecConfig.minCrf +
+-              ((cfrQualitySlider.state / 100) *
+-                  (codecConfig.maxCrf - codecConfig.minCrf)))
+-          .round();
+-
+-      final selectedPreset = ffmpegPresets[selectedPresetIndex.state].value;
+-
+-      // Passed as a list (not one string) so paths with spaces work on every OS.
+-      final arguments = <String>[
+-        '-i',
+-        originalFile.path,
+-        '-vcodec',
+-        codecConfig.vcodec,
+-        '-crf',
+-        '$crf',
+-        '-preset',
+-        selectedPreset,
+-        outPath,
+-      ];
+-
+-      currentSession.state = await FFmpegKit.executeWithArgumentsAsync(
+-        arguments,
+-        (session) async {
+-          final returnCode = await session.getReturnCode();
+-          if (ReturnCode.isSuccess(returnCode)) {
+-            // ✅ Success
+-            final compressedFile = File(outPath);
+-            final sizeBefore = originalFile.lengthSync();
+-            var sizeAfter = compressedFile.lengthSync();
+-
+-            File finalFile;
+-            if (sizeAfter >= sizeBefore) {
+-              finalFile = originalFile;
+-              sizeAfter = sizeBefore;
+-            } else {
+-              finalFile = compressedFile;
+-            }
+-
+-            final saved = sizeBefore - sizeAfter;
+-            final savedPercent = (saved / sizeBefore).clamp(0, 1).toDouble();
+-
+-            await saveLocalVideo(finalFile);
+-            removeVideo();
+-            await clearTempFiles();
+-
+-            setIsCompressing(false);
+-            setIsLoading(false);
+-
+-            final String path;
+-            if (!kIsWeb) {
+-            path = Platform.isAndroid ? "Movies/Petit" : "Photos";
+-            } else {
+-              path = "Probably downloads";
+-            }
+-
+-            final summary = SummaryReport(
+-              originalSizeBytes: formatBytes(sizeBefore),
+-              compressedSizeBytes: formatBytes(sizeAfter),
+-              savedBytes: formatBytes(saved),
+-              savedPercent: savedPercent,
+-              path: path,
+-            );
+-            onComplete(summary);
+-
+-            // This can be returned from wherever you're awaiting compressVideo()
+-            // or use a callback
+-          } else {
+-            await showResult('Compression failed.');
+-            setIsCompressing(false);
+-            setIsLoading(false);
+-          }
+-        },
+-        (log) => debugPrint('FFmpeg log: ${log.getMessage()}'),
+-        (statistics) {
+-          final progress = statistics.getTime();
+-          final duration =
+-              videoController.state?.value.duration.inMilliseconds ?? 1;
+-          final percent = (progress / duration * 100).clamp(0, 100).toInt();
+-          percentageComplete.state = percent;
+-        },
++      final job = await _compressVideo(
++        input: originalFile,
++        qualityPercent: cfrQualitySlider.state,
++        preset: ffmpegPresets[selectedPresetIndex.state].value,
++        totalDurationMs:
++            videoController.state?.value.duration.inMilliseconds ?? 1,
++        onProgress: (percent) => percentageComplete.state = percent,
++        onError: showResult,
+       );
+ 
+-      // You don't need to return anything from here because the result will come from the callback.
++      currentTask.state = job;
++      unawaited(_awaitOutcome(job, onComplete));
++    } on MediaException catch (e) {
++      await showResult(e.message);
++      setIsCompressing(false);
+     } catch (e) {
+       await showResult('Error compressing video: $e');
+       setIsCompressing(false);
+       setIsLoading(false);
+     }
+-    return null; // or return the summary in the callback above
++    return null; // the summary is delivered through onComplete
+   }
+ 
+-  Future<VideoData?> getVideoData(File videoFile) async {
++  Future<void> _awaitOutcome(
++    VideoCompressionJob job,
++    Function(SummaryReport summaryReport) onComplete,
++  ) async {
+     try {
+-      final session = await FFprobeKit.getMediaInformation(videoFile.path);
+-      final info = session.getMediaInformation();
+-
+-      if (info != null) {
+-        final videoStreams =
+-            info.getStreams().where((s) => s.getType() == 'video');
+-        final videoStream = videoStreams.first;
++      final outcome = await job.outcome;
+ 
+-        String? frameRateStr = videoStream.getAverageFrameRate();
+-        List<String>? parts = frameRateStr?.split('/');
++      if (identical(currentTask.state, job)) currentTask.state = null;
++      removeVideo();
++      await _workspace.clear();
+ 
+-        int? frameRate;
+-        if (parts != null && parts.length == 2) {
+-          double numerator = double.tryParse(parts[0]) ?? 0;
+-          double denominator = double.tryParse(parts[1]) ?? 1;
+-          frameRate = (numerator / denominator).round();
+-        }
+-
+-        return VideoData(
+-            videoFile: videoFile,
+-            pixelWidth: videoStream.getWidth(),
+-            pixelHeight: videoStream.getHeight(),
+-            videoCodec: videoStream.getCodec(),
+-            frameRate: frameRate);
+-      } else {
+-        showResult('Could not retrieve media information.');
+-      }
+-    } catch (e) {
+-      showResult('Error retrieving media information: $e');
+-    }
+-    return null;
+-  }
++      setIsCompressing(false);
++      setIsLoading(false);
+ 
+-  Future<void> saveLocalVideo(File compressedImage) async {
+-    try {
+-      await GallerySaver.saveVideo(compressedImage.path, albumName: "Petit");
++      onComplete(SummaryReport(
++        originalSizeBytes: formatBytes(outcome.originalBytes),
++        compressedSizeBytes: formatBytes(outcome.compressedBytes),
++        savedBytes: formatBytes(outcome.savedBytes),
++        savedPercent: outcome.savedFraction,
++        path: outcome.destinationLabel,
++      ));
++    } on MediaException catch (e) {
++      if (identical(currentTask.state, job)) currentTask.state = null;
++      await showResult(e.message);
++      setIsCompressing(false);
++      setIsLoading(false);
+     } catch (e) {
+-      await showResult("Error occurred - ${e.toString()}");
++      if (identical(currentTask.state, job)) currentTask.state = null;
++      await showResult('Error compressing video: $e');
++      setIsCompressing(false);
++      setIsLoading(false);
+     }
+   }
+ 
+@@ -297,13 +210,14 @@ class VideosViewModel {
+   }
+ 
+   void cancelCompressingVideo() {
+-    if (currentSession.state != null) {
+-      currentSession.state!.cancel();
+-      currentSession.state = null;
++    final task = currentTask.state;
++    if (task != null) {
++      unawaited(task.cancel());
++      currentTask.state = null;
+       setIsCompressing(false);
+       setIsLoading(false);
+     } else {
+-      debugPrint("⚠️ Tried to cancel but session was null");
++      debugPrint("⚠️ Tried to cancel but there was no running task");
+     }
+   }
+ }
+diff --git a/lib/main.dart b/lib/main.dart
+index a298952..68b86f1 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -76,9 +76,12 @@ class MyApp extends StatefulWidget {
+ class _MyAppState extends State<MyApp> {
+   StreamSubscription<SharedMedia>? _intentStreamSubscription;
+   final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+-  static FirebaseAnalytics analytics = FirebaseAnalytics.instance;
+-  static FirebaseAnalyticsObserver observer =
+-      FirebaseAnalyticsObserver(analytics: analytics);
++  // Only created where Analytics is supported: touching
++  // FirebaseAnalytics.instance without an initialised Firebase app throws.
++  static final FirebaseAnalyticsObserver? observer =
++      PlatformInfo.supportsAnalytics
++          ? FirebaseAnalyticsObserver(analytics: FirebaseAnalytics.instance)
++          : null;
+ 
+   @override
+   void initState() {
+@@ -238,7 +241,7 @@ class _MyAppState extends State<MyApp> {
+           darkTheme: darkTheme,
+           themeMode: ThemeMode.system,
+           navigatorKey: navigatorKey,
+-          navigatorObservers: [observer],
++          navigatorObservers: [if (observer != null) observer!],
+           initialRoute: '/',
+           onGenerateRoute: AppRoutes.onGenerateRoutes,
+           home: kIsWeb
+diff --git a/lib/service_locator.dart b/lib/service_locator.dart
+index f1f0755..fb4b4ba 100644
+--- a/lib/service_locator.dart
++++ b/lib/service_locator.dart
+@@ -1,4 +1,17 @@
+ import 'package:get_it/get_it.dart';
++import 'package:petit/common/data/services/gallery_media_saver.dart';
++import 'package:petit/common/data/services/image_picker_media_picker.dart';
++import 'package:petit/common/data/services/temp_workspace.dart';
++import 'package:petit/common/domain/services/media_picker.dart';
++import 'package:petit/common/domain/services/media_saver.dart';
++import 'package:petit/common/domain/services/workspace.dart';
++import 'package:petit/features/images/data/services/flutter_image_compressor.dart';
++import 'package:petit/features/images/domain/services/image_compressor.dart';
++import 'package:petit/features/images/domain/usecases/compress_images.dart';
++import 'package:petit/features/images/domain/usecases/read_images.dart';
++import 'package:petit/features/videos/data/services/ffmpeg_video_compressor.dart';
++import 'package:petit/features/videos/domain/services/video_compressor.dart';
++import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+ import 'package:shared_preferences/shared_preferences.dart';
+ 
+ final sl = GetIt.instance;
+@@ -10,5 +23,25 @@ Future<void> initializeDependencies() async {
+       SharedPreferencesAsync()
+   );
+ 
++  _registerMediaDependencies();
++}
+ 
+-}
+\ No newline at end of file
++/// Platform services are registered here, so the ViewModels and use cases
++/// only ever see the domain interfaces.
++void _registerMediaDependencies() {
++  // Mobile implementations, used on every platform for now.
++  // TODO(desktop): register desktop implementations when PlatformInfo.isDesktop.
++  sl.registerLazySingleton<MediaPicker>(() => ImagePickerMediaPicker());
++  sl.registerLazySingleton<MediaSaver>(() => GalleryMediaSaver());
++  sl.registerLazySingleton<Workspace>(() => TempWorkspace());
++  sl.registerLazySingleton<ImageCompressor>(() => FlutterImageCompressor());
++  sl.registerLazySingleton<VideoCompressor>(() => FfmpegVideoCompressor());
++
++  // Use cases
++  sl.registerLazySingleton<ReadImagesUseCase>(
++      () => ReadImagesUseCase(sl<ImageCompressor>()));
++  sl.registerLazySingleton<CompressImagesUseCase>(
++      () => CompressImagesUseCase(sl<ImageCompressor>(), sl<MediaSaver>()));
++  sl.registerLazySingleton<CompressVideoUseCase>(
++      () => CompressVideoUseCase(sl<VideoCompressor>(), sl<MediaSaver>()));
++}
+diff --git a/test/image_use_cases_test.dart b/test/image_use_cases_test.dart
+new file mode 100644
+index 0000000..644aea4
+--- /dev/null
++++ b/test/image_use_cases_test.dart
+@@ -0,0 +1,176 @@
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/common/domain/services/media_saver.dart';
++import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/entities/image_size.dart';
++import 'package:petit/features/images/domain/services/image_compressor.dart';
++import 'package:petit/features/images/domain/usecases/compress_images.dart';
++import 'package:petit/features/images/domain/usecases/read_images.dart';
++
++class FakeImageCompressor implements ImageCompressor {
++  FakeImageCompressor(this.dir, {this.failOn = const {}});
++
++  final Directory dir;
++  final Set<String> failOn;
++  final qualities = <int>[];
++
++  @override
++  Future<ImageSize> readSize(String path) async => const ImageSize(640, 480);
++
++  @override
++  Future<File> compress(ImageData image, {required int quality}) async {
++    qualities.add(quality);
++    if (failOn.contains(image.imageFile.path)) {
++      throw const MediaException('boom');
++    }
++    // "Compressed" output is 40 bytes, smaller than the 100-byte originals.
++    final out = File('${dir.path}/${qualities.length}_out.bin');
++    await out.writeAsBytes(List.filled(40, 1));
++    return out;
++  }
++}
++
++class FakeSaver implements MediaSaver {
++  final saved = <String>[];
++
++  @override
++  Future<void> saveImage(String path) async => saved.add(path);
++
++  @override
++  Future<void> saveVideo(String path) async => saved.add(path);
++
++  @override
++  String get imageDestinationLabel => 'Photos';
++
++  @override
++  String get videoDestinationLabel => 'Photos';
++}
++
++void main() {
++  late Directory dir;
++
++  setUp(() => dir = Directory.systemTemp.createTempSync('petit_test_'));
++  tearDown(() => dir.deleteSync(recursive: true));
++
++  ImageData makeImage(String name, {int quality = 50}) {
++    final file = File('${dir.path}/$name')..writeAsBytesSync(List.filled(100, 0));
++    return ImageData(
++        imageFile: file, pixelWidth: 10, pixelHeight: 10, quality: quality);
++  }
++
++  group('ImageData', () {
++    test('has value equality like the old SuperModel version', () {
++      final file = File('a.jpg');
++      final a = ImageData(
++          imageFile: file, pixelWidth: 1, pixelHeight: 2, quality: 3);
++      final b = a.copyWith();
++      expect(a, b);
++      expect(a.hashCode, b.hashCode);
++      expect(a.copyWith(quality: 4), isNot(a));
++    });
++  });
++
++  group('ReadImagesUseCase', () {
++    test('reads the size of every path with the default quality', () async {
++      final result = await ReadImagesUseCase(FakeImageCompressor(dir))(
++          ['/x/a.jpg', '/x/b.png']);
++      expect(result.length, 2);
++      expect(result.first.pixelWidth, 640);
++      expect(result.first.quality, ReadImagesUseCase.defaultQuality);
++    });
++  });
++
++  group('CompressImagesUseCase', () {
++    test('reports progress and totals for two images', () async {
++      final compressor = FakeImageCompressor(dir);
++      final saver = FakeSaver();
++      final progress = <String>[];
++
++      final result = await CompressImagesUseCase(compressor, saver)(
++        images: [makeImage('a.jpg'), makeImage('b.jpg')],
++        isCancelled: () => false,
++        onProgress: (p) =>
++            progress.add('${p.completedSteps}/${p.totalSteps}@${p.percent}'),
++        onError: (_) => fail('no errors expected'),
++      );
++
++      expect(progress, ['0/2@0', '1/2@50', '1/2@50', '2/2@100']);
++      expect(saver.saved.length, 2);
++      expect(result.originalBytes, 200);
++      expect(result.compressedBytes, 80);
++      expect(result.savedBytes, 120);
++      expect(result.savedFraction, closeTo(0.6, 1e-9));
++      expect(result.destinationLabel, 'Photos');
++    });
++
++    test('a single image starts at 50 percent', () async {
++      final progress = <int>[];
++      await CompressImagesUseCase(FakeImageCompressor(dir), FakeSaver())(
++        images: [makeImage('a.jpg')],
++        isCancelled: () => false,
++        onProgress: (p) => progress.add(p.percent),
++        onError: (_) {},
++      );
++      expect(progress.first, 50);
++      expect(progress.last, 100);
++    });
++
++    test('a failing image is reported and left out of the totals', () async {
++      final bad = makeImage('bad.jpg');
++      final errors = <String>[];
++
++      final result = await CompressImagesUseCase(
++        FakeImageCompressor(dir, failOn: {bad.imageFile.path}),
++        FakeSaver(),
++      )(
++        images: [bad, makeImage('good.jpg')],
++        isCancelled: () => false,
++        onProgress: (_) {},
++        onError: errors.add,
++      );
++
++      expect(errors, ['boom']);
++      expect(result.originalBytes, 100);
++      expect(result.compressedBytes, 40);
++    });
++
++    test('stops when cancelled', () async {
++      final saver = FakeSaver();
++
++      final result = await CompressImagesUseCase(
++          FakeImageCompressor(dir), saver)(
++        images: [makeImage('a.jpg'), makeImage('b.jpg'), makeImage('c.jpg')],
++        isCancelled: () => saver.saved.isNotEmpty,
++        onProgress: (_) {},
++        onError: (_) {},
++      );
++
++      expect(saver.saved.length, 1);
++      expect(result.originalBytes, 100);
++      expect(result.compressedBytes, 40);
++    });
++
++    test('global quality overrides each image quality', () async {
++      final compressor = FakeImageCompressor(dir);
++      await CompressImagesUseCase(compressor, FakeSaver())(
++        images: [makeImage('a.jpg', quality: 10), makeImage('b.jpg', quality: 20)],
++        globalQuality: 70,
++        isCancelled: () => false,
++        onProgress: (_) {},
++        onError: (_) {},
++      );
++      expect(compressor.qualities, [70, 70]);
++
++      final perImage = FakeImageCompressor(dir);
++      await CompressImagesUseCase(perImage, FakeSaver())(
++        images: [makeImage('c.jpg', quality: 10), makeImage('d.jpg', quality: 20)],
++        isCancelled: () => false,
++        onProgress: (_) {},
++        onError: (_) {},
++      );
++      expect(perImage.qualities, [10, 20]);
++    });
++  });
++}
+diff --git a/test/video_use_case_test.dart b/test/video_use_case_test.dart
+new file mode 100644
+index 0000000..77dd431
+--- /dev/null
++++ b/test/video_use_case_test.dart
+@@ -0,0 +1,212 @@
++import 'dart:async';
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/common/domain/services/media_saver.dart';
++import 'package:petit/features/videos/domain/entities/codec_config.dart';
++import 'package:petit/features/videos/domain/entities/video_data.dart';
++import 'package:petit/features/videos/domain/services/video_compressor.dart';
++import 'package:petit/features/videos/domain/usecases/compress_video.dart';
++
++class FakeTask implements VideoCompressionTask {
++  final completer = Completer<File>();
++  bool cancelled = false;
++
++  @override
++  Future<File> get result => completer.future;
++
++  @override
++  Future<void> cancel() async {
++    cancelled = true;
++  }
++}
++
++class FakeVideoCompressor implements VideoCompressor {
++  FakeVideoCompressor({this.data, this.probeFails = false});
++
++  final VideoData? data;
++  final bool probeFails;
++  final task = FakeTask();
++  String? usedCodec;
++  int? usedCrf;
++  String? usedPreset;
++
++  @override
++  Future<VideoData> probe(File video) async {
++    if (probeFails) throw const MediaException('probe failed');
++    return data!;
++  }
++
++  @override
++  Future<VideoCompressionTask> start({
++    required File input,
++    required String videoCodec,
++    required int crf,
++    required String preset,
++    required int totalDurationMs,
++    required void Function(int percent) onProgress,
++  }) async {
++    usedCodec = videoCodec;
++    usedCrf = crf;
++    usedPreset = preset;
++    onProgress(42);
++    return task;
++  }
++}
++
++class FakeSaver implements MediaSaver {
++  final saved = <String>[];
++
++  @override
++  Future<void> saveImage(String path) async => saved.add(path);
++
++  @override
++  Future<void> saveVideo(String path) async => saved.add(path);
++
++  @override
++  String get imageDestinationLabel => 'Photos';
++
++  @override
++  String get videoDestinationLabel => 'Movies/Petit';
++}
++
++void main() {
++  late Directory dir;
++
++  setUp(() => dir = Directory.systemTemp.createTempSync('petit_video_test_'));
++  tearDown(() => dir.deleteSync(recursive: true));
++
++  File fileOfSize(String name, int bytes) =>
++      File('${dir.path}/$name')..writeAsBytesSync(List.filled(bytes, 0));
++
++  VideoData dataFor(File f, {String? codec = 'h264', int? frameRate = 30}) =>
++      VideoData(
++        videoFile: f,
++        pixelWidth: 1920,
++        pixelHeight: 1080,
++        videoCodec: codec,
++        frameRate: frameRate,
++      );
++
++  group('getVcodecConfigFromCodec', () {
++    test('maps codecs to encoders', () {
++      expect(getVcodecConfigFromCodec('hevc').vcodec, 'libx265');
++      expect(getVcodecConfigFromCodec('H264').vcodec, 'libx264');
++      expect(getVcodecConfigFromCodec('vp9').vcodec, 'libvpx-vp9');
++      expect(getVcodecConfigFromCodec('unknown').vcodec, 'libx264');
++    });
++  });
++
++  group('CompressVideoUseCase', () {
++    test('derives the CRF from the codec and slider, then saves', () async {
++      final input = fileOfSize('in.mp4', 1000);
++      final compressor = FakeVideoCompressor(data: dataFor(input));
++      final saver = FakeSaver();
++      final percents = <int>[];
++
++      final job = await CompressVideoUseCase(compressor, saver)(
++        input: input,
++        qualityPercent: 80,
++        preset: 'medium',
++        totalDurationMs: 5000,
++        onProgress: percents.add,
++        onError: (_) => fail('no errors expected'),
++      );
++
++      // h264: 18 + 0.8 * (28 - 18) = 26
++      expect(compressor.usedCodec, 'libx264');
++      expect(compressor.usedCrf, 26);
++      expect(compressor.usedPreset, 'medium');
++      expect(percents, [42]);
++
++      compressor.task.completer.complete(fileOfSize('out.mp4', 400));
++      final outcome = await job.outcome;
++
++      expect(saver.saved.single, endsWith('out.mp4'));
++      expect(outcome.originalBytes, 1000);
++      expect(outcome.compressedBytes, 400);
++      expect(outcome.savedFraction, closeTo(0.6, 1e-9));
++      expect(outcome.destinationLabel, 'Movies/Petit');
++    });
++
++    test('keeps the original when compression does not shrink it', () async {
++      final input = fileOfSize('in.mp4', 500);
++      final compressor = FakeVideoCompressor(data: dataFor(input));
++      final saver = FakeSaver();
++
++      final job = await CompressVideoUseCase(compressor, saver)(
++        input: input,
++        qualityPercent: 80,
++        preset: 'fast',
++        totalDurationMs: 1,
++        onProgress: (_) {},
++        onError: (_) {},
++      );
++      compressor.task.completer.complete(fileOfSize('out.mp4', 900));
++      final outcome = await job.outcome;
++
++      expect(saver.saved.single, input.path);
++      expect(outcome.compressedBytes, 500);
++      expect(outcome.savedBytes, 0);
++    });
++
++    test('a failed compression surfaces a MediaException', () async {
++      final input = fileOfSize('in.mp4', 500);
++      final compressor = FakeVideoCompressor(data: dataFor(input));
++
++      final job = await CompressVideoUseCase(compressor, FakeSaver())(
++        input: input,
++        qualityPercent: 80,
++        preset: 'fast',
++        totalDurationMs: 1,
++        onProgress: (_) {},
++        onError: (_) {},
++      );
++      compressor.task.completer
++          .completeError(const MediaException('Compression failed.'));
++
++      await expectLater(job.outcome, throwsA(isA<MediaException>()));
++    });
++
++    test('missing video properties give the generic message', () async {
++      final input = fileOfSize('in.mp4', 500);
++
++      for (final compressor in [
++        FakeVideoCompressor(probeFails: true),
++        FakeVideoCompressor(data: dataFor(input, frameRate: null)),
++        FakeVideoCompressor(data: dataFor(input, codec: null)),
++      ]) {
++        await expectLater(
++          CompressVideoUseCase(compressor, FakeSaver())(
++            input: input,
++            qualityPercent: 80,
++            preset: 'fast',
++            totalDurationMs: 1,
++            onProgress: (_) {},
++            onError: (_) {},
++          ),
++          throwsA(isA<MediaException>().having(
++              (e) => e.message, 'message', 'Error retrieving video properties')),
++        );
++      }
++    });
++
++    test('cancel is forwarded to the task', () async {
++      final input = fileOfSize('in.mp4', 500);
++      final compressor = FakeVideoCompressor(data: dataFor(input));
++
++      final job = await CompressVideoUseCase(compressor, FakeSaver())(
++        input: input,
++        qualityPercent: 80,
++        preset: 'fast',
++        totalDurationMs: 1,
++        onProgress: (_) {},
++        onError: (_) {},
++      );
++      await job.cancel();
++
++      expect(compressor.task.cancelled, isTrue);
++    });
++  });
++}

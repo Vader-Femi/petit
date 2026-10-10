@@ -1,23 +1,22 @@
-import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new/ffmpeg_session.dart';
-import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
-import 'package:ffmpeg_kit_flutter_new/return_code.dart';
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_super/flutter_super.dart';
-import 'dart:io';
-import 'package:gallery_saver_plus/gallery_saver.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:path/path.dart' as p;
-import 'package:petit/core/utils/work_dir.dart';
 import 'package:petit/common/data/summary_report.dart';
+import 'package:petit/common/domain/media_exception.dart';
+import 'package:petit/common/domain/services/media_picker.dart';
+import 'package:petit/common/domain/services/workspace.dart';
 import 'package:petit/features/videos/data/slider_value.dart';
-import 'package:petit/features/videos/data/video_data.dart';
+import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+import 'package:petit/service_locator.dart';
 import 'package:share_handler/share_handler.dart';
 import 'package:video_player/video_player.dart';
-import '../../data/codec_config.dart';
 
 VideosViewModel get getVideosViewModel => Super.init(VideosViewModel());
 
+/// UI state for the video tab. Probing, compressing and saving live in
+/// [CompressVideoUseCase]; this class only holds state and reacts to it.
 class VideosViewModel {
   final result = RxT<String?>(null);
   final isLoading = RxBool(false);
@@ -28,7 +27,13 @@ class VideosViewModel {
   final percentageComplete = RxInt(0);
   final selectedPresetIndex = RxInt(1);
   final isFabOpen = RxT<bool>(true);
-  final currentSession = RxT<FFmpegSession?>(null);
+  final currentTask = RxT<VideoCompressionJob?>(null);
+
+  // Resolved lazily: `getVideosViewModel` constructs a new instance on every
+  // access, so nothing may be looked up in the constructor.
+  late final MediaPicker _picker = sl<MediaPicker>();
+  late final Workspace _workspace = sl<Workspace>();
+  late final CompressVideoUseCase _compressVideo = sl<CompressVideoUseCase>();
 
   List<SliderValue> ffmpegPresets = [
     // SliderValue(value: "ultrafast", desc: "ultrafast"),
@@ -79,10 +84,10 @@ class VideosViewModel {
     try {
       setIsLoading(true);
 
-      final result = await ImagePicker().pickVideo(source: ImageSource.gallery);
+      final path = await _picker.pickVideo();
 
-      if (result != null) {
-        final file = File(result.path);
+      if (path != null) {
+        final file = File(path);
         videoController.state = VideoPlayerController.file(file);
         await videoController.state?.initialize();
         videoFile.state = file;
@@ -117,165 +122,73 @@ class VideosViewModel {
     }
   }
 
+  /// Starts compressing the selected video. Returns immediately; the summary
+  /// is delivered through [onComplete] when compression finishes.
   Future<SummaryReport?> compressVideo({
     required Function(SummaryReport summaryReport) onComplete,
   }) async {
     try {
-      currentSession.state?.cancel();
-      currentSession.state = null;
+      currentTask.state?.cancel();
+      currentTask.state = null;
       if (videoFile.state == null) return null;
       final originalFile = videoFile.state!;
       setIsCompressing(true);
       percentageComplete.state = 0;
 
-      final data = await getVideoData(originalFile);
-      if (data == null ||
-          data.frameRate == null ||
-          data.pixelHeight == null ||
-          data.pixelWidth == null ||
-          data.videoCodec == null) {
-        await showResult('Error retrieving video properties');
-        setIsCompressing(false);
-        return null;
-      }
-
-      final jobDir = await createJobDir();
-      final outPath = p.join(
-          jobDir.path, 'compressed_${DateTime.now().millisecondsSinceEpoch}.mp4');
-
-      final codecConfig = getVcodecConfigFromCodec(data.videoCodec!);
-
-      final crf = (codecConfig.minCrf +
-              ((cfrQualitySlider.state / 100) *
-                  (codecConfig.maxCrf - codecConfig.minCrf)))
-          .round();
-
-      final selectedPreset = ffmpegPresets[selectedPresetIndex.state].value;
-
-      // Passed as a list (not one string) so paths with spaces work on every OS.
-      final arguments = <String>[
-        '-i',
-        originalFile.path,
-        '-vcodec',
-        codecConfig.vcodec,
-        '-crf',
-        '$crf',
-        '-preset',
-        selectedPreset,
-        outPath,
-      ];
-
-      currentSession.state = await FFmpegKit.executeWithArgumentsAsync(
-        arguments,
-        (session) async {
-          final returnCode = await session.getReturnCode();
-          if (ReturnCode.isSuccess(returnCode)) {
-            // ✅ Success
-            final compressedFile = File(outPath);
-            final sizeBefore = originalFile.lengthSync();
-            var sizeAfter = compressedFile.lengthSync();
-
-            File finalFile;
-            if (sizeAfter >= sizeBefore) {
-              finalFile = originalFile;
-              sizeAfter = sizeBefore;
-            } else {
-              finalFile = compressedFile;
-            }
-
-            final saved = sizeBefore - sizeAfter;
-            final savedPercent = (saved / sizeBefore).clamp(0, 1).toDouble();
-
-            await saveLocalVideo(finalFile);
-            removeVideo();
-            await clearTempFiles();
-
-            setIsCompressing(false);
-            setIsLoading(false);
-
-            final String path;
-            if (!kIsWeb) {
-            path = Platform.isAndroid ? "Movies/Petit" : "Photos";
-            } else {
-              path = "Probably downloads";
-            }
-
-            final summary = SummaryReport(
-              originalSizeBytes: formatBytes(sizeBefore),
-              compressedSizeBytes: formatBytes(sizeAfter),
-              savedBytes: formatBytes(saved),
-              savedPercent: savedPercent,
-              path: path,
-            );
-            onComplete(summary);
-
-            // This can be returned from wherever you're awaiting compressVideo()
-            // or use a callback
-          } else {
-            await showResult('Compression failed.');
-            setIsCompressing(false);
-            setIsLoading(false);
-          }
-        },
-        (log) => debugPrint('FFmpeg log: ${log.getMessage()}'),
-        (statistics) {
-          final progress = statistics.getTime();
-          final duration =
-              videoController.state?.value.duration.inMilliseconds ?? 1;
-          final percent = (progress / duration * 100).clamp(0, 100).toInt();
-          percentageComplete.state = percent;
-        },
+      final job = await _compressVideo(
+        input: originalFile,
+        qualityPercent: cfrQualitySlider.state,
+        preset: ffmpegPresets[selectedPresetIndex.state].value,
+        totalDurationMs:
+            videoController.state?.value.duration.inMilliseconds ?? 1,
+        onProgress: (percent) => percentageComplete.state = percent,
+        onError: showResult,
       );
 
-      // You don't need to return anything from here because the result will come from the callback.
+      currentTask.state = job;
+      unawaited(_awaitOutcome(job, onComplete));
+    } on MediaException catch (e) {
+      await showResult(e.message);
+      setIsCompressing(false);
     } catch (e) {
       await showResult('Error compressing video: $e');
       setIsCompressing(false);
       setIsLoading(false);
     }
-    return null; // or return the summary in the callback above
+    return null; // the summary is delivered through onComplete
   }
 
-  Future<VideoData?> getVideoData(File videoFile) async {
+  Future<void> _awaitOutcome(
+    VideoCompressionJob job,
+    Function(SummaryReport summaryReport) onComplete,
+  ) async {
     try {
-      final session = await FFprobeKit.getMediaInformation(videoFile.path);
-      final info = session.getMediaInformation();
+      final outcome = await job.outcome;
 
-      if (info != null) {
-        final videoStreams =
-            info.getStreams().where((s) => s.getType() == 'video');
-        final videoStream = videoStreams.first;
+      if (identical(currentTask.state, job)) currentTask.state = null;
+      removeVideo();
+      await _workspace.clear();
 
-        String? frameRateStr = videoStream.getAverageFrameRate();
-        List<String>? parts = frameRateStr?.split('/');
+      setIsCompressing(false);
+      setIsLoading(false);
 
-        int? frameRate;
-        if (parts != null && parts.length == 2) {
-          double numerator = double.tryParse(parts[0]) ?? 0;
-          double denominator = double.tryParse(parts[1]) ?? 1;
-          frameRate = (numerator / denominator).round();
-        }
-
-        return VideoData(
-            videoFile: videoFile,
-            pixelWidth: videoStream.getWidth(),
-            pixelHeight: videoStream.getHeight(),
-            videoCodec: videoStream.getCodec(),
-            frameRate: frameRate);
-      } else {
-        showResult('Could not retrieve media information.');
-      }
+      onComplete(SummaryReport(
+        originalSizeBytes: formatBytes(outcome.originalBytes),
+        compressedSizeBytes: formatBytes(outcome.compressedBytes),
+        savedBytes: formatBytes(outcome.savedBytes),
+        savedPercent: outcome.savedFraction,
+        path: outcome.destinationLabel,
+      ));
+    } on MediaException catch (e) {
+      if (identical(currentTask.state, job)) currentTask.state = null;
+      await showResult(e.message);
+      setIsCompressing(false);
+      setIsLoading(false);
     } catch (e) {
-      showResult('Error retrieving media information: $e');
-    }
-    return null;
-  }
-
-  Future<void> saveLocalVideo(File compressedImage) async {
-    try {
-      await GallerySaver.saveVideo(compressedImage.path, albumName: "Petit");
-    } catch (e) {
-      await showResult("Error occurred - ${e.toString()}");
+      if (identical(currentTask.state, job)) currentTask.state = null;
+      await showResult('Error compressing video: $e');
+      setIsCompressing(false);
+      setIsLoading(false);
     }
   }
 
@@ -297,13 +210,14 @@ class VideosViewModel {
   }
 
   void cancelCompressingVideo() {
-    if (currentSession.state != null) {
-      currentSession.state!.cancel();
-      currentSession.state = null;
+    final task = currentTask.state;
+    if (task != null) {
+      unawaited(task.cancel());
+      currentTask.state = null;
       setIsCompressing(false);
       setIsLoading(false);
     } else {
-      debugPrint("⚠️ Tried to cancel but session was null");
+      debugPrint("⚠️ Tried to cancel but there was no running task");
     }
   }
 }

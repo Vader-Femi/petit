@@ -76,9 +76,12 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   StreamSubscription<SharedMedia>? _intentStreamSubscription;
   final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
-  static FirebaseAnalytics analytics = FirebaseAnalytics.instance;
-  static FirebaseAnalyticsObserver observer =
-      FirebaseAnalyticsObserver(analytics: analytics);
+  // Only created where Analytics is supported: touching
+  // FirebaseAnalytics.instance without an initialised Firebase app throws.
+  static final FirebaseAnalyticsObserver? observer =
+      PlatformInfo.supportsAnalytics
+          ? FirebaseAnalyticsObserver(analytics: FirebaseAnalytics.instance)
+          : null;
 
   @override
   void initState() {
@@ -238,7 +241,7 @@ class _MyAppState extends State<MyApp> {
           darkTheme: darkTheme,
           themeMode: ThemeMode.system,
           navigatorKey: navigatorKey,
-          navigatorObservers: [observer],
+          navigatorObservers: [if (observer != null) observer!],
           initialRoute: '/',
           onGenerateRoute: AppRoutes.onGenerateRoutes,
           home: kIsWeb
