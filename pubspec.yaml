@@ -59,11 +59,11 @@ dependencies:
   async: ^2.13.0
 
   #Firebase
-  firebase_core: ^4.2.1
+  firebase_core: ^4.15.0
 
   #Firebase Crashlytics and others
-  firebase_crashlytics: ^5.0.5
-  firebase_analytics: ^12.0.4
+  firebase_crashlytics: ^5.4.0
+  firebase_analytics: ^12.6.0
 
   #Pref
   shared_preferences: ^2.5.4
