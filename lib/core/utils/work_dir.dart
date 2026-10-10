@@ -22,6 +22,17 @@ Future<Directory> getWorkDir() async {
   return dir;
 }
 
+/// Folder for video preview thumbnails. Kept apart from the work folder so
+/// finishing an image job cannot delete a preview the video tab is showing.
+Future<Directory> getPreviewDir() async {
+  final temp = await getTemporaryDirectory();
+  final dir = Directory(p.join(temp.path, 'petit_preview'));
+  if (!await dir.exists()) {
+    await dir.create(recursive: true);
+  }
+  return dir;
+}
+
 /// Creates a fresh sub-folder for a single compression job, so files inside
 /// can keep clean names (e.g. `photo_compressed.jpg`) without colliding.
 Future<Directory> createJobDir() async {

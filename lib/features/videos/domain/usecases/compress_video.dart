@@ -46,14 +46,19 @@ class CompressVideoUseCase {
 
   /// Probes [input], picks encoder settings from its codec, and starts
   /// compressing. [qualityPercent] is the 0..100 slider value.
+  /// [totalDurationMs] is used for progress; when missing, the probed
+  /// duration is used instead.
   Future<VideoCompressionJob> call({
     required File input,
     required int qualityPercent,
     required String preset,
-    required int totalDurationMs,
+    int? totalDurationMs,
     required void Function(int percent) onProgress,
     required void Function(String message) onError,
   }) async {
+    // May ask the user where to save; throws MediaException if they decline.
+    await _saver.prepare();
+
     final VideoData data;
     try {
       data = await _compressor.probe(input);
@@ -78,12 +83,17 @@ class CompressVideoUseCase {
       videoCodec: config.vcodec,
       crf: crf,
       preset: preset,
-      totalDurationMs: totalDurationMs,
+      totalDurationMs: _usableDuration(totalDurationMs) ??
+          _usableDuration(data.durationMs) ??
+          1,
       onProgress: onProgress,
     );
 
     return VideoCompressionJob(task, _finish(task, input, onError));
   }
+
+  /// Durations of zero (or unknown) would make progress meaningless.
+  int? _usableDuration(int? ms) => (ms != null && ms > 0) ? ms : null;
 
   Future<VideoCompressionOutcome> _finish(
     VideoCompressionTask task,

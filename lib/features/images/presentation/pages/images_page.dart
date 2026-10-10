@@ -92,6 +92,20 @@ class _ImagesPageState extends State<ImagesPage> {
                                   },
                                   fit: BoxFit.contain,
                                   filterQuality: FilterQuality.none,
+                                  // Flutter cannot decode every format on every
+                                  // platform (e.g. HEIC on desktop).
+                                  errorBuilder: (context, error, stackTrace) =>
+                                      const Center(
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.image_not_supported_outlined,
+                                            size: 48),
+                                        SizedBox(height: 8),
+                                        Text('Preview not available'),
+                                      ],
+                                    ),
+                                  ),
                                 ),
                               );
                             }).toList(),

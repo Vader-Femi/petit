@@ -1,5 +1,6 @@
 import 'package:async/async.dart';
 import 'package:flutter_super/flutter_super.dart';
+import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/common/domain/services/media_picker.dart';
 import 'package:petit/common/domain/services/workspace.dart';
 import 'package:petit/features/images/domain/entities/image_data.dart';
@@ -141,19 +142,26 @@ class ImagesViewModel {
 
       final totalLength = pickedImages.state.length;
 
-      final batch = await _compressImages(
-        images: List.of(pickedImages.state),
-        globalQuality: globalQualitySlider.state,
-        isCancelled: () => completer.isCanceled == true,
-        onProgress: (progress) => setIsLoading(
-          LoadingData(
-              isLoading: true,
-              completedSteps: progress.completedSteps,
-              totalSteps: progress.totalSteps,
-              progressCounter: progress.percent),
-        ),
-        onError: showResult,
-      );
+      final ImageBatchResult batch;
+      try {
+        batch = await _compressImages(
+          images: List.of(pickedImages.state),
+          globalQuality: globalQualitySlider.state,
+          isCancelled: () => completer.isCanceled == true,
+          onProgress: (progress) => setIsLoading(
+            LoadingData(
+                isLoading: true,
+                completedSteps: progress.completedSteps,
+                totalSteps: progress.totalSteps,
+                progressCounter: progress.percent),
+          ),
+          onError: showResult,
+        );
+      } on MediaException catch (e) {
+        // e.g. the user closed the folder dialog on desktop.
+        await showResult(e.message);
+        return null;
+      }
 
       currentImage.state = null;
       currentImageIndex.state = 0;

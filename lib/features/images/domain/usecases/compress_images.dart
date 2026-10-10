@@ -54,6 +54,9 @@ class CompressImagesUseCase {
     required void Function(BatchProgress progress) onProgress,
     required void Function(String message) onError,
   }) async {
+    // May ask the user where to save; throws MediaException if they decline.
+    await _saver.prepare();
+
     final total = images.length;
     var progress = total == 1 ? 50 : 0;
     var sizeBefore = 0;

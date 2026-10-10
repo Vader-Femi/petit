@@ -37,12 +37,16 @@ class FfmpegVideoCompressor implements VideoCompressor {
         frameRate = (numerator / denominator).round();
       }
 
+      // Format duration is a string of seconds, e.g. "12.345000".
+      final seconds = double.tryParse(info.getDuration() ?? '');
+
       return VideoData(
         videoFile: video,
         pixelWidth: videoStream.getWidth(),
         pixelHeight: videoStream.getHeight(),
         videoCodec: videoStream.getCodec(),
         frameRate: frameRate,
+        durationMs: seconds == null ? null : (seconds * 1000).round(),
       );
     } on MediaException catch (e) {
       debugPrint('Video probe failed: ${e.message}');

@@ -6,6 +6,11 @@ class GalleryMediaSaver implements MediaSaver {
   static const _album = "Petit";
 
   @override
+  Future<void> prepare() async {
+    // The gallery needs no destination choice.
+  }
+
+  @override
   Future<void> saveImage(String path) async {
     await GallerySaver.saveImage(path, albumName: _album);
   }

@@ -31,6 +31,7 @@ class FakeVideoCompressor implements VideoCompressor {
   String? usedCodec;
   int? usedCrf;
   String? usedPreset;
+  int? usedDurationMs;
 
   @override
   Future<VideoData> probe(File video) async {
@@ -50,13 +51,26 @@ class FakeVideoCompressor implements VideoCompressor {
     usedCodec = videoCodec;
     usedCrf = crf;
     usedPreset = preset;
+    usedDurationMs = totalDurationMs;
     onProgress(42);
     return task;
   }
 }
 
 class FakeSaver implements MediaSaver {
+  FakeSaver({this.declineToPrepare = false});
+
+  final bool declineToPrepare;
+  int prepareCalls = 0;
   final saved = <String>[];
+
+  @override
+  Future<void> prepare() async {
+    prepareCalls++;
+    if (declineToPrepare) {
+      throw const MediaException('No output folder selected.');
+    }
+  }
 
   @override
   Future<void> saveImage(String path) async => saved.add(path);
@@ -80,13 +94,15 @@ void main() {
   File fileOfSize(String name, int bytes) =>
       File('${dir.path}/$name')..writeAsBytesSync(List.filled(bytes, 0));
 
-  VideoData dataFor(File f, {String? codec = 'h264', int? frameRate = 30}) =>
+  VideoData dataFor(File f,
+          {String? codec = 'h264', int? frameRate = 30, int? durationMs}) =>
       VideoData(
         videoFile: f,
         pixelWidth: 1920,
         pixelHeight: 1080,
         videoCodec: codec,
         frameRate: frameRate,
+        durationMs: durationMs,
       );
 
   group('getVcodecConfigFromCodec', () {
@@ -190,6 +206,52 @@ void main() {
               (e) => e.message, 'message', 'Error retrieving video properties')),
         );
       }
+    });
+
+    test('progress uses the given duration, else the probed one, else 1',
+        () async {
+      Future<int?> durationUsed({int? given, int? probed}) async {
+        final input = fileOfSize('in_${given}_$probed.mp4', 100);
+        final compressor =
+            FakeVideoCompressor(data: dataFor(input, durationMs: probed));
+        await CompressVideoUseCase(compressor, FakeSaver())(
+          input: input,
+          qualityPercent: 80,
+          preset: 'fast',
+          totalDurationMs: given,
+          onProgress: (_) {},
+          onError: (_) {},
+        );
+        return compressor.usedDurationMs;
+      }
+
+      expect(await durationUsed(given: 5000, probed: 9000), 5000);
+      expect(await durationUsed(given: null, probed: 9000), 9000);
+      expect(await durationUsed(given: 0, probed: 9000), 9000);
+      expect(await durationUsed(given: null, probed: null), 1);
+      expect(await durationUsed(given: 0, probed: 0), 1);
+    });
+
+    test('asks the saver where to save before probing or compressing',
+        () async {
+      final input = fileOfSize('in.mp4', 500);
+      final compressor = FakeVideoCompressor(data: dataFor(input));
+      final saver = FakeSaver(declineToPrepare: true);
+
+      await expectLater(
+        CompressVideoUseCase(compressor, saver)(
+          input: input,
+          qualityPercent: 80,
+          preset: 'fast',
+          onProgress: (_) {},
+          onError: (_) {},
+        ),
+        throwsA(isA<MediaException>()
+            .having((e) => e.message, 'message', 'No output folder selected.')),
+      );
+
+      expect(saver.prepareCalls, 1);
+      expect(compressor.usedCodec, isNull);
     });
 
     test('cancel is forwarded to the task', () async {

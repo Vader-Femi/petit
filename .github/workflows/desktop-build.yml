@@ -42,3 +42,35 @@ jobs:
 
       - name: Build ${{ matrix.target }}
         run: flutter build ${{ matrix.target }} --release
+
+  # Unit tests for the domain layer (plain Dart, no plugins needed) and an
+  # informational analysis run. Analysis does not fail the build.
+  checks:
+    name: Analyze and unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.5'
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze (informational)
+        run: flutter analyze
+        continue-on-error: true
+
+      - name: Unit tests
+        run: >
+          flutter test
+          test/media_formats_test.dart
+          test/unique_path_test.dart
+          test/image_use_cases_test.dart
+          test/video_use_case_test.dart

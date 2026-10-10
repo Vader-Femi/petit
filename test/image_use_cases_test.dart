@@ -33,7 +33,19 @@ class FakeImageCompressor implements ImageCompressor {
 }
 
 class FakeSaver implements MediaSaver {
+  FakeSaver({this.declineToPrepare = false});
+
+  final bool declineToPrepare;
+  int prepareCalls = 0;
   final saved = <String>[];
+
+  @override
+  Future<void> prepare() async {
+    prepareCalls++;
+    if (declineToPrepare) {
+      throw const MediaException('No output folder selected.');
+    }
+  }
 
   @override
   Future<void> saveImage(String path) async => saved.add(path);
@@ -150,6 +162,40 @@ void main() {
       expect(saver.saved.length, 1);
       expect(result.originalBytes, 100);
       expect(result.compressedBytes, 40);
+    });
+
+    test('asks the saver where to save once, before compressing', () async {
+      final compressor = FakeImageCompressor(dir);
+      final saver = FakeSaver();
+
+      await CompressImagesUseCase(compressor, saver)(
+        images: [makeImage('a.jpg'), makeImage('b.jpg')],
+        isCancelled: () => false,
+        onProgress: (_) {},
+        onError: (_) {},
+      );
+
+      expect(saver.prepareCalls, 1);
+    });
+
+    test('does no work when the user declines to choose a destination',
+        () async {
+      final compressor = FakeImageCompressor(dir);
+      final progress = <BatchProgress>[];
+
+      await expectLater(
+        CompressImagesUseCase(compressor, FakeSaver(declineToPrepare: true))(
+          images: [makeImage('a.jpg')],
+          isCancelled: () => false,
+          onProgress: progress.add,
+          onError: (_) {},
+        ),
+        throwsA(isA<MediaException>()
+            .having((e) => e.message, 'message', 'No output folder selected.')),
+      );
+
+      expect(compressor.qualities, isEmpty);
+      expect(progress, isEmpty);
     });
 
     test('global quality overrides each image quality', () async {

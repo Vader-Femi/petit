@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
-import 'package:video_player/video_player.dart';
 import '../../../../common/data/summary_report.dart';
 import '../../../../common/widgets/compression_summary_dialog.dart';
 import '../../../../common/widgets/slider_box.dart';
@@ -18,7 +17,7 @@ class VideosPage extends StatefulWidget {
 class _VideosPageState extends State<VideosPage> {
   @override
   void dispose() {
-    // getVideosViewModel.videoController.state?.dispose();
+    // getVideosViewModel.videoPreview.state?.dispose();
     super.dispose();
   }
 
@@ -52,8 +51,8 @@ class _VideosPageState extends State<VideosPage> {
         return Stack(
           alignment: Alignment.center,
           children: [
-            if (getVideosViewModel.videoController.state != null &&
-                getVideosViewModel.videoController.state!.value.isInitialized)
+            if (getVideosViewModel.videoPreview.state != null &&
+                getVideosViewModel.videoPreview.state!.isInitialized)
               Padding(
                 padding: EdgeInsets.fromLTRB(10, 10, 10, 15),
                 child: Column(
@@ -63,10 +62,10 @@ class _VideosPageState extends State<VideosPage> {
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(12),
                         child: AspectRatio(
-                          aspectRatio: getVideosViewModel
-                              .videoController.state!.value.aspectRatio,
-                          child: VideoPlayer(
-                              getVideosViewModel.videoController.state!),
+                          aspectRatio:
+                              getVideosViewModel.videoPreview.state!.aspectRatio,
+                          child: getVideosViewModel.videoPreview.state!
+                              .build(context),
                         ),
                       ),
                     ),
@@ -231,25 +230,20 @@ class _VideosPageState extends State<VideosPage> {
                   children: [
                     if (getVideosViewModel.isFabOpen.state) ...[
                       SizedBox(width: 30),
-                      getVideosViewModel.videoController.state != null &&
+                      getVideosViewModel.videoPreview.state != null &&
                               getVideosViewModel
-                                  .videoController.state!.value.isInitialized
+                                  .videoPreview.state!.isInitialized &&
+                              getVideosViewModel.videoPreview.state!.canPlay
                           ? FloatingActionButton(
                               onPressed: () {
                                 setState(() {
-                                  getVideosViewModel.videoController.state!
-                                          .value.isPlaying
-                                      ? getVideosViewModel
-                                          .videoController.state!
-                                          .pause()
-                                      : getVideosViewModel
-                                          .videoController.state!
-                                          .play();
+                                  getVideosViewModel.videoPreview.state!
+                                      .togglePlayback();
                                 });
                               },
                               child: Icon(
                                 getVideosViewModel
-                                        .videoController.state!.value.isPlaying
+                                        .videoPreview.state!.isPlaying
                                     ? Icons.pause
                                     : Icons.play_arrow,
                               ),

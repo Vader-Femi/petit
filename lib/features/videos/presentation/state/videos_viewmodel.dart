@@ -9,9 +9,10 @@ import 'package:petit/common/domain/services/media_picker.dart';
 import 'package:petit/common/domain/services/workspace.dart';
 import 'package:petit/features/videos/data/slider_value.dart';
 import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+import 'package:petit/features/videos/presentation/preview/video_preview.dart';
+import 'package:petit/features/videos/presentation/preview/video_preview_factory.dart';
 import 'package:petit/service_locator.dart';
 import 'package:share_handler/share_handler.dart';
-import 'package:video_player/video_player.dart';
 
 VideosViewModel get getVideosViewModel => Super.init(VideosViewModel());
 
@@ -21,7 +22,7 @@ class VideosViewModel {
   final result = RxT<String?>(null);
   final isLoading = RxBool(false);
   final videoFile = RxT<File?>(null);
-  final videoController = RxT<VideoPlayerController?>(null);
+  final videoPreview = RxT<VideoPreview?>(null);
   final isCompressing = RxBool(false);
   final cfrQualitySlider = RxInt(80);
   final percentageComplete = RxInt(0);
@@ -88,8 +89,9 @@ class VideosViewModel {
 
       if (path != null) {
         final file = File(path);
-        videoController.state = VideoPlayerController.file(file);
-        await videoController.state?.initialize();
+        final preview = createVideoPreview(file);
+        videoPreview.state = preview;
+        await preview.initialize();
         videoFile.state = file;
 
         setIsLoading(false);
@@ -110,8 +112,9 @@ class VideosViewModel {
         setIsLoading(true);
 
         final file = File(sharedFiles.elementAt(0).path);
-        videoController.state = VideoPlayerController.file(file);
-        await videoController.state?.initialize();
+        final preview = createVideoPreview(file);
+        videoPreview.state = preview;
+        await preview.initialize();
         videoFile.state = file;
 
         setIsLoading(false);
@@ -139,8 +142,7 @@ class VideosViewModel {
         input: originalFile,
         qualityPercent: cfrQualitySlider.state,
         preset: ffmpegPresets[selectedPresetIndex.state].value,
-        totalDurationMs:
-            videoController.state?.value.duration.inMilliseconds ?? 1,
+        totalDurationMs: videoPreview.state?.duration.inMilliseconds,
         onProgress: (percent) => percentageComplete.state = percent,
         onError: showResult,
       );
@@ -201,8 +203,8 @@ class VideosViewModel {
   }
 
   void removeVideo() {
-    videoController.state?.dispose();
-    videoController.state = null;
+    videoPreview.state?.dispose();
+    videoPreview.state = null;
     videoFile.state = null;
     isCompressing.state = false;
     isLoading.state = false;

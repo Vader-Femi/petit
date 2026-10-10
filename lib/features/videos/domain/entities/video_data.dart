@@ -6,6 +6,7 @@ class VideoData {
   final int? pixelHeight;
   final String? videoCodec;
   final int? frameRate;
+  final int? durationMs;
 
   const VideoData({
     required this.videoFile,
@@ -13,18 +14,21 @@ class VideoData {
     required this.pixelHeight,
     required this.videoCodec,
     required this.frameRate,
+    this.durationMs,
   });
 
   VideoData copyWith(
-      {File? videoFile, int? pixelWidth, int? pixelHeight, String? videoCodec, int? frameRate}) {
+      {File? videoFile, int? pixelWidth, int? pixelHeight, String? videoCodec, int? frameRate, int? durationMs}) {
     return VideoData(
       videoFile: videoFile ?? this.videoFile,
       pixelWidth: pixelWidth ?? this.pixelWidth,
       pixelHeight: pixelHeight ?? this.pixelHeight,
       videoCodec: videoCodec ?? this.videoCodec,
       frameRate: frameRate ?? this.frameRate,
+      durationMs: durationMs ?? this.durationMs,
     );
   }
 
-  List<Object?> get props => [videoFile, pixelHeight, pixelWidth, frameRate];
+  List<Object?> get props =>
+      [videoFile, pixelHeight, pixelWidth, frameRate, durationMs];
 }
