@@ -57,6 +57,48 @@ jobs:
       - name: Compress to ZIP
         run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath petit-windows.zip
 
+      # Installer. Best effort: the zip is published either way, so a problem
+      # here never blocks a release.
+      - name: Download Visual C++ runtime (bundled into the installer)
+        id: vcredist
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path packaging\windows\redist | Out-Null
+          $file = "packaging\windows\redist\vc_redist.x64.exe"
+          Invoke-WebRequest -Uri https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile $file
+          # Only bundle it if Microsoft signed it.
+          $sig = Get-AuthenticodeSignature $file
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Microsoft Corporation') {
+            Remove-Item $file
+            throw "vc_redist.x64.exe is not validly signed by Microsoft"
+          }
+
+      - name: Build installer
+        id: installer
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          choco upgrade innosetup -y --no-progress
+          $version = ((Select-String -Path pubspec.yaml -Pattern '^version:').Line -replace '^version:\s*', '').Trim()
+          $parts = $version.Split('+')
+          $name = $parts[0]
+          $build = if ($parts.Length -gt 1) { $parts[1] } else { '0' }
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DAppVersion=$name" "/DAppBuild=$build" "/DSourceDir=$PWD\build\windows\x64\runner\Release" "/O$PWD\dist" packaging\windows\petit.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload Windows installer
+        if: steps.installer.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: petit-windows-installer
+          path: dist/petit-windows-setup.exe
+
+      - name: Warn if the installer failed
+        if: steps.installer.outcome == 'failure'
+        run: echo "::warning::The Windows installer failed to build. The zip is still published."
+
       - name: Upload Windows ZIP
         uses: actions/upload-artifact@v4
         with:
@@ -173,6 +215,7 @@ jobs:
           files: |
             release-assets/app-release.apk
             release-assets/petit-windows.zip
+            release-assets/petit-windows-setup.exe
             release-assets/petit-macos.zip
             release-assets/petit-macos.dmg
             release-assets/petit-ios.zip

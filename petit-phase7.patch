@@ -1,0 +1,279 @@
+diff --git a/.github/workflows/production-release.yml b/.github/workflows/production-release.yml
+index 6e57dcb..da09071 100644
+--- a/.github/workflows/production-release.yml
++++ b/.github/workflows/production-release.yml
+@@ -57,6 +57,48 @@ jobs:
+       - name: Compress to ZIP
+         run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath petit-windows.zip
+ 
++      # Installer. Best effort: the zip is published either way, so a problem
++      # here never blocks a release.
++      - name: Download Visual C++ runtime (bundled into the installer)
++        id: vcredist
++        continue-on-error: true
++        shell: pwsh
++        run: |
++          New-Item -ItemType Directory -Force -Path packaging\windows\redist | Out-Null
++          $file = "packaging\windows\redist\vc_redist.x64.exe"
++          Invoke-WebRequest -Uri https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile $file
++          # Only bundle it if Microsoft signed it.
++          $sig = Get-AuthenticodeSignature $file
++          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Microsoft Corporation') {
++            Remove-Item $file
++            throw "vc_redist.x64.exe is not validly signed by Microsoft"
++          }
++
++      - name: Build installer
++        id: installer
++        continue-on-error: true
++        shell: pwsh
++        run: |
++          choco upgrade innosetup -y --no-progress
++          $version = ((Select-String -Path pubspec.yaml -Pattern '^version:').Line -replace '^version:\s*', '').Trim()
++          $parts = $version.Split('+')
++          $name = $parts[0]
++          $build = if ($parts.Length -gt 1) { $parts[1] } else { '0' }
++          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
++          & $iscc "/DAppVersion=$name" "/DAppBuild=$build" "/DSourceDir=$PWD\build\windows\x64\runner\Release" "/O$PWD\dist" packaging\windows\petit.iss
++          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
++
++      - name: Upload Windows installer
++        if: steps.installer.outcome == 'success'
++        uses: actions/upload-artifact@v4
++        with:
++          name: petit-windows-installer
++          path: dist/petit-windows-setup.exe
++
++      - name: Warn if the installer failed
++        if: steps.installer.outcome == 'failure'
++        run: echo "::warning::The Windows installer failed to build. The zip is still published."
++
+       - name: Upload Windows ZIP
+         uses: actions/upload-artifact@v4
+         with:
+@@ -173,6 +215,7 @@ jobs:
+           files: |
+             release-assets/app-release.apk
+             release-assets/petit-windows.zip
++            release-assets/petit-windows-setup.exe
+             release-assets/petit-macos.zip
+             release-assets/petit-macos.dmg
+             release-assets/petit-ios.zip
+diff --git a/.gitignore b/.gitignore
+index ffb78e4..69b5485 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -42,3 +42,7 @@ google-services.json
+ .flutter-plugins
+ .flutter-plugins-dependencies
+ .DS_Store
++
++# Windows installer inputs/outputs (built by the release workflow)
++/packaging/windows/redist/
++/dist/
+diff --git a/docs/releasing.md b/docs/releasing.md
+index c700567..e75225b 100644
+--- a/docs/releasing.md
++++ b/docs/releasing.md
+@@ -8,6 +8,7 @@ every platform and publishes one GitHub release.
+ | Asset | Platform | Notes |
+ |---|---|---|
+ | `app-release.apk` | Android | |
++| `petit-windows-setup.exe` | Windows | Installer (recommended), see [windows-installer.md](windows-installer.md). Not code signed. |
+ | `petit-windows.zip` | Windows | Unzip and run `petit.exe`. Not code signed. |
+ | `petit-macos.zip`, `petit-macos.dmg` | macOS | Not signed or notarized. |
+ | `petit-ios.zip` | iOS | Unsigned `.app`; it cannot be installed on a device as is. |
+diff --git a/docs/windows-installer.md b/docs/windows-installer.md
+new file mode 100644
+index 0000000..9d06b03
+--- /dev/null
++++ b/docs/windows-installer.md
+@@ -0,0 +1,58 @@
++# Windows installer
++
++Each release publishes two Windows files:
++
++| Asset | What it is |
++|---|---|
++| `petit-windows-setup.exe` | Installer (recommended). Start menu entry, optional desktop icon, uninstaller. |
++| `petit-windows.zip` | The app folder. Unzip anywhere and run `petit.exe`. |
++
++## Installing
++
++Run `petit-windows-setup.exe`. By default it installs for the current user (no admin prompt) under
++`%LocalAppData%\Programs\Petit`; the first wizard page offers "for all users" (`Program Files`) instead.
++Upgrading is done by running a newer installer: it replaces the old version.
++
++Silent install and uninstall (for scripts):
++
++```
++petit-windows-setup.exe /VERYSILENT /SUPPRESSMSGBOXES
++"%LocalAppData%\Programs\Petit\unins000.exe" /VERYSILENT
++```
++
++The installer also installs the Microsoft Visual C++ runtime if the PC does not have it yet
++(Flutter apps need it; fresh Windows installs sometimes lack it). That step asks for admin rights
++only when the runtime is actually missing.
++
++## How it is built
++
++`packaging/windows/petit.iss` is an [Inno Setup](https://jrsoftware.org/isinfo.php) script. The
++`build-windows` job in `production-release.yml`:
++
++1. builds the app and creates the zip (as before),
++2. downloads `vc_redist.x64.exe` from Microsoft and checks it is signed by Microsoft,
++3. installs Inno Setup with Chocolatey and compiles the installer with the version from `pubspec.yaml`,
++4. uploads it as `petit-windows-installer`.
++
++Steps 2 to 4 are best effort (`continue-on-error`). If one fails, the run shows a warning and the
++release is still published with the zip. If the Visual C++ download fails, the installer is built without
++the runtime.
++
++To build it locally on Windows (Inno Setup 6 installed):
++
++```
++flutter build windows --release
++ISCC /DAppVersion=1.0.25 /DAppBuild=25 packaging\windows\petit.iss
++```
++
++The result is `packaging\windows\Output\petit-windows-setup.exe`.
++
++## Things to know
++
++- **Not signed yet.** Windows SmartScreen will say "unknown publisher" until the installer and
++  `petit.exe` are signed with a code signing certificate. When you have one, add a signing step after
++  "Build installer" (and sign `petit.exe` before it is packaged) in the workflow.
++- **`AppId` in `petit.iss` must never change.** It is how Windows recognises an upgrade of the same app.
++- **x64 only**, like the FFmpeg Kit plugin. The installer also runs on Windows on ARM through
++  emulation.
++- The version shown comes from `version:` in `pubspec.yaml` (`1.0.25+25` becomes 1.0.25, build 25).
+diff --git a/packaging/windows/petit.iss b/packaging/windows/petit.iss
+new file mode 100644
+index 0000000..16891d2
+--- /dev/null
++++ b/packaging/windows/petit.iss
+@@ -0,0 +1,89 @@
++; Inno Setup script for the Petit Windows installer.
++;
++; Compile (from the repository root, after `flutter build windows --release`):
++;   ISCC /DAppVersion=1.0.25 /DAppBuild=25 packaging\windows\petit.iss
++;
++; Optional defines:
++;   /DSourceDir=<folder>   the Flutter release folder (default below)
++; Optional input:
++;   packaging\windows\redist\vc_redist.x64.exe
++;     When present it is bundled and installed silently if the Microsoft Visual C++
++;     runtime is missing on the user's PC. The release workflow downloads it.
++
++#ifndef AppVersion
++  #define AppVersion "0.0.0"
++#endif
++#ifndef AppBuild
++  #define AppBuild "0"
++#endif
++#ifndef SourceDir
++  #define SourceDir "..\..\build\windows\x64\runner\Release"
++#endif
++
++#define AppName "Petit"
++#define AppExe "petit.exe"
++#define AppPublisher "Vader-Femi"
++#define AppUrl "https://github.com/Vader-Femi/petit"
++#define Redist AddBackslash(SourcePath) + "redist\vc_redist.x64.exe"
++
++[Setup]
++; Identifies this app for upgrades and uninstall. Never change it.
++AppId={{717D5427-839B-4297-8B74-994DE9963E8B}
++AppName={#AppName}
++AppVersion={#AppVersion}
++AppVerName={#AppName} {#AppVersion}
++AppPublisher={#AppPublisher}
++AppPublisherURL={#AppUrl}
++AppSupportURL={#AppUrl}/issues
++AppUpdatesURL={#AppUrl}/releases
++VersionInfoVersion={#AppVersion}.{#AppBuild}
++DefaultDirName={autopf}\{#AppName}
++DefaultGroupName={#AppName}
++DisableProgramGroupPage=yes
++OutputBaseFilename=petit-windows-setup
++SetupIconFile=..\..\windows\runner\resources\app_icon.ico
++UninstallDisplayIcon={app}\{#AppExe}
++Compression=lzma2
++SolidCompression=yes
++WizardStyle=modern
++ArchitecturesAllowed=x64compatible
++ArchitecturesInstallIn64BitMode=x64compatible
++; Installs just for the current user without an admin prompt; the first page of
++; the wizard lets the user choose "for all users" instead.
++PrivilegesRequired=lowest
++PrivilegesRequiredOverridesAllowed=dialog
++
++[Languages]
++Name: "english"; MessagesFile: "compiler:Default.isl"
++
++[Tasks]
++Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
++
++[Files]
++Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
++#if FileExists(Redist)
++Source: "{#Redist}"; DestDir: "{tmp}"; Flags: deleteafterinstall; Check: VCRedistNeeded
++#endif
++
++[Icons]
++Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
++Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
++
++[Run]
++#if FileExists(Redist)
++; shellexec lets Windows ask for the admin rights the runtime installer needs,
++; even when Petit itself is installed for the current user only.
++Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing the Microsoft Visual C++ runtime..."; Flags: shellexec waituntilterminated; Check: VCRedistNeeded
++#endif
++Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
++
++[Code]
++// True when the 64-bit Visual C++ 2015-2022 runtime is not installed yet.
++function VCRedistNeeded(): Boolean;
++var
++  Installed: Cardinal;
++begin
++  Result := not (RegQueryDWordValue(HKLM64,
++    'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64', 'Installed', Installed)
++    and (Installed = 1));
++end;
+diff --git a/windows/runner/Runner.rc b/windows/runner/Runner.rc
+index 5edfb46..a92ec1c 100644
+--- a/windows/runner/Runner.rc
++++ b/windows/runner/Runner.rc
+@@ -89,13 +89,13 @@ BEGIN
+     BEGIN
+         BLOCK "040904e4"
+         BEGIN
+-            VALUE "CompanyName", "com.example" "\0"
+-            VALUE "FileDescription", "petit" "\0"
++            VALUE "CompanyName", "Vader-Femi" "\0"
++            VALUE "FileDescription", "Petit" "\0"
+             VALUE "FileVersion", VERSION_AS_STRING "\0"
+             VALUE "InternalName", "petit" "\0"
+-            VALUE "LegalCopyright", "Copyright (C) 2025 com.example. All rights reserved." "\0"
++            VALUE "LegalCopyright", "Copyright (C) 2026 Vader-Femi. All rights reserved." "\0"
+             VALUE "OriginalFilename", "petit.exe" "\0"
+-            VALUE "ProductName", "petit" "\0"
++            VALUE "ProductName", "Petit" "\0"
+             VALUE "ProductVersion", VERSION_AS_STRING "\0"
+         END
+     END
+diff --git a/windows/runner/main.cpp b/windows/runner/main.cpp
+index b45fbcc..bfa697b 100644
+--- a/windows/runner/main.cpp
++++ b/windows/runner/main.cpp
+@@ -27,7 +27,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
+   FlutterWindow window(project);
+   Win32Window::Point origin(10, 10);
+   Win32Window::Size size(1280, 720);
+-  if (!window.Create(L"petit", origin, size)) {
++  if (!window.Create(L"Petit", origin, size)) {
+     return EXIT_FAILURE;
+   }
+   window.SetQuitOnClose(true);

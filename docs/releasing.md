@@ -8,6 +8,7 @@ every platform and publishes one GitHub release.
 | Asset | Platform | Notes |
 |---|---|---|
 | `app-release.apk` | Android | |
+| `petit-windows-setup.exe` | Windows | Installer (recommended), see [windows-installer.md](windows-installer.md). Not code signed. |
 | `petit-windows.zip` | Windows | Unzip and run `petit.exe`. Not code signed. |
 | `petit-macos.zip`, `petit-macos.dmg` | macOS | Not signed or notarized. |
 | `petit-ios.zip` | iOS | Unsigned `.app`; it cannot be installed on a device as is. |

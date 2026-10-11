@@ -42,3 +42,7 @@ google-services.json
 .flutter-plugins
 .flutter-plugins-dependencies
 .DS_Store
+
+# Windows installer inputs/outputs (built by the release workflow)
+/packaging/windows/redist/
+/dist/
