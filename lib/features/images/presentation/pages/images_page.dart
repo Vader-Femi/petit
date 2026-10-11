@@ -1,10 +1,11 @@
-import 'package:async/async.dart';
 import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
+import 'package:petit/core/utils/adaptive.dart';
+import 'package:petit/core/utils/platform_utils.dart';
+import 'package:petit/core/utils/shortcut_labels.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
-import '../../../../common/data/summary_report.dart';
 import '../../../../common/widgets/compression_summary_dialog.dart';
 import '../../../../common/widgets/slider_box.dart';
 
@@ -21,6 +22,9 @@ class ImagesPage extends StatefulWidget {
 }
 
 class _ImagesPageState extends State<ImagesPage> {
+  // Adjust to actual height of your FAB + margin
+  static const fabHeight = 72.0;
+
   @override
   void initState() {
     super.initState();
@@ -29,25 +33,148 @@ class _ImagesPageState extends State<ImagesPage> {
         );
   }
 
-  void _showCompressionSummaryDialog({
-    required BuildContext context,
-    required SummaryReport summaryReport,
-  }) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) =>
-          CompressionSummaryDialog(summaryReport: summaryReport),
+  /// The image carousel, with previous/next buttons on desktop (dragging with
+  /// a mouse is not obvious there).
+  Widget _buildCarousel() {
+    final viewModel = getImagesViewModel;
+    final count = viewModel.pickedImages.state.length;
+    final currentIndex = viewModel.currentImageIndex.state ?? 0;
+    final showArrows = PlatformInfo.isDesktop && count > 1;
+
+    // StackFit.expand keeps the carousel's constraints tight, as they were
+    // when it sat directly inside an Expanded.
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        CarouselSlider(
+          items: viewModel.pickedImages.state.map((imageData) {
+            return ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.file(
+                imageData.imageFile,
+                frameBuilder: (BuildContext context, Widget child, int? frame,
+                    bool? wasSynchronouslyLoaded) {
+                  return AnimatedOpacity(
+                    opacity: frame == null ? 0 : 1,
+                    duration: Duration(milliseconds: 200),
+                    curve: Curves.easeIn,
+                    child: child,
+                  );
+                },
+                fit: BoxFit.contain,
+                filterQuality: FilterQuality.none,
+                // Flutter cannot decode every format on every
+                // platform (e.g. HEIC on desktop).
+                errorBuilder: (context, error, stackTrace) => const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.image_not_supported_outlined, size: 48),
+                      SizedBox(height: 8),
+                      Text('Preview not available'),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+          carouselController: viewModel.carouselController,
+          options: CarouselOptions(
+              autoPlay: false,
+              enlargeStrategy: CenterPageEnlargeStrategy.zoom,
+              enlargeCenterPage: true,
+              pageSnapping: true,
+              scrollDirection: Axis.horizontal,
+              pauseAutoPlayOnTouch: true,
+              enableInfiniteScroll: false,
+              onPageChanged: (index, _) =>
+                  viewModel.updateCurrentImageAndIndex(index),
+              reverse: false),
+        ),
+        if (showArrows)
+          Positioned(
+            left: 4,
+            top: 0,
+            bottom: 0,
+            child: Center(
+              child: IconButton.filledTonal(
+                tooltip: 'Previous image (\u2190)',
+                onPressed: currentIndex > 0 ? viewModel.previousImage : null,
+                icon: const Icon(Icons.chevron_left),
+              ),
+            ),
+          ),
+        if (showArrows)
+          Positioned(
+            right: 4,
+            top: 0,
+            bottom: 0,
+            child: Center(
+              child: IconButton.filledTonal(
+                tooltip: 'Next image (\u2192)',
+                onPressed: currentIndex < count - 1 ? viewModel.nextImage : null,
+                icon: const Icon(Icons.chevron_right),
+              ),
+            ),
+          ),
+      ],
     );
+  }
+
+  /// "2 of 5" and the quality slider.
+  List<Widget> _buildControls(BuildContext context) {
+    return [
+      // Current image index
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Text(
+          "${(getImagesViewModel.currentImageIndex.state ?? -1) + 1} of ${getImagesViewModel.pickedImages.state.length}",
+          style: const TextStyle(fontSize: 16),
+        ),
+      ),
+
+      const SizedBox(height: 10),
+
+      if (getImagesViewModel.currentImage.state != null)
+        buildSliderBox(
+          context: context,
+          label: "Image Quality",
+          minValue: "Compressed",
+          maxValue: "Original Quality",
+          tootTipMessage: "Adjust image quality.\n"
+              "•Compressed = less clarity, smaller size\n"
+              "•Original = same clarity, same size\n"
+              "•Middle = same clarity, smaller size\n"
+              "•Recommended = Between 20% - 98%",
+          slider: Slider(
+            value: ((getImagesViewModel.globalQualitySlider.state ??
+                        getImagesViewModel.currentImage.state!.quality) /
+                    100)
+                .clamp(0.0, 1.0),
+            min: 0,
+            max: 1,
+            divisions: 99,
+            label:
+                "${(getImagesViewModel.globalQualitySlider.state ?? getImagesViewModel.currentImage.state!.quality).round()}%",
+            onChanged: (value) {
+              if (getImagesViewModel.globalQualitySlider.state != null) {
+                getImagesViewModel.updateGlobalQualitySlider(value);
+              } else {
+                getImagesViewModel.updateCurrentImageQuality(value);
+              }
+            },
+          ),
+          showGlobalSwitch: getImagesViewModel.pickedImages.length > 1,
+          isGlobal: getImagesViewModel.globalQualitySlider.state != null,
+          onGlobalToggle: (value) {
+            getImagesViewModel.globalQualitySlider.state = value ? 50 : null;
+          },
+        ),
+    ];
   }
 
   @override
   Widget build(BuildContext context) {
-
-    final carouselSliderController = CarouselSliderController();
-
-    const fabHeight = 72.0; // Adjust to actual height of your FAB + margin
-
     return Scaffold(
       body: SuperBuilder(builder: (context) {
         if (getImagesViewModel.result.state != null) {
@@ -63,127 +190,57 @@ class _ImagesPageState extends State<ImagesPage> {
           alignment: Alignment.center,
           children: [
             getImagesViewModel.pickedImages.isEmpty
-                ? const Text(
-                    "Add images and start compressing",
+                ? Text(
+                    PlatformInfo.isDesktop
+                        ? "Add images and start compressing\nor drop them anywhere in this window"
+                        : "Add images and start compressing",
                     textAlign: TextAlign.center,
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 18,
                     ),
                   )
                 : Padding(
-                    padding: EdgeInsets.fromLTRB(10, 10, 10, 15),
-                    child: Column(
-                      children: [
-                        Expanded(
-                          child: CarouselSlider(
-                            items: getImagesViewModel.pickedImages.state
-                                .map((imageData) {
-                              return ClipRRect(
-                                borderRadius: BorderRadius.circular(12),
-                                child: Image.file(
-                                  imageData.imageFile,
-                                  frameBuilder: (BuildContext context, Widget child, int? frame, bool? wasSynchronouslyLoaded) {
-                                    return AnimatedOpacity(
-                                      opacity: frame == null ? 0 : 1,
-                                      duration: Duration(milliseconds: 200),
-                                      curve: Curves.easeIn,
-                                      child: child,
-                                    );
-                                  },
-                                  fit: BoxFit.contain,
-                                  filterQuality: FilterQuality.none,
-                                  // Flutter cannot decode every format on every
-                                  // platform (e.g. HEIC on desktop).
-                                  errorBuilder: (context, error, stackTrace) =>
-                                      const Center(
+                    padding: const EdgeInsets.fromLTRB(10, 10, 10, 15),
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final controls = _buildControls(context);
+
+                        // Wide: preview on the left, controls on the right.
+                        if (constraints.maxWidth >= kTwoPaneMinWidth) {
+                          return Row(
+                            children: [
+                              Expanded(child: _buildCarousel()),
+                              const SizedBox(width: 24),
+                              SizedBox(
+                                width: kControlsPaneWidth,
+                                child: Center(
+                                  child: SingleChildScrollView(
                                     child: Column(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        Icon(Icons.image_not_supported_outlined,
-                                            size: 48),
-                                        SizedBox(height: 8),
-                                        Text('Preview not available'),
+                                        ...controls,
+                                        // Reserve space for FABs
+                                        const SizedBox(height: fabHeight),
                                       ],
                                     ),
                                   ),
                                 ),
-                              );
-                            }).toList(),
-                            carouselController: carouselSliderController,
-                            options: CarouselOptions(
-                                autoPlay: false,
-                                enlargeStrategy: CenterPageEnlargeStrategy.zoom,
-                                enlargeCenterPage: true,
-                                pageSnapping: true,
-                                scrollDirection: Axis.horizontal,
-                                pauseAutoPlayOnTouch: true,
-                                enableInfiniteScroll: false,
-                                onPageChanged: (index, _) => getImagesViewModel
-                                    .updateCurrentImageAndIndex(index),
-                                reverse: false),
-                          ),
-                        ),
-                        SizedBox(height: 10),
-                        // Current image index
-                        if (getImagesViewModel.pickedImages.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 6),
-                            child: Text(
-                              "${(getImagesViewModel.currentImageIndex.state ?? -1) + 1} of ${getImagesViewModel.pickedImages.state.length}",
-                              style: const TextStyle(fontSize: 16),
-                            ),
-                          ),
+                              ),
+                            ],
+                          );
+                        }
 
-                        SizedBox(height: 10),
-
-                        if (getImagesViewModel.currentImage.state != null)
-                          buildSliderBox(
-                            context: context,
-                            label: "Image Quality",
-                            minValue: "Compressed",
-                            maxValue: "Original Quality",
-                            tootTipMessage: "Adjust image quality.\n"
-                                "•Compressed = less clarity, smaller size\n"
-                                "•Original = same clarity, same size\n"
-                                "•Middle = same clarity, smaller size\n"
-                                "•Recommended = Between 20% - 98%",
-                            slider: Slider(
-                              value: ((getImagesViewModel
-                                              .globalQualitySlider.state ??
-                                          getImagesViewModel
-                                              .currentImage.state!.quality) /
-                                      100)
-                                  .clamp(0.0, 1.0),
-                              min: 0,
-                              max: 1,
-                              divisions: 99,
-                              label:
-                                  "${(getImagesViewModel.globalQualitySlider.state ?? getImagesViewModel.currentImage.state!.quality).round()}%",
-                              onChanged: (value) {
-                                if (getImagesViewModel
-                                        .globalQualitySlider.state !=
-                                    null) {
-                                  getImagesViewModel
-                                      .updateGlobalQualitySlider(value);
-                                } else {
-                                  getImagesViewModel
-                                      .updateCurrentImageQuality(value);
-                                }
-                              },
-                            ),
-                            showGlobalSwitch:
-                                getImagesViewModel.pickedImages.length > 1,
-                            isGlobal:
-                                getImagesViewModel.globalQualitySlider.state !=
-                                    null,
-                            onGlobalToggle: (value) {
-                              getImagesViewModel.globalQualitySlider.state =
-                                  value ? 50 : null;
-                            },
-                          ),
-                        // Reserve space for FABs
-                        const SizedBox(height: fabHeight),
-                      ],
+                        // Narrow: stacked, as on a phone.
+                        return Column(
+                          children: [
+                            Expanded(child: _buildCarousel()),
+                            const SizedBox(height: 10),
+                            ...controls,
+                            // Reserve space for FABs
+                            const SizedBox(height: fabHeight),
+                          ],
+                        );
+                      },
                     ),
                   ),
             getImagesViewModel.isLoading.state.isLoading
@@ -239,7 +296,8 @@ class _ImagesPageState extends State<ImagesPage> {
                         height: 180,
                         padding: 0.02,
                         selectedColor: Theme.of(context).colorScheme.primary,
-                        unselectedColor: Theme.of(context).colorScheme.surfaceContainer,
+                        unselectedColor:
+                            Theme.of(context).colorScheme.surfaceContainer,
                       ),
                       Text(
                         "Please keep app open\nwhile compressing",
@@ -247,9 +305,7 @@ class _ImagesPageState extends State<ImagesPage> {
                         style: TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.w700,
-                            color: Theme.of(context).colorScheme.primary
-
-                        ),
+                            color: Theme.of(context).colorScheme.primary),
                       ),
                     ],
                   )
@@ -263,25 +319,16 @@ class _ImagesPageState extends State<ImagesPage> {
             return FloatingActionButton(
               onPressed: () async =>
                   getImagesViewModel.selectImageButtonUseCase(),
-              tooltip: "Add Images",
+              tooltip: withShortcut("Add Images", "O"),
               child: const Icon(Icons.add_photo_alternate_outlined),
             );
           } else {
             if (getImagesViewModel.isLoading.state.isLoading) {
               return FloatingActionButton.extended(
                 icon: const Icon(Icons.clear),
-                tooltip: "Cancel compression ",
-                onPressed: () async {
-                  try {
-                    if (!getImagesViewModel.completer.isCanceled ||
-                        !getImagesViewModel.completer.isCompleted) {
-                      getImagesViewModel.completer.operation.cancel();
-                    }
-                    getImagesViewModel.showResult("Cancelling");
-                  } catch (e) {
-                    debugPrint('Error during cancel: $e');
-                  }
-                },
+                tooltip: withShortcut("Cancel compression", "Esc",
+                    withModifier: false),
+                onPressed: () async => getImagesViewModel.requestCancel(),
                 label: const Text('Cancel'),
               );
             } else {
@@ -296,32 +343,24 @@ class _ImagesPageState extends State<ImagesPage> {
                       if (getImagesViewModel.isFabOpen.state) ...[
                         FloatingActionButton.extended(
                           icon: const Icon(Icons.compress_outlined),
-                          tooltip: "Compress Images",
+                          tooltip: withShortcut("Compress Images", "Enter"),
                           onPressed: () async {
-                            getImagesViewModel.completer = CancelableCompleter(
-                              onCancel:
-                                  getImagesViewModel.cancelCompressingAllImages,
-                            );
-
-                            getImagesViewModel.completer.complete(
-                                getImagesViewModel
-                                    .compressAllSelectedImages()
-                                    .then((summaryReport) {
-                              if (summaryReport != null) {
-                                if (context.mounted) {
-                                  _showCompressionSummaryDialog(
-                                      context: context,
-                                      summaryReport: summaryReport);
-                                }
+                            getImagesViewModel.startCompression(
+                                onComplete: (summaryReport) {
+                              if (context.mounted) {
+                                showCompressionSummaryDialog(
+                                    context: context,
+                                    summaryReport: summaryReport);
                               }
-                            }));
+                            });
                           },
                           label: const Text('Compress'),
                         ),
                         SizedBox(width: 10),
                         FloatingActionButton.extended(
                           icon: const Icon(Icons.delete_outline),
-                          tooltip: "Remove images",
+                          tooltip: withShortcut("Remove images", "Del",
+                              withModifier: false),
                           onPressed: () async {
                             getImagesViewModel.cancelCompressingAllImages();
                           },

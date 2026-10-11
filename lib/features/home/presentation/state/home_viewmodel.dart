@@ -11,6 +11,10 @@ class HomeViewModel {
   final currentTabIndex = RxInt(0);
 
 
+  /// True while either tab is loading or compressing. Switching tabs or adding
+  /// files then would clear the other tab's work, so callers must not.
+  bool get isBusy => getImagesViewModel.isBusy || getVideosViewModel.isBusy;
+
   void setIsLoading(bool isLoading) {
     this.isLoading.state = isLoading;
   }

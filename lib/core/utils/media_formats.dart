@@ -15,6 +15,11 @@ bool isHeif(String path) => _heifFormats.hasMatch(path);
 
 bool isJpeg(String path) => _jpegFormats.hasMatch(path);
 
+final _videoFormats =
+    RegExp(r'\.(mp4|mov|m4v|mkv|avi|webm|3gp)$', caseSensitive: false);
+
+bool isVideoFile(String path) => _videoFormats.hasMatch(path);
+
 /// Formats the image compressor accepts as input.
 bool isCompressibleImage(String path) =>
     _compressibleImageFormats.hasMatch(path);

@@ -55,6 +55,9 @@ dependencies:
   #Native file/folder dialogs on desktop
   file_selector: ^1.0.3
 
+  #Drag and drop files onto the window (desktop)
+  desktop_drop: ^0.8.1
+
   #Gallery Saver
   gallery_saver_plus: ^3.2.9
 

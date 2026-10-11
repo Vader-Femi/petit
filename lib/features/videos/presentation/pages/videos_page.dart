@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
+import 'package:petit/core/utils/adaptive.dart';
+import 'package:petit/core/utils/platform_utils.dart';
+import 'package:petit/core/utils/shortcut_labels.dart';
 import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
-import '../../../../common/data/summary_report.dart';
 import '../../../../common/widgets/compression_summary_dialog.dart';
 import '../../../../common/widgets/slider_box.dart';
 
@@ -15,28 +17,70 @@ class VideosPage extends StatefulWidget {
 }
 
 class _VideosPageState extends State<VideosPage> {
+  // Adjust to actual height of your FAB + margin
+  static const fabHeight = 72.0;
+
   @override
   void dispose() {
     // getVideosViewModel.videoPreview.state?.dispose();
     super.dispose();
   }
 
-  void _showCompressionSummaryDialog({
-    required BuildContext context,
-    required SummaryReport summaryReport,
-  }) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) =>
-          CompressionSummaryDialog(summaryReport: summaryReport),
+  /// The two quality sliders.
+  Widget _buildSliders(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        buildSliderBox(
+          context: context,
+          label: "Compression Level",
+          minValue: getVideosViewModel.getLabelForCRFSlider(0),
+          maxValue: getVideosViewModel.getLabelForCRFSlider(100),
+          tootTipMessage: "Adjusts the compression level.\n"
+              "•${getVideosViewModel.getLabelForCRFSlider(100)} = smallest size, less clarity\n"
+              "•${getVideosViewModel.getLabelForCRFSlider(0)} = smaller size, more clarity\n"
+              "•Recommended = ${getVideosViewModel.getLabelForCRFSlider(80)}",
+          slider: Slider(
+            value: getVideosViewModel.cfrQualitySlider.state / 100,
+            min: 0,
+            max: 1,
+            divisions: 4,
+            label: "${getVideosViewModel.getLabelForCRFSlider(
+                getVideosViewModel.cfrQualitySlider.state)} Compression",
+            onChanged: (value) {
+              getVideosViewModel.updateCfrQualitySlider(value);
+            },
+          ),
+        ),
+        const SizedBox(height: 12),
+        buildSliderBox(
+          context: context,
+          label: "Desired File Size",
+          minValue: getVideosViewModel.ffmpegPresets.first.desc,
+          maxValue: getVideosViewModel.ffmpegPresets.last.desc,
+          tootTipMessage: //"Choose a desired file size.\n"
+              "•${getVideosViewModel.ffmpegPresets.first.desc} = For archival\n"
+              "•${getVideosViewModel.ffmpegPresets[1].desc} = For social media\n"
+              "•${getVideosViewModel.ffmpegPresets.last.desc} = For quick sharing",
+          slider: Slider(
+            value: getVideosViewModel.selectedPresetIndex.state.toDouble(),
+            min: 0,
+            max: (getVideosViewModel.ffmpegPresets.length - 1).toDouble(),
+            divisions: getVideosViewModel.ffmpegPresets.length - 1,
+            label: getVideosViewModel
+                .ffmpegPresets[getVideosViewModel.selectedPresetIndex.state]
+                .desc,
+            onChanged: (value) {
+              getVideosViewModel.setPresetIndex(value.toInt());
+            },
+          ),
+        ),
+      ],
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    const fabHeight = 72.0; // Adjust to actual height of your FAB + margin
-
     return Scaffold(
       body: SuperBuilder(builder: (context) {
         if (getVideosViewModel.result.state != null) {
@@ -54,87 +98,68 @@ class _VideosPageState extends State<VideosPage> {
             if (getVideosViewModel.videoPreview.state != null &&
                 getVideosViewModel.videoPreview.state!.isInitialized)
               Padding(
-                padding: EdgeInsets.fromLTRB(10, 10, 10, 15),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Expanded(
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: AspectRatio(
-                          aspectRatio:
-                              getVideosViewModel.videoPreview.state!.aspectRatio,
-                          child: getVideosViewModel.videoPreview.state!
-                              .build(context),
-                        ),
+                padding: const EdgeInsets.fromLTRB(10, 10, 10, 15),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final preview = ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: AspectRatio(
+                        aspectRatio:
+                            getVideosViewModel.videoPreview.state!.aspectRatio,
+                        child:
+                            getVideosViewModel.videoPreview.state!.build(context),
                       ),
-                    ),
+                    );
 
-                    const SizedBox(height: 12),
+                    // Wide: preview on the left, sliders on the right.
+                    if (constraints.maxWidth >= kTwoPaneMinWidth) {
+                      return Row(
+                        children: [
+                          Expanded(child: Center(child: preview)),
+                          const SizedBox(width: 24),
+                          SizedBox(
+                            width: kControlsPaneWidth,
+                            child: Center(
+                              child: SingleChildScrollView(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    _buildSliders(context),
+                                    // Space for FABs
+                                    const SizedBox(height: fabHeight),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    }
 
-                    Column(
+                    // Narrow: stacked, as on a phone.
+                    return Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        buildSliderBox(
-                          context: context,
-                          label: "Compression Level",
-                          minValue: getVideosViewModel.getLabelForCRFSlider(0),
-                          maxValue: getVideosViewModel.getLabelForCRFSlider(100),
-                          tootTipMessage: "Adjusts the compression level.\n"
-                              "•${getVideosViewModel.getLabelForCRFSlider(100)} = smallest size, less clarity\n"
-                              "•${getVideosViewModel.getLabelForCRFSlider(0)} = smaller size, more clarity\n"
-                              "•Recommended = ${getVideosViewModel.getLabelForCRFSlider(80)}",
-                          slider: Slider(
-                            value:
-                                getVideosViewModel.cfrQualitySlider.state / 100,
-                            min: 0,
-                            max: 1,
-                            divisions: 4,
-                            label: "${getVideosViewModel.getLabelForCRFSlider(
-                                getVideosViewModel.cfrQualitySlider.state)} Compression",
-                            onChanged: (value) {
-                              getVideosViewModel
-                                  .updateCfrQualitySlider(value);
-                            },
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        buildSliderBox(
-                          context: context,
-                          label: "Desired File Size",
-                          minValue: getVideosViewModel.ffmpegPresets.first.desc,
-                          maxValue: getVideosViewModel.ffmpegPresets.last.desc,
-                          tootTipMessage: //"Choose a desired file size.\n"
-                              "•${getVideosViewModel.ffmpegPresets.first.desc} = For archival\n"
-                              "•${getVideosViewModel.ffmpegPresets[1].desc} = For social media\n"
-                              "•${getVideosViewModel.ffmpegPresets.last.desc} = For quick sharing",
-                          slider: Slider(
-                            value: getVideosViewModel.selectedPresetIndex.state
-                                .toDouble(),
-                            min: 0,
-                            max: (getVideosViewModel.ffmpegPresets.length - 1)
-                                .toDouble(),
-                            divisions:
-                                getVideosViewModel.ffmpegPresets.length - 1,
-                            label: getVideosViewModel.ffmpegPresets[
-                                getVideosViewModel.selectedPresetIndex.state].desc,
-                            onChanged: (value) {
-                              getVideosViewModel.setPresetIndex(value.toInt());
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
+                        Expanded(child: preview),
 
-                    // Space for FABs
-                    const SizedBox(height: fabHeight),
-                  ],
+                        const SizedBox(height: 12),
+
+                        _buildSliders(context),
+
+                        // Space for FABs
+                        const SizedBox(height: fabHeight),
+                      ],
+                    );
+                  },
                 ),
               )
             else
-              const Text(
-                "Add a video and start compressing",
+              Text(
+                PlatformInfo.isDesktop
+                    ? "Add a video and start compressing\nor drop it anywhere in this window"
+                    : "Add a video and start compressing",
                 textAlign: TextAlign.center,
-                style: TextStyle(
+                style: const TextStyle(
                   fontSize: 18,
                 ),
               ),
@@ -198,7 +223,7 @@ class _VideosPageState extends State<VideosPage> {
             onPressed: () async {
               await getVideosViewModel.pickVideo();
             },
-            tooltip: "Pick video",
+            tooltip: withShortcut("Pick video", "O"),
             child: const Icon(Icons.video_library),
           );
         } else {
@@ -206,7 +231,8 @@ class _VideosPageState extends State<VideosPage> {
             if (getVideosViewModel.currentTask.state != null) {
               return FloatingActionButton.extended(
                 icon: const Icon(Icons.clear),
-                tooltip: "Cancel compression ",
+                tooltip: withShortcut("Cancel compression", "Esc",
+                    withModifier: false),
                 onPressed: () async {
                   try {
                     getVideosViewModel.cancelCompressingVideo();
@@ -252,7 +278,8 @@ class _VideosPageState extends State<VideosPage> {
                       SizedBox(width: 10),
                       FloatingActionButton.extended(
                         icon: const Icon(Icons.delete_outline),
-                        tooltip: "Remove video",
+                        tooltip: withShortcut("Remove video", "Del",
+                            withModifier: false),
                         onPressed: () async {
                           getVideosViewModel.removeVideo();
                         },
@@ -261,12 +288,12 @@ class _VideosPageState extends State<VideosPage> {
                       SizedBox(width: 10),
                       FloatingActionButton.extended(
                         icon: const Icon(Icons.compress_outlined),
-                        tooltip: "Compress Video",
+                        tooltip: withShortcut("Compress Video", "Enter"),
                         onPressed: () async {
                           await getVideosViewModel.compressVideo(
                               onComplete: (summaryReport) {
                             if (mounted) {
-                              _showCompressionSummaryDialog(
+                              showCompressionSummaryDialog(
                                   context: context,
                                   summaryReport: summaryReport);
                             }

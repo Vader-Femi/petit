@@ -1,0 +1,81 @@
+name: CI
+
+# Pull request checks. Releases are built by production-release.yml.
+# Steps and versions mirror that workflow, which is known to work.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    name: Analyze and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.2'
+          channel: 'stable'
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Analyze (informational)
+        run: flutter analyze
+        continue-on-error: true
+
+      - name: Unit tests
+        run: >
+          flutter test
+          test/media_formats_test.dart
+          test/unique_path_test.dart
+          test/dropped_files_test.dart
+          test/adaptive_test.dart
+          test/shortcut_labels_test.dart
+          test/image_use_cases_test.dart
+          test/video_use_case_test.dart
+
+  # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
+  # it runs on demand and for pull requests into the production branch.
+  build-desktop:
+    name: Build ${{ matrix.target }}
+    if: github.event_name == 'workflow_dispatch' || github.base_ref == 'production'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows
+          - os: macos-latest
+            target: macos
+          - os: ubuntu-latest
+            target: linux
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.2'
+          channel: 'stable'
+
+      - name: Enable desktop target (Windows)
+        if: matrix.target == 'windows'
+        run: flutter config --enable-windows-desktop
+
+      - name: Enable desktop target (macOS)
+        if: matrix.target == 'macos'
+        run: flutter config --enable-macos-desktop --no-enable-swift-package-manager
+
+      # ffmpeg_kit_flutter_new needs libjson-glib on Linux.
+      - name: Install Linux build dependencies
+        if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libjson-glib-dev
+          flutter config --enable-linux-desktop
+
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+      - run: flutter build ${{ matrix.target }} --release

@@ -1,4 +1,7 @@
 import 'package:async/async.dart';
+import 'package:carousel_slider/carousel_slider.dart';
+import 'package:flutter/animation.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/common/domain/services/media_picker.dart';
@@ -25,6 +28,12 @@ class ImagesViewModel {
   final isFabOpen = RxT<bool>(true);
 
   CancelableCompleter<void> completer = CancelableCompleter();
+
+  /// Owned here (not by the page) so keyboard shortcuts can move the carousel.
+  final carouselController = CarouselSliderController();
+
+  /// True while images are being read or compressed.
+  bool get isBusy => isLoading.state.isLoading;
 
   // Resolved lazily: `getImagesViewModel` constructs a new instance on every
   // access, so nothing may be looked up in the constructor.
@@ -70,32 +79,38 @@ class ImagesViewModel {
 
   Future<void> addSharedImages([List<SharedAttachment>? sharedFiles]) async {
     if (sharedFiles != null && sharedFiles.isNotEmpty) {
-      if (isLoading.state.isLoading) return;
+      await addImagePaths(sharedFiles.map((file) => file.path).toList());
+    }
+  }
 
-      try {
-        setIsLoading(
-          LoadingData(
-              isLoading: true,
-              completedSteps: null,
-              totalSteps: null,
-              progressCounter: null),
-        );
+  /// Replaces the current selection with the images at [paths] (shared into
+  /// the app, or dropped onto the window).
+  Future<void> addImagePaths(List<String> paths) async {
+    if (paths.isEmpty) return;
+    if (isLoading.state.isLoading) return;
 
-        pickedImages.state = [];
-        currentImage.state = null;
-        globalQualitySlider.state = null;
+    try {
+      setIsLoading(
+        LoadingData(
+            isLoading: true,
+            completedSteps: null,
+            totalSteps: null,
+            progressCounter: null),
+      );
 
-        final picked =
-            await _readImages(sharedFiles.map((file) => file.path).toList());
+      pickedImages.state = [];
+      currentImage.state = null;
+      globalQualitySlider.state = null;
 
-        pickedImages.state = picked;
-        currentImage.state = picked[0];
-        currentImageIndex.state = 0;
-        setIsLoading(LoadingData(isLoading: false));
-      } catch (e) {
-        await showResult("An error ocurred - ${e.toString()}");
-        setIsLoading(LoadingData(isLoading: false));
-      }
+      final picked = await _readImages(paths);
+
+      pickedImages.state = picked;
+      currentImage.state = picked[0];
+      currentImageIndex.state = 0;
+      setIsLoading(LoadingData(isLoading: false));
+    } catch (e) {
+      await showResult("An error ocurred - ${e.toString()}");
+      setIsLoading(LoadingData(isLoading: false));
     }
   }
 
@@ -187,6 +202,46 @@ class ImagesViewModel {
           path: batch.destinationLabel);
     }
     return null;
+  }
+
+  /// Starts compressing every picked image. [onComplete] receives the summary
+  /// unless the job was cancelled or could not start.
+  void startCompression({required void Function(SummaryReport summary) onComplete}) {
+    completer = CancelableCompleter(onCancel: cancelCompressingAllImages);
+
+    completer.complete(compressAllSelectedImages().then((summaryReport) {
+      if (summaryReport != null) onComplete(summaryReport);
+    }));
+  }
+
+  /// Asks a running compression to stop.
+  void requestCancel() {
+    try {
+      if (!completer.isCanceled || !completer.isCompleted) {
+        completer.operation.cancel();
+      }
+      showResult("Cancelling");
+    } catch (e) {
+      debugPrint('Error during cancel: $e');
+    }
+  }
+
+  Future<void> previousImage() => _moveCarousel(forward: false);
+
+  Future<void> nextImage() => _moveCarousel(forward: true);
+
+  Future<void> _moveCarousel({required bool forward}) async {
+    if (pickedImages.state.length < 2) return;
+    const duration = Duration(milliseconds: 250);
+    try {
+      if (forward) {
+        await carouselController.nextPage(duration: duration, curve: Curves.easeOut);
+      } else {
+        await carouselController.previousPage(duration: duration, curve: Curves.easeOut);
+      }
+    } catch (e) {
+      debugPrint('Could not move the carousel: $e');
+    }
   }
 
   String formatBytes(int bytes, [int decimals = 2]) {

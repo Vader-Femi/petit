@@ -17,6 +17,13 @@ void main() {
       expect(isHeif('/a/photo_png.heic'), isTrue);
     });
 
+    test('recognises common video formats', () {
+      expect(isVideoFile('/a/clip.MP4'), isTrue);
+      expect(isVideoFile('C:\\Videos\\movie.mkv'), isTrue);
+      expect(isVideoFile('/a/clip.mp4.txt'), isFalse);
+      expect(isVideoFile('/a/photo.jpg'), isFalse);
+    });
+
     test('only matches at the end of the path', () {
       expect(isImageSizeGetterSupported('/a/.png_folder/file.heic'), isFalse);
       expect(isCompressibleImage('/a/b/file.gif'), isFalse);

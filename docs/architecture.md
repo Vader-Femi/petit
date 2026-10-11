@@ -50,3 +50,22 @@ Rules
 - The `*_web.dart` files are a frozen, separate web implementation. The old
   `features/*/data/{image_data,video_data,codec_config}.dart` files only re-export
   the domain entities so those web files keep compiling.
+
+## Adaptive UI and desktop input
+
+- **Layout** (`core/utils/adaptive.dart`): below 600 px the app uses the bottom navigation
+  bar; from 600 px a navigation rail. A page whose content area is at least 720 px wide shows
+  the preview and its controls side by side (preview left, a 360 px controls column right);
+  narrower pages stack them as on a phone.
+- **Drag and drop** (`common/widgets/drop_zone.dart`, desktop only): one drop target wraps
+  the whole home screen. Dropped files are classified by extension
+  (`core/utils/dropped_files.dart`); images go to the Images tab, a video to the Videos tab.
+  Folders are expanded one level. Drops are ignored while a job is running, because switching
+  tabs clears the other tab's work.
+- **Keyboard shortcuts** (`home_screen.dart`; Ctrl on Windows/Linux, Cmd on macOS): `O` add
+  files, `Enter` compress, `Del` or `Backspace` clear, `Esc` cancel a running job, `1`/`2`
+  switch tab, left/right arrows move through images. They are ignored while a job is running
+  (except `Esc`).
+- Mouse dragging is enabled for scrollables (`core/utils/app_scroll_behavior.dart`) and the
+  image carousel shows previous/next buttons on desktop.
+

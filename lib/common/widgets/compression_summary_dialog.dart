@@ -2,6 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:petit/common/data/summary_report.dart';
 import '../../features/images/presentation/widget/summary_row.dart';
 
+/// Shows the result of a compression job. Shared by the pages and the
+/// keyboard shortcuts so both open the same dialog.
+void showCompressionSummaryDialog({
+  required BuildContext context,
+  required SummaryReport summaryReport,
+}) {
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (context) => CompressionSummaryDialog(summaryReport: summaryReport),
+  );
+}
+
 class CompressionSummaryDialog extends StatelessWidget {
   const CompressionSummaryDialog({super.key, required this.summaryReport});
 

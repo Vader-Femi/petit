@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:petit/common/data/shared_media_details.dart';
+import 'package:petit/core/utils/app_scroll_behavior.dart';
 import 'package:petit/core/utils/platform_utils.dart';
 import 'package:share_handler/share_handler.dart';
 import 'package:petit/features/home/presentation/pages/home_screen.dart';
@@ -240,6 +241,7 @@ class _MyAppState extends State<MyApp> {
           theme: lightTheme,
           darkTheme: darkTheme,
           themeMode: ThemeMode.system,
+          scrollBehavior: const AppScrollBehavior(),
           navigatorKey: navigatorKey,
           navigatorObservers: [if (observer != null) observer!],
           initialRoute: '/',

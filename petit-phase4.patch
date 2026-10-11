@@ -1,0 +1,1808 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+new file mode 100644
+index 0000000..cf1fe1e
+--- /dev/null
++++ b/.github/workflows/ci.yml
+@@ -0,0 +1,81 @@
++name: CI
++
++# Pull request checks. Releases are built by production-release.yml.
++# Steps and versions mirror that workflow, which is known to work.
++
++on:
++  pull_request:
++  workflow_dispatch:
++
++jobs:
++  checks:
++    name: Analyze and unit tests
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - name: Set up Flutter
++        uses: subosito/flutter-action@v2
++        with:
++          flutter-version: '3.41.2'
++          channel: 'stable'
++      - run: flutter pub get
++      - run: dart run build_runner build --delete-conflicting-outputs
++
++      - name: Analyze (informational)
++        run: flutter analyze
++        continue-on-error: true
++
++      - name: Unit tests
++        run: >
++          flutter test
++          test/media_formats_test.dart
++          test/unique_path_test.dart
++          test/dropped_files_test.dart
++          test/adaptive_test.dart
++          test/shortcut_labels_test.dart
++          test/image_use_cases_test.dart
++          test/video_use_case_test.dart
++
++  # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
++  # it runs on demand and for pull requests into the production branch.
++  build-desktop:
++    name: Build ${{ matrix.target }}
++    if: github.event_name == 'workflow_dispatch' || github.base_ref == 'production'
++    runs-on: ${{ matrix.os }}
++    strategy:
++      fail-fast: false
++      matrix:
++        include:
++          - os: windows-latest
++            target: windows
++          - os: macos-latest
++            target: macos
++          - os: ubuntu-latest
++            target: linux
++    steps:
++      - uses: actions/checkout@v4
++      - name: Set up Flutter
++        uses: subosito/flutter-action@v2
++        with:
++          flutter-version: '3.41.2'
++          channel: 'stable'
++
++      - name: Enable desktop target (Windows)
++        if: matrix.target == 'windows'
++        run: flutter config --enable-windows-desktop
++
++      - name: Enable desktop target (macOS)
++        if: matrix.target == 'macos'
++        run: flutter config --enable-macos-desktop --no-enable-swift-package-manager
++
++      # ffmpeg_kit_flutter_new needs libjson-glib on Linux.
++      - name: Install Linux build dependencies
++        if: matrix.target == 'linux'
++        run: |
++          sudo apt-get update
++          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libjson-glib-dev
++          flutter config --enable-linux-desktop
++
++      - run: flutter pub get
++      - run: dart run build_runner build --delete-conflicting-outputs
++      - run: flutter build ${{ matrix.target }} --release
+diff --git a/.github/workflows/desktop-build.yml b/.github/workflows/desktop-build.yml
+deleted file mode 100644
+index e7524db..0000000
+--- a/.github/workflows/desktop-build.yml
++++ /dev/null
+@@ -1,76 +0,0 @@
+-name: Desktop build check
+-
+-on:
+-  pull_request:
+-  workflow_dispatch:
+-
+-jobs:
+-  build:
+-    name: Build ${{ matrix.target }}
+-    runs-on: ${{ matrix.os }}
+-    strategy:
+-      fail-fast: false
+-      matrix:
+-        include:
+-          - os: ubuntu-latest
+-            target: linux
+-          - os: windows-latest
+-            target: windows
+-          - os: macos-latest
+-            target: macos
+-
+-    steps:
+-      - name: Checkout code
+-        uses: actions/checkout@v4
+-
+-      - name: Set up Flutter
+-        uses: subosito/flutter-action@v2
+-        with:
+-          flutter-version: '3.32.5'
+-          channel: stable
+-          cache: true
+-
+-      # ffmpeg_kit_flutter_new needs libjson-glib on Linux
+-      - name: Install Linux build dependencies
+-        if: matrix.target == 'linux'
+-        run: |
+-          sudo apt-get update
+-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libjson-glib-dev
+-
+-      - name: Install dependencies
+-        run: flutter pub get
+-
+-      - name: Build ${{ matrix.target }}
+-        run: flutter build ${{ matrix.target }} --release
+-
+-  # Unit tests for the domain layer (plain Dart, no plugins needed) and an
+-  # informational analysis run. Analysis does not fail the build.
+-  checks:
+-    name: Analyze and unit tests
+-    runs-on: ubuntu-latest
+-
+-    steps:
+-      - name: Checkout code
+-        uses: actions/checkout@v4
+-
+-      - name: Set up Flutter
+-        uses: subosito/flutter-action@v2
+-        with:
+-          flutter-version: '3.32.5'
+-          channel: stable
+-          cache: true
+-
+-      - name: Install dependencies
+-        run: flutter pub get
+-
+-      - name: Analyze (informational)
+-        run: flutter analyze
+-        continue-on-error: true
+-
+-      - name: Unit tests
+-        run: >
+-          flutter test
+-          test/media_formats_test.dart
+-          test/unique_path_test.dart
+-          test/image_use_cases_test.dart
+-          test/video_use_case_test.dart
+diff --git a/docs/architecture.md b/docs/architecture.md
+index 21da6b6..97efa13 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -50,3 +50,22 @@ Rules
+ - The `*_web.dart` files are a frozen, separate web implementation. The old
+   `features/*/data/{image_data,video_data,codec_config}.dart` files only re-export
+   the domain entities so those web files keep compiling.
++
++## Adaptive UI and desktop input
++
++- **Layout** (`core/utils/adaptive.dart`): below 600 px the app uses the bottom navigation
++  bar; from 600 px a navigation rail. A page whose content area is at least 720 px wide shows
++  the preview and its controls side by side (preview left, a 360 px controls column right);
++  narrower pages stack them as on a phone.
++- **Drag and drop** (`common/widgets/drop_zone.dart`, desktop only): one drop target wraps
++  the whole home screen. Dropped files are classified by extension
++  (`core/utils/dropped_files.dart`); images go to the Images tab, a video to the Videos tab.
++  Folders are expanded one level. Drops are ignored while a job is running, because switching
++  tabs clears the other tab's work.
++- **Keyboard shortcuts** (`home_screen.dart`; Ctrl on Windows/Linux, Cmd on macOS): `O` add
++  files, `Enter` compress, `Del` or `Backspace` clear, `Esc` cancel a running job, `1`/`2`
++  switch tab, left/right arrows move through images. They are ignored while a job is running
++  (except `Esc`).
++- Mouse dragging is enabled for scrollables (`core/utils/app_scroll_behavior.dart`) and the
++  image carousel shows previous/next buttons on desktop.
++
+diff --git a/lib/common/widgets/compression_summary_dialog.dart b/lib/common/widgets/compression_summary_dialog.dart
+index d907d8c..c0c0736 100644
+--- a/lib/common/widgets/compression_summary_dialog.dart
++++ b/lib/common/widgets/compression_summary_dialog.dart
+@@ -2,6 +2,19 @@ import 'package:flutter/material.dart';
+ import 'package:petit/common/data/summary_report.dart';
+ import '../../features/images/presentation/widget/summary_row.dart';
+ 
++/// Shows the result of a compression job. Shared by the pages and the
++/// keyboard shortcuts so both open the same dialog.
++void showCompressionSummaryDialog({
++  required BuildContext context,
++  required SummaryReport summaryReport,
++}) {
++  showDialog(
++    context: context,
++    barrierDismissible: false,
++    builder: (context) => CompressionSummaryDialog(summaryReport: summaryReport),
++  );
++}
++
+ class CompressionSummaryDialog extends StatelessWidget {
+   const CompressionSummaryDialog({super.key, required this.summaryReport});
+ 
+diff --git a/lib/common/widgets/drop_zone.dart b/lib/common/widgets/drop_zone.dart
+new file mode 100644
+index 0000000..d048c49
+--- /dev/null
++++ b/lib/common/widgets/drop_zone.dart
+@@ -0,0 +1,69 @@
++import 'package:desktop_drop/desktop_drop.dart';
++import 'package:flutter/material.dart';
++import 'package:petit/core/utils/platform_utils.dart';
++
++/// Lets the user drop files anywhere on [child] (desktop only; on other
++/// platforms this just returns [child]). While files hover over the window a
++/// highlight explains what dropping does.
++class DropZone extends StatefulWidget {
++  const DropZone({
++    super.key,
++    required this.onFilesDropped,
++    required this.child,
++    this.message = 'Drop images or a video to add them',
++  });
++
++  final void Function(List<String> paths) onFilesDropped;
++  final Widget child;
++  final String message;
++
++  @override
++  State<DropZone> createState() => _DropZoneState();
++}
++
++class _DropZoneState extends State<DropZone> {
++  bool _dragging = false;
++
++  @override
++  Widget build(BuildContext context) {
++    if (!PlatformInfo.isDesktop) return widget.child;
++
++    final scheme = Theme.of(context).colorScheme;
++
++    return DropTarget(
++      onDragEntered: (_) => setState(() => _dragging = true),
++      onDragExited: (_) => setState(() => _dragging = false),
++      onDragDone: (details) {
++        setState(() => _dragging = false);
++        widget.onFilesDropped(details.files.map((file) => file.path).toList());
++      },
++      child: Stack(
++        fit: StackFit.expand,
++        children: [
++          widget.child,
++          if (_dragging)
++            IgnorePointer(
++              child: Container(
++                margin: const EdgeInsets.all(12),
++                alignment: Alignment.center,
++                decoration: BoxDecoration(
++                  color: scheme.primary.withValues(alpha: 0.12),
++                  border: Border.all(color: scheme.primary, width: 3),
++                  borderRadius: BorderRadius.circular(16),
++                ),
++                child: Text(
++                  widget.message,
++                  textAlign: TextAlign.center,
++                  style: TextStyle(
++                    fontSize: 20,
++                    fontWeight: FontWeight.w700,
++                    color: scheme.primary,
++                  ),
++                ),
++              ),
++            ),
++        ],
++      ),
++    );
++  }
++}
+diff --git a/lib/core/utils/adaptive.dart b/lib/core/utils/adaptive.dart
+new file mode 100644
+index 0000000..6618c3b
+--- /dev/null
++++ b/lib/core/utils/adaptive.dart
+@@ -0,0 +1,19 @@
++/// Material 3 window size classes, used to decide the layout.
++enum WindowSize { compact, medium, expanded }
++
++/// Below this width the app uses a bottom navigation bar; from here up it
++/// uses a navigation rail.
++const double kRailMinWidth = 600;
++
++/// From this width (of the content area) a page shows its preview and its
++/// controls side by side instead of stacked.
++const double kTwoPaneMinWidth = 720;
++
++/// Width of the controls column in the two-pane layout.
++const double kControlsPaneWidth = 360;
++
++WindowSize windowSizeFor(double width) {
++  if (width < 600) return WindowSize.compact;
++  if (width < 840) return WindowSize.medium;
++  return WindowSize.expanded;
++}
+diff --git a/lib/core/utils/app_scroll_behavior.dart b/lib/core/utils/app_scroll_behavior.dart
+new file mode 100644
+index 0000000..f7856e5
+--- /dev/null
++++ b/lib/core/utils/app_scroll_behavior.dart
+@@ -0,0 +1,18 @@
++import 'dart:ui' show PointerDeviceKind;
++
++import 'package:flutter/material.dart';
++
++/// Flutter's default scroll behaviour ignores mouse drags on desktop, so the
++/// image carousel could not be dragged. Allow every pointer type.
++class AppScrollBehavior extends MaterialScrollBehavior {
++  const AppScrollBehavior();
++
++  @override
++  Set<PointerDeviceKind> get dragDevices => {
++        PointerDeviceKind.touch,
++        PointerDeviceKind.mouse,
++        PointerDeviceKind.trackpad,
++        PointerDeviceKind.stylus,
++        PointerDeviceKind.invertedStylus,
++      };
++}
+diff --git a/lib/core/utils/dropped_files.dart b/lib/core/utils/dropped_files.dart
+new file mode 100644
+index 0000000..cd0f6e0
+--- /dev/null
++++ b/lib/core/utils/dropped_files.dart
+@@ -0,0 +1,61 @@
++import 'dart:io';
++
++import 'package:petit/core/utils/media_formats.dart';
++
++/// Dropped paths sorted by what the app can do with them.
++class DroppedMedia {
++  final List<String> images;
++  final List<String> videos;
++  final List<String> unsupported;
++
++  const DroppedMedia({
++    required this.images,
++    required this.videos,
++    required this.unsupported,
++  });
++
++  bool get isEmpty => images.isEmpty && videos.isEmpty;
++}
++
++DroppedMedia classifyDroppedFiles(Iterable<String> paths) {
++  final images = <String>[];
++  final videos = <String>[];
++  final unsupported = <String>[];
++
++  for (final path in paths) {
++    if (isCompressibleImage(path)) {
++      images.add(path);
++    } else if (isVideoFile(path)) {
++      videos.add(path);
++    } else {
++      unsupported.add(path);
++    }
++  }
++
++  return DroppedMedia(images: images, videos: videos, unsupported: unsupported);
++}
++
++/// Replaces each dropped folder with the files directly inside it (not
++/// recursive); plain files are kept as they are. Folders that cannot be read
++/// are skipped.
++List<String> expandDroppedFolders(Iterable<String> paths) {
++  final result = <String>[];
++  for (final path in paths) {
++    try {
++      if (FileSystemEntity.isDirectorySync(path)) {
++        final children = Directory(path)
++            .listSync(followLinks: false)
++            .whereType<File>()
++            .map((file) => file.path)
++            .toList()
++          ..sort();
++        result.addAll(children);
++      } else {
++        result.add(path);
++      }
++    } catch (_) {
++      // Unreadable folder (permissions, sandbox): ignore it.
++    }
++  }
++  return result;
++}
+diff --git a/lib/core/utils/media_formats.dart b/lib/core/utils/media_formats.dart
+index 2d4931b..d3fc6ea 100644
+--- a/lib/core/utils/media_formats.dart
++++ b/lib/core/utils/media_formats.dart
+@@ -15,6 +15,11 @@ bool isHeif(String path) => _heifFormats.hasMatch(path);
+ 
+ bool isJpeg(String path) => _jpegFormats.hasMatch(path);
+ 
++final _videoFormats =
++    RegExp(r'\.(mp4|mov|m4v|mkv|avi|webm|3gp)$', caseSensitive: false);
++
++bool isVideoFile(String path) => _videoFormats.hasMatch(path);
++
+ /// Formats the image compressor accepts as input.
+ bool isCompressibleImage(String path) =>
+     _compressibleImageFormats.hasMatch(path);
+diff --git a/lib/core/utils/shortcut_labels.dart b/lib/core/utils/shortcut_labels.dart
+new file mode 100644
+index 0000000..0d9f9c0
+--- /dev/null
++++ b/lib/core/utils/shortcut_labels.dart
+@@ -0,0 +1,13 @@
++import 'package:petit/core/utils/platform_utils.dart';
++
++/// The modifier key people on this platform expect for app shortcuts.
++String get shortcutModifierLabel => PlatformInfo.isMacOS ? '⌘' : 'Ctrl';
++
++/// Adds a shortcut hint to a tooltip on desktop, e.g. `Add images (Ctrl+O)`.
++/// [key] is the key name, e.g. `O`, `Enter`, `Del`. When [withModifier] is
++/// false the key is shown on its own (e.g. `Esc`).
++String withShortcut(String tooltip, String key, {bool withModifier = true}) {
++  if (!PlatformInfo.isDesktop) return tooltip;
++  final combo = withModifier ? '$shortcutModifierLabel+$key' : key;
++  return '$tooltip ($combo)';
++}
+diff --git a/lib/features/home/presentation/pages/home_screen.dart b/lib/features/home/presentation/pages/home_screen.dart
+index c41a2eb..e8198cf 100644
+--- a/lib/features/home/presentation/pages/home_screen.dart
++++ b/lib/features/home/presentation/pages/home_screen.dart
+@@ -4,6 +4,12 @@ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+ import 'package:flutter_super/flutter_super.dart';
+ import 'package:in_app_update/in_app_update.dart';
++import 'package:petit/common/data/summary_report.dart';
++import 'package:petit/common/widgets/compression_summary_dialog.dart';
++import 'package:petit/common/widgets/drop_zone.dart';
++import 'package:petit/core/utils/adaptive.dart';
++import 'package:petit/core/utils/dropped_files.dart';
++import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:petit/features/home/presentation/state/home_viewmodel.dart';
+ import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+ import 'package:petit/features/videos/presentation/pages/videos_page.dart';
+@@ -121,44 +127,213 @@ class _HomeScreenState extends State<HomeScreen> {
+     });
+   }
+ 
++  // ---- keyboard shortcuts -------------------------------------------------
++
++  bool get _isApple => PlatformInfo.isMacOS || PlatformInfo.isIOS;
++
++  /// Ctrl on Windows/Linux, Cmd on Apple platforms.
++  SingleActivator _withModifier(LogicalKeyboardKey key) =>
++      SingleActivator(key, control: !_isApple, meta: _isApple);
++
++  Map<ShortcutActivator, VoidCallback> get _shortcuts => {
++        _withModifier(LogicalKeyboardKey.keyO): _openFiles,
++        _withModifier(LogicalKeyboardKey.enter): _compress,
++        _withModifier(LogicalKeyboardKey.numpadEnter): _compress,
++        const SingleActivator(LogicalKeyboardKey.delete): _clear,
++        _withModifier(LogicalKeyboardKey.backspace): _clear,
++        const SingleActivator(LogicalKeyboardKey.escape): _cancelRunning,
++        const SingleActivator(LogicalKeyboardKey.arrowLeft): _previousImage,
++        const SingleActivator(LogicalKeyboardKey.arrowRight): _nextImage,
++        _withModifier(LogicalKeyboardKey.digit1): () => _selectTab(0),
++        _withModifier(LogicalKeyboardKey.digit2): () => _selectTab(1),
++      };
++
++  int get _tab => getHomeViewModel.currentTabIndex.state;
++
++  void _openFiles() {
++    if (getHomeViewModel.isBusy) return;
++    if (_tab == 0) {
++      getImagesViewModel.selectImageButtonUseCase();
++    } else {
++      getVideosViewModel.pickVideo();
++    }
++  }
++
++  void _compress() {
++    if (getHomeViewModel.isBusy) return;
++    if (_tab == 0) {
++      if (getImagesViewModel.pickedImages.isEmpty) return;
++      getImagesViewModel.startCompression(onComplete: _showSummary);
++    } else {
++      if (getVideosViewModel.videoFile.state == null) return;
++      getVideosViewModel.compressVideo(onComplete: _showSummary);
++    }
++  }
++
++  void _clear() {
++    if (getHomeViewModel.isBusy) return;
++    if (_tab == 0) {
++      getImagesViewModel.cancelCompressingAllImages();
++    } else {
++      getVideosViewModel.removeVideo();
++    }
++  }
++
++  void _cancelRunning() {
++    if (getImagesViewModel.isBusy && getImagesViewModel.pickedImages.isNotEmpty) {
++      getImagesViewModel.requestCancel();
++    } else if (getVideosViewModel.currentTask.state != null) {
++      getVideosViewModel.cancelCompressingVideo();
++    }
++  }
++
++  void _previousImage() {
++    if (_tab == 0 && !getImagesViewModel.isBusy) {
++      getImagesViewModel.previousImage();
++    }
++  }
++
++  void _nextImage() {
++    if (_tab == 0 && !getImagesViewModel.isBusy) {
++      getImagesViewModel.nextImage();
++    }
++  }
++
++  void _selectTab(int index) {
++    if (getHomeViewModel.isBusy || _tab == index) return;
++    getHomeViewModel.updateCurrentTabIndex(index);
++  }
++
++  void _showSummary(SummaryReport summaryReport) {
++    if (!mounted) return;
++    showCompressionSummaryDialog(context: context, summaryReport: summaryReport);
++  }
++
++  // ---- drag and drop ------------------------------------------------------
++
++  void _snack(String message) {
++    if (!mounted) return;
++    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
++  }
++
++  Future<void> _handleDroppedFiles(List<String> droppedPaths) async {
++    // Switching tabs clears the other tab's work, so never do it mid-job.
++    if (getHomeViewModel.isBusy) {
++      _snack('Wait for the current job to finish.');
++      return;
++    }
++
++    final media = classifyDroppedFiles(expandDroppedFolders(droppedPaths));
++
++    if (media.isEmpty) {
++      _snack('Drop images (JPG, PNG, WebP, HEIC) or a video file.');
++      return;
++    }
++
++    if (media.images.isNotEmpty) {
++      await getHomeViewModel.updateCurrentTabIndex(0);
++      await getImagesViewModel.addImagePaths(media.images);
++      if (media.videos.isNotEmpty) {
++        _snack('Added the images. Drop videos separately.');
++      }
++    } else {
++      await getHomeViewModel.updateCurrentTabIndex(1);
++      await getVideosViewModel.addVideoPath(media.videos.first);
++      if (media.videos.length > 1) {
++        _snack('Only one video can be compressed at a time.');
++      }
++    }
++  }
++
++  // ---- layout -------------------------------------------------------------
++
+   @override
+   Widget build(BuildContext context) {
+     return SuperBuilder(
+       builder: (context) {
+-        return Scaffold(
+-          appBar: AppBar(
+-            title: Text(
+-              "Petit - ${getHomeViewModel.currentTabIndex.state == 0 ? "Image" : "Video"} Compressor",
+-              style: TextStyle(
+-                fontSize: 20,
+-                fontWeight: FontWeight.w600,
++        final selectedTab = getHomeViewModel.currentTabIndex.state;
++
++        return CallbackShortcuts(
++          bindings: _shortcuts,
++          child: Focus(
++            autofocus: true,
++            child: DropZone(
++              onFilesDropped: _handleDroppedFiles,
++              child: LayoutBuilder(
++                builder: (context, constraints) {
++                  // Wide windows get a side rail; narrow ones the bottom bar.
++                  final useRail = constraints.maxWidth >= kRailMinWidth;
++
++                  final pages = IndexedStack(
++                    index: selectedTab,
++                    children: const [
++                      ImagesPage(),
++                      VideosPage(),
++                    ],
++                  );
++
++                  return Scaffold(
++                    appBar: AppBar(
++                      title: Text(
++                        "Petit - ${selectedTab == 0 ? "Image" : "Video"} Compressor",
++                        style: TextStyle(
++                          fontSize: 20,
++                          fontWeight: FontWeight.w600,
++                        ),
++                      ),
++                      elevation: 8,
++                      backgroundColor:
++                          Theme.of(context).appBarTheme.backgroundColor,
++                    ),
++                    body: useRail
++                        ? Row(
++                            children: [
++                              NavigationRail(
++                                selectedIndex: selectedTab,
++                                onDestinationSelected:
++                                    getHomeViewModel.updateCurrentTabIndex,
++                                labelType: NavigationRailLabelType.all,
++                                destinations: const [
++                                  NavigationRailDestination(
++                                    icon: Icon(Icons.image_outlined),
++                                    selectedIcon: Icon(Icons.image),
++                                    label: Text('Images'),
++                                  ),
++                                  NavigationRailDestination(
++                                    icon: Icon(Icons.videocam_outlined),
++                                    selectedIcon: Icon(Icons.videocam),
++                                    label: Text('Videos'),
++                                  ),
++                                ],
++                              ),
++                              const VerticalDivider(width: 1),
++                              Expanded(child: pages),
++                            ],
++                          )
++                        : pages,
++                    bottomNavigationBar: useRail
++                        ? null
++                        : NavigationBar(
++                            selectedIndex: selectedTab,
++                            onDestinationSelected:
++                                getHomeViewModel.updateCurrentTabIndex,
++                            destinations: const [
++                              NavigationDestination(
++                                icon: Icon(Icons.image_outlined),
++                                selectedIcon: Icon(Icons.image),
++                                label: 'Images',
++                              ),
++                              NavigationDestination(
++                                icon: Icon(Icons.videocam_outlined),
++                                selectedIcon: Icon(Icons.videocam),
++                                label: 'Videos',
++                              ),
++                            ],
++                          ),
++                  );
++                },
+               ),
+             ),
+-            elevation: 8,
+-            backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
+-          ),
+-          body: IndexedStack(
+-            index: getHomeViewModel.currentTabIndex.state,
+-            children: const [
+-              ImagesPage(),
+-              VideosPage(),
+-            ],
+-          ),
+-          bottomNavigationBar: NavigationBar(
+-            selectedIndex: getHomeViewModel.currentTabIndex.state,
+-            onDestinationSelected: getHomeViewModel.updateCurrentTabIndex,
+-            destinations: const [
+-              NavigationDestination(
+-                icon: Icon(Icons.image_outlined),
+-                selectedIcon: Icon(Icons.image),
+-                label: 'Images',
+-              ),
+-              NavigationDestination(
+-                icon: Icon(Icons.videocam_outlined),
+-                selectedIcon: Icon(Icons.videocam),
+-                label: 'Videos',
+-              ),
+-            ],
+           ),
+         );
+       },
+diff --git a/lib/features/home/presentation/state/home_viewmodel.dart b/lib/features/home/presentation/state/home_viewmodel.dart
+index 2d844b0..6a636a2 100644
+--- a/lib/features/home/presentation/state/home_viewmodel.dart
++++ b/lib/features/home/presentation/state/home_viewmodel.dart
+@@ -11,6 +11,10 @@ class HomeViewModel {
+   final currentTabIndex = RxInt(0);
+ 
+ 
++  /// True while either tab is loading or compressing. Switching tabs or adding
++  /// files then would clear the other tab's work, so callers must not.
++  bool get isBusy => getImagesViewModel.isBusy || getVideosViewModel.isBusy;
++
+   void setIsLoading(bool isLoading) {
+     this.isLoading.state = isLoading;
+   }
+diff --git a/lib/features/images/presentation/pages/images_page.dart b/lib/features/images/presentation/pages/images_page.dart
+index 5a0574d..7573ce8 100644
+--- a/lib/features/images/presentation/pages/images_page.dart
++++ b/lib/features/images/presentation/pages/images_page.dart
+@@ -1,10 +1,11 @@
+-import 'package:async/async.dart';
+ import 'package:carousel_slider/carousel_slider.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter_super/flutter_super.dart';
++import 'package:petit/core/utils/adaptive.dart';
++import 'package:petit/core/utils/platform_utils.dart';
++import 'package:petit/core/utils/shortcut_labels.dart';
+ import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+ import 'package:step_progress_indicator/step_progress_indicator.dart';
+-import '../../../../common/data/summary_report.dart';
+ import '../../../../common/widgets/compression_summary_dialog.dart';
+ import '../../../../common/widgets/slider_box.dart';
+ 
+@@ -21,6 +22,9 @@ class ImagesPage extends StatefulWidget {
+ }
+ 
+ class _ImagesPageState extends State<ImagesPage> {
++  // Adjust to actual height of your FAB + margin
++  static const fabHeight = 72.0;
++
+   @override
+   void initState() {
+     super.initState();
+@@ -29,25 +33,148 @@ class _ImagesPageState extends State<ImagesPage> {
+         );
+   }
+ 
+-  void _showCompressionSummaryDialog({
+-    required BuildContext context,
+-    required SummaryReport summaryReport,
+-  }) {
+-    showDialog(
+-      context: context,
+-      barrierDismissible: false,
+-      builder: (context) =>
+-          CompressionSummaryDialog(summaryReport: summaryReport),
++  /// The image carousel, with previous/next buttons on desktop (dragging with
++  /// a mouse is not obvious there).
++  Widget _buildCarousel() {
++    final viewModel = getImagesViewModel;
++    final count = viewModel.pickedImages.state.length;
++    final currentIndex = viewModel.currentImageIndex.state ?? 0;
++    final showArrows = PlatformInfo.isDesktop && count > 1;
++
++    // StackFit.expand keeps the carousel's constraints tight, as they were
++    // when it sat directly inside an Expanded.
++    return Stack(
++      fit: StackFit.expand,
++      children: [
++        CarouselSlider(
++          items: viewModel.pickedImages.state.map((imageData) {
++            return ClipRRect(
++              borderRadius: BorderRadius.circular(12),
++              child: Image.file(
++                imageData.imageFile,
++                frameBuilder: (BuildContext context, Widget child, int? frame,
++                    bool? wasSynchronouslyLoaded) {
++                  return AnimatedOpacity(
++                    opacity: frame == null ? 0 : 1,
++                    duration: Duration(milliseconds: 200),
++                    curve: Curves.easeIn,
++                    child: child,
++                  );
++                },
++                fit: BoxFit.contain,
++                filterQuality: FilterQuality.none,
++                // Flutter cannot decode every format on every
++                // platform (e.g. HEIC on desktop).
++                errorBuilder: (context, error, stackTrace) => const Center(
++                  child: Column(
++                    mainAxisSize: MainAxisSize.min,
++                    children: [
++                      Icon(Icons.image_not_supported_outlined, size: 48),
++                      SizedBox(height: 8),
++                      Text('Preview not available'),
++                    ],
++                  ),
++                ),
++              ),
++            );
++          }).toList(),
++          carouselController: viewModel.carouselController,
++          options: CarouselOptions(
++              autoPlay: false,
++              enlargeStrategy: CenterPageEnlargeStrategy.zoom,
++              enlargeCenterPage: true,
++              pageSnapping: true,
++              scrollDirection: Axis.horizontal,
++              pauseAutoPlayOnTouch: true,
++              enableInfiniteScroll: false,
++              onPageChanged: (index, _) =>
++                  viewModel.updateCurrentImageAndIndex(index),
++              reverse: false),
++        ),
++        if (showArrows)
++          Positioned(
++            left: 4,
++            top: 0,
++            bottom: 0,
++            child: Center(
++              child: IconButton.filledTonal(
++                tooltip: 'Previous image (\u2190)',
++                onPressed: currentIndex > 0 ? viewModel.previousImage : null,
++                icon: const Icon(Icons.chevron_left),
++              ),
++            ),
++          ),
++        if (showArrows)
++          Positioned(
++            right: 4,
++            top: 0,
++            bottom: 0,
++            child: Center(
++              child: IconButton.filledTonal(
++                tooltip: 'Next image (\u2192)',
++                onPressed: currentIndex < count - 1 ? viewModel.nextImage : null,
++                icon: const Icon(Icons.chevron_right),
++              ),
++            ),
++          ),
++      ],
+     );
+   }
+ 
+-  @override
+-  Widget build(BuildContext context) {
++  /// "2 of 5" and the quality slider.
++  List<Widget> _buildControls(BuildContext context) {
++    return [
++      // Current image index
++      Padding(
++        padding: const EdgeInsets.symmetric(vertical: 6),
++        child: Text(
++          "${(getImagesViewModel.currentImageIndex.state ?? -1) + 1} of ${getImagesViewModel.pickedImages.state.length}",
++          style: const TextStyle(fontSize: 16),
++        ),
++      ),
+ 
+-    final carouselSliderController = CarouselSliderController();
++      const SizedBox(height: 10),
+ 
+-    const fabHeight = 72.0; // Adjust to actual height of your FAB + margin
++      if (getImagesViewModel.currentImage.state != null)
++        buildSliderBox(
++          context: context,
++          label: "Image Quality",
++          minValue: "Compressed",
++          maxValue: "Original Quality",
++          tootTipMessage: "Adjust image quality.\n"
++              "•Compressed = less clarity, smaller size\n"
++              "•Original = same clarity, same size\n"
++              "•Middle = same clarity, smaller size\n"
++              "•Recommended = Between 20% - 98%",
++          slider: Slider(
++            value: ((getImagesViewModel.globalQualitySlider.state ??
++                        getImagesViewModel.currentImage.state!.quality) /
++                    100)
++                .clamp(0.0, 1.0),
++            min: 0,
++            max: 1,
++            divisions: 99,
++            label:
++                "${(getImagesViewModel.globalQualitySlider.state ?? getImagesViewModel.currentImage.state!.quality).round()}%",
++            onChanged: (value) {
++              if (getImagesViewModel.globalQualitySlider.state != null) {
++                getImagesViewModel.updateGlobalQualitySlider(value);
++              } else {
++                getImagesViewModel.updateCurrentImageQuality(value);
++              }
++            },
++          ),
++          showGlobalSwitch: getImagesViewModel.pickedImages.length > 1,
++          isGlobal: getImagesViewModel.globalQualitySlider.state != null,
++          onGlobalToggle: (value) {
++            getImagesViewModel.globalQualitySlider.state = value ? 50 : null;
++          },
++        ),
++    ];
++  }
+ 
++  @override
++  Widget build(BuildContext context) {
+     return Scaffold(
+       body: SuperBuilder(builder: (context) {
+         if (getImagesViewModel.result.state != null) {
+@@ -63,127 +190,57 @@ class _ImagesPageState extends State<ImagesPage> {
+           alignment: Alignment.center,
+           children: [
+             getImagesViewModel.pickedImages.isEmpty
+-                ? const Text(
+-                    "Add images and start compressing",
++                ? Text(
++                    PlatformInfo.isDesktop
++                        ? "Add images and start compressing\nor drop them anywhere in this window"
++                        : "Add images and start compressing",
+                     textAlign: TextAlign.center,
+-                    style: TextStyle(
++                    style: const TextStyle(
+                       fontSize: 18,
+                     ),
+                   )
+                 : Padding(
+-                    padding: EdgeInsets.fromLTRB(10, 10, 10, 15),
+-                    child: Column(
+-                      children: [
+-                        Expanded(
+-                          child: CarouselSlider(
+-                            items: getImagesViewModel.pickedImages.state
+-                                .map((imageData) {
+-                              return ClipRRect(
+-                                borderRadius: BorderRadius.circular(12),
+-                                child: Image.file(
+-                                  imageData.imageFile,
+-                                  frameBuilder: (BuildContext context, Widget child, int? frame, bool? wasSynchronouslyLoaded) {
+-                                    return AnimatedOpacity(
+-                                      opacity: frame == null ? 0 : 1,
+-                                      duration: Duration(milliseconds: 200),
+-                                      curve: Curves.easeIn,
+-                                      child: child,
+-                                    );
+-                                  },
+-                                  fit: BoxFit.contain,
+-                                  filterQuality: FilterQuality.none,
+-                                  // Flutter cannot decode every format on every
+-                                  // platform (e.g. HEIC on desktop).
+-                                  errorBuilder: (context, error, stackTrace) =>
+-                                      const Center(
++                    padding: const EdgeInsets.fromLTRB(10, 10, 10, 15),
++                    child: LayoutBuilder(
++                      builder: (context, constraints) {
++                        final controls = _buildControls(context);
++
++                        // Wide: preview on the left, controls on the right.
++                        if (constraints.maxWidth >= kTwoPaneMinWidth) {
++                          return Row(
++                            children: [
++                              Expanded(child: _buildCarousel()),
++                              const SizedBox(width: 24),
++                              SizedBox(
++                                width: kControlsPaneWidth,
++                                child: Center(
++                                  child: SingleChildScrollView(
+                                     child: Column(
+                                       mainAxisSize: MainAxisSize.min,
+                                       children: [
+-                                        Icon(Icons.image_not_supported_outlined,
+-                                            size: 48),
+-                                        SizedBox(height: 8),
+-                                        Text('Preview not available'),
++                                        ...controls,
++                                        // Reserve space for FABs
++                                        const SizedBox(height: fabHeight),
+                                       ],
+                                     ),
+                                   ),
+                                 ),
+-                              );
+-                            }).toList(),
+-                            carouselController: carouselSliderController,
+-                            options: CarouselOptions(
+-                                autoPlay: false,
+-                                enlargeStrategy: CenterPageEnlargeStrategy.zoom,
+-                                enlargeCenterPage: true,
+-                                pageSnapping: true,
+-                                scrollDirection: Axis.horizontal,
+-                                pauseAutoPlayOnTouch: true,
+-                                enableInfiniteScroll: false,
+-                                onPageChanged: (index, _) => getImagesViewModel
+-                                    .updateCurrentImageAndIndex(index),
+-                                reverse: false),
+-                          ),
+-                        ),
+-                        SizedBox(height: 10),
+-                        // Current image index
+-                        if (getImagesViewModel.pickedImages.isNotEmpty)
+-                          Padding(
+-                            padding: const EdgeInsets.symmetric(vertical: 6),
+-                            child: Text(
+-                              "${(getImagesViewModel.currentImageIndex.state ?? -1) + 1} of ${getImagesViewModel.pickedImages.state.length}",
+-                              style: const TextStyle(fontSize: 16),
+-                            ),
+-                          ),
+-
+-                        SizedBox(height: 10),
++                              ),
++                            ],
++                          );
++                        }
+ 
+-                        if (getImagesViewModel.currentImage.state != null)
+-                          buildSliderBox(
+-                            context: context,
+-                            label: "Image Quality",
+-                            minValue: "Compressed",
+-                            maxValue: "Original Quality",
+-                            tootTipMessage: "Adjust image quality.\n"
+-                                "•Compressed = less clarity, smaller size\n"
+-                                "•Original = same clarity, same size\n"
+-                                "•Middle = same clarity, smaller size\n"
+-                                "•Recommended = Between 20% - 98%",
+-                            slider: Slider(
+-                              value: ((getImagesViewModel
+-                                              .globalQualitySlider.state ??
+-                                          getImagesViewModel
+-                                              .currentImage.state!.quality) /
+-                                      100)
+-                                  .clamp(0.0, 1.0),
+-                              min: 0,
+-                              max: 1,
+-                              divisions: 99,
+-                              label:
+-                                  "${(getImagesViewModel.globalQualitySlider.state ?? getImagesViewModel.currentImage.state!.quality).round()}%",
+-                              onChanged: (value) {
+-                                if (getImagesViewModel
+-                                        .globalQualitySlider.state !=
+-                                    null) {
+-                                  getImagesViewModel
+-                                      .updateGlobalQualitySlider(value);
+-                                } else {
+-                                  getImagesViewModel
+-                                      .updateCurrentImageQuality(value);
+-                                }
+-                              },
+-                            ),
+-                            showGlobalSwitch:
+-                                getImagesViewModel.pickedImages.length > 1,
+-                            isGlobal:
+-                                getImagesViewModel.globalQualitySlider.state !=
+-                                    null,
+-                            onGlobalToggle: (value) {
+-                              getImagesViewModel.globalQualitySlider.state =
+-                                  value ? 50 : null;
+-                            },
+-                          ),
+-                        // Reserve space for FABs
+-                        const SizedBox(height: fabHeight),
+-                      ],
++                        // Narrow: stacked, as on a phone.
++                        return Column(
++                          children: [
++                            Expanded(child: _buildCarousel()),
++                            const SizedBox(height: 10),
++                            ...controls,
++                            // Reserve space for FABs
++                            const SizedBox(height: fabHeight),
++                          ],
++                        );
++                      },
+                     ),
+                   ),
+             getImagesViewModel.isLoading.state.isLoading
+@@ -239,7 +296,8 @@ class _ImagesPageState extends State<ImagesPage> {
+                         height: 180,
+                         padding: 0.02,
+                         selectedColor: Theme.of(context).colorScheme.primary,
+-                        unselectedColor: Theme.of(context).colorScheme.surfaceContainer,
++                        unselectedColor:
++                            Theme.of(context).colorScheme.surfaceContainer,
+                       ),
+                       Text(
+                         "Please keep app open\nwhile compressing",
+@@ -247,9 +305,7 @@ class _ImagesPageState extends State<ImagesPage> {
+                         style: TextStyle(
+                             fontSize: 15,
+                             fontWeight: FontWeight.w700,
+-                            color: Theme.of(context).colorScheme.primary
+-
+-                        ),
++                            color: Theme.of(context).colorScheme.primary),
+                       ),
+                     ],
+                   )
+@@ -263,25 +319,16 @@ class _ImagesPageState extends State<ImagesPage> {
+             return FloatingActionButton(
+               onPressed: () async =>
+                   getImagesViewModel.selectImageButtonUseCase(),
+-              tooltip: "Add Images",
++              tooltip: withShortcut("Add Images", "O"),
+               child: const Icon(Icons.add_photo_alternate_outlined),
+             );
+           } else {
+             if (getImagesViewModel.isLoading.state.isLoading) {
+               return FloatingActionButton.extended(
+                 icon: const Icon(Icons.clear),
+-                tooltip: "Cancel compression ",
+-                onPressed: () async {
+-                  try {
+-                    if (!getImagesViewModel.completer.isCanceled ||
+-                        !getImagesViewModel.completer.isCompleted) {
+-                      getImagesViewModel.completer.operation.cancel();
+-                    }
+-                    getImagesViewModel.showResult("Cancelling");
+-                  } catch (e) {
+-                    debugPrint('Error during cancel: $e');
+-                  }
+-                },
++                tooltip: withShortcut("Cancel compression", "Esc",
++                    withModifier: false),
++                onPressed: () async => getImagesViewModel.requestCancel(),
+                 label: const Text('Cancel'),
+               );
+             } else {
+@@ -296,32 +343,24 @@ class _ImagesPageState extends State<ImagesPage> {
+                       if (getImagesViewModel.isFabOpen.state) ...[
+                         FloatingActionButton.extended(
+                           icon: const Icon(Icons.compress_outlined),
+-                          tooltip: "Compress Images",
++                          tooltip: withShortcut("Compress Images", "Enter"),
+                           onPressed: () async {
+-                            getImagesViewModel.completer = CancelableCompleter(
+-                              onCancel:
+-                                  getImagesViewModel.cancelCompressingAllImages,
+-                            );
+-
+-                            getImagesViewModel.completer.complete(
+-                                getImagesViewModel
+-                                    .compressAllSelectedImages()
+-                                    .then((summaryReport) {
+-                              if (summaryReport != null) {
+-                                if (context.mounted) {
+-                                  _showCompressionSummaryDialog(
+-                                      context: context,
+-                                      summaryReport: summaryReport);
+-                                }
++                            getImagesViewModel.startCompression(
++                                onComplete: (summaryReport) {
++                              if (context.mounted) {
++                                showCompressionSummaryDialog(
++                                    context: context,
++                                    summaryReport: summaryReport);
+                               }
+-                            }));
++                            });
+                           },
+                           label: const Text('Compress'),
+                         ),
+                         SizedBox(width: 10),
+                         FloatingActionButton.extended(
+                           icon: const Icon(Icons.delete_outline),
+-                          tooltip: "Remove images",
++                          tooltip: withShortcut("Remove images", "Del",
++                              withModifier: false),
+                           onPressed: () async {
+                             getImagesViewModel.cancelCompressingAllImages();
+                           },
+diff --git a/lib/features/images/presentation/state/images_viewmodel.dart b/lib/features/images/presentation/state/images_viewmodel.dart
+index c231692..e6de0f0 100644
+--- a/lib/features/images/presentation/state/images_viewmodel.dart
++++ b/lib/features/images/presentation/state/images_viewmodel.dart
+@@ -1,4 +1,7 @@
+ import 'package:async/async.dart';
++import 'package:carousel_slider/carousel_slider.dart';
++import 'package:flutter/animation.dart';
++import 'package:flutter/foundation.dart';
+ import 'package:flutter_super/flutter_super.dart';
+ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/common/domain/services/media_picker.dart';
+@@ -26,6 +29,12 @@ class ImagesViewModel {
+ 
+   CancelableCompleter<void> completer = CancelableCompleter();
+ 
++  /// Owned here (not by the page) so keyboard shortcuts can move the carousel.
++  final carouselController = CarouselSliderController();
++
++  /// True while images are being read or compressed.
++  bool get isBusy => isLoading.state.isLoading;
++
+   // Resolved lazily: `getImagesViewModel` constructs a new instance on every
+   // access, so nothing may be looked up in the constructor.
+   late final MediaPicker _picker = sl<MediaPicker>();
+@@ -70,32 +79,38 @@ class ImagesViewModel {
+ 
+   Future<void> addSharedImages([List<SharedAttachment>? sharedFiles]) async {
+     if (sharedFiles != null && sharedFiles.isNotEmpty) {
+-      if (isLoading.state.isLoading) return;
++      await addImagePaths(sharedFiles.map((file) => file.path).toList());
++    }
++  }
+ 
+-      try {
+-        setIsLoading(
+-          LoadingData(
+-              isLoading: true,
+-              completedSteps: null,
+-              totalSteps: null,
+-              progressCounter: null),
+-        );
++  /// Replaces the current selection with the images at [paths] (shared into
++  /// the app, or dropped onto the window).
++  Future<void> addImagePaths(List<String> paths) async {
++    if (paths.isEmpty) return;
++    if (isLoading.state.isLoading) return;
+ 
+-        pickedImages.state = [];
+-        currentImage.state = null;
+-        globalQualitySlider.state = null;
++    try {
++      setIsLoading(
++        LoadingData(
++            isLoading: true,
++            completedSteps: null,
++            totalSteps: null,
++            progressCounter: null),
++      );
+ 
+-        final picked =
+-            await _readImages(sharedFiles.map((file) => file.path).toList());
++      pickedImages.state = [];
++      currentImage.state = null;
++      globalQualitySlider.state = null;
+ 
+-        pickedImages.state = picked;
+-        currentImage.state = picked[0];
+-        currentImageIndex.state = 0;
+-        setIsLoading(LoadingData(isLoading: false));
+-      } catch (e) {
+-        await showResult("An error ocurred - ${e.toString()}");
+-        setIsLoading(LoadingData(isLoading: false));
+-      }
++      final picked = await _readImages(paths);
++
++      pickedImages.state = picked;
++      currentImage.state = picked[0];
++      currentImageIndex.state = 0;
++      setIsLoading(LoadingData(isLoading: false));
++    } catch (e) {
++      await showResult("An error ocurred - ${e.toString()}");
++      setIsLoading(LoadingData(isLoading: false));
+     }
+   }
+ 
+@@ -189,6 +204,46 @@ class ImagesViewModel {
+     return null;
+   }
+ 
++  /// Starts compressing every picked image. [onComplete] receives the summary
++  /// unless the job was cancelled or could not start.
++  void startCompression({required void Function(SummaryReport summary) onComplete}) {
++    completer = CancelableCompleter(onCancel: cancelCompressingAllImages);
++
++    completer.complete(compressAllSelectedImages().then((summaryReport) {
++      if (summaryReport != null) onComplete(summaryReport);
++    }));
++  }
++
++  /// Asks a running compression to stop.
++  void requestCancel() {
++    try {
++      if (!completer.isCanceled || !completer.isCompleted) {
++        completer.operation.cancel();
++      }
++      showResult("Cancelling");
++    } catch (e) {
++      debugPrint('Error during cancel: $e');
++    }
++  }
++
++  Future<void> previousImage() => _moveCarousel(forward: false);
++
++  Future<void> nextImage() => _moveCarousel(forward: true);
++
++  Future<void> _moveCarousel({required bool forward}) async {
++    if (pickedImages.state.length < 2) return;
++    const duration = Duration(milliseconds: 250);
++    try {
++      if (forward) {
++        await carouselController.nextPage(duration: duration, curve: Curves.easeOut);
++      } else {
++        await carouselController.previousPage(duration: duration, curve: Curves.easeOut);
++      }
++    } catch (e) {
++      debugPrint('Could not move the carousel: $e');
++    }
++  }
++
+   String formatBytes(int bytes, [int decimals = 2]) {
+     if (bytes <= 0) return "0 B";
+     const suffixes = ["B", "KB", "MB", "GB"];
+diff --git a/lib/features/videos/presentation/pages/videos_page.dart b/lib/features/videos/presentation/pages/videos_page.dart
+index 3a921eb..d69d507 100644
+--- a/lib/features/videos/presentation/pages/videos_page.dart
++++ b/lib/features/videos/presentation/pages/videos_page.dart
+@@ -1,8 +1,10 @@
+ import 'package:flutter/material.dart';
+ import 'package:flutter_super/flutter_super.dart';
++import 'package:petit/core/utils/adaptive.dart';
++import 'package:petit/core/utils/platform_utils.dart';
++import 'package:petit/core/utils/shortcut_labels.dart';
+ import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
+ import 'package:step_progress_indicator/step_progress_indicator.dart';
+-import '../../../../common/data/summary_report.dart';
+ import '../../../../common/widgets/compression_summary_dialog.dart';
+ import '../../../../common/widgets/slider_box.dart';
+ 
+@@ -15,28 +17,70 @@ class VideosPage extends StatefulWidget {
+ }
+ 
+ class _VideosPageState extends State<VideosPage> {
++  // Adjust to actual height of your FAB + margin
++  static const fabHeight = 72.0;
++
+   @override
+   void dispose() {
+     // getVideosViewModel.videoPreview.state?.dispose();
+     super.dispose();
+   }
+ 
+-  void _showCompressionSummaryDialog({
+-    required BuildContext context,
+-    required SummaryReport summaryReport,
+-  }) {
+-    showDialog(
+-      context: context,
+-      barrierDismissible: false,
+-      builder: (context) =>
+-          CompressionSummaryDialog(summaryReport: summaryReport),
++  /// The two quality sliders.
++  Widget _buildSliders(BuildContext context) {
++    return Column(
++      mainAxisSize: MainAxisSize.min,
++      children: [
++        buildSliderBox(
++          context: context,
++          label: "Compression Level",
++          minValue: getVideosViewModel.getLabelForCRFSlider(0),
++          maxValue: getVideosViewModel.getLabelForCRFSlider(100),
++          tootTipMessage: "Adjusts the compression level.\n"
++              "•${getVideosViewModel.getLabelForCRFSlider(100)} = smallest size, less clarity\n"
++              "•${getVideosViewModel.getLabelForCRFSlider(0)} = smaller size, more clarity\n"
++              "•Recommended = ${getVideosViewModel.getLabelForCRFSlider(80)}",
++          slider: Slider(
++            value: getVideosViewModel.cfrQualitySlider.state / 100,
++            min: 0,
++            max: 1,
++            divisions: 4,
++            label: "${getVideosViewModel.getLabelForCRFSlider(
++                getVideosViewModel.cfrQualitySlider.state)} Compression",
++            onChanged: (value) {
++              getVideosViewModel.updateCfrQualitySlider(value);
++            },
++          ),
++        ),
++        const SizedBox(height: 12),
++        buildSliderBox(
++          context: context,
++          label: "Desired File Size",
++          minValue: getVideosViewModel.ffmpegPresets.first.desc,
++          maxValue: getVideosViewModel.ffmpegPresets.last.desc,
++          tootTipMessage: //"Choose a desired file size.\n"
++              "•${getVideosViewModel.ffmpegPresets.first.desc} = For archival\n"
++              "•${getVideosViewModel.ffmpegPresets[1].desc} = For social media\n"
++              "•${getVideosViewModel.ffmpegPresets.last.desc} = For quick sharing",
++          slider: Slider(
++            value: getVideosViewModel.selectedPresetIndex.state.toDouble(),
++            min: 0,
++            max: (getVideosViewModel.ffmpegPresets.length - 1).toDouble(),
++            divisions: getVideosViewModel.ffmpegPresets.length - 1,
++            label: getVideosViewModel
++                .ffmpegPresets[getVideosViewModel.selectedPresetIndex.state]
++                .desc,
++            onChanged: (value) {
++              getVideosViewModel.setPresetIndex(value.toInt());
++            },
++          ),
++        ),
++      ],
+     );
+   }
+ 
+   @override
+   Widget build(BuildContext context) {
+-    const fabHeight = 72.0; // Adjust to actual height of your FAB + margin
+-
+     return Scaffold(
+       body: SuperBuilder(builder: (context) {
+         if (getVideosViewModel.result.state != null) {
+@@ -54,87 +98,68 @@ class _VideosPageState extends State<VideosPage> {
+             if (getVideosViewModel.videoPreview.state != null &&
+                 getVideosViewModel.videoPreview.state!.isInitialized)
+               Padding(
+-                padding: EdgeInsets.fromLTRB(10, 10, 10, 15),
+-                child: Column(
+-                  mainAxisAlignment: MainAxisAlignment.center,
+-                  children: [
+-                    Expanded(
+-                      child: ClipRRect(
+-                        borderRadius: BorderRadius.circular(12),
+-                        child: AspectRatio(
+-                          aspectRatio:
+-                              getVideosViewModel.videoPreview.state!.aspectRatio,
+-                          child: getVideosViewModel.videoPreview.state!
+-                              .build(context),
+-                        ),
++                padding: const EdgeInsets.fromLTRB(10, 10, 10, 15),
++                child: LayoutBuilder(
++                  builder: (context, constraints) {
++                    final preview = ClipRRect(
++                      borderRadius: BorderRadius.circular(12),
++                      child: AspectRatio(
++                        aspectRatio:
++                            getVideosViewModel.videoPreview.state!.aspectRatio,
++                        child:
++                            getVideosViewModel.videoPreview.state!.build(context),
+                       ),
+-                    ),
++                    );
+ 
+-                    const SizedBox(height: 12),
++                    // Wide: preview on the left, sliders on the right.
++                    if (constraints.maxWidth >= kTwoPaneMinWidth) {
++                      return Row(
++                        children: [
++                          Expanded(child: Center(child: preview)),
++                          const SizedBox(width: 24),
++                          SizedBox(
++                            width: kControlsPaneWidth,
++                            child: Center(
++                              child: SingleChildScrollView(
++                                child: Column(
++                                  mainAxisSize: MainAxisSize.min,
++                                  children: [
++                                    _buildSliders(context),
++                                    // Space for FABs
++                                    const SizedBox(height: fabHeight),
++                                  ],
++                                ),
++                              ),
++                            ),
++                          ),
++                        ],
++                      );
++                    }
+ 
+-                    Column(
++                    // Narrow: stacked, as on a phone.
++                    return Column(
++                      mainAxisAlignment: MainAxisAlignment.center,
+                       children: [
+-                        buildSliderBox(
+-                          context: context,
+-                          label: "Compression Level",
+-                          minValue: getVideosViewModel.getLabelForCRFSlider(0),
+-                          maxValue: getVideosViewModel.getLabelForCRFSlider(100),
+-                          tootTipMessage: "Adjusts the compression level.\n"
+-                              "•${getVideosViewModel.getLabelForCRFSlider(100)} = smallest size, less clarity\n"
+-                              "•${getVideosViewModel.getLabelForCRFSlider(0)} = smaller size, more clarity\n"
+-                              "•Recommended = ${getVideosViewModel.getLabelForCRFSlider(80)}",
+-                          slider: Slider(
+-                            value:
+-                                getVideosViewModel.cfrQualitySlider.state / 100,
+-                            min: 0,
+-                            max: 1,
+-                            divisions: 4,
+-                            label: "${getVideosViewModel.getLabelForCRFSlider(
+-                                getVideosViewModel.cfrQualitySlider.state)} Compression",
+-                            onChanged: (value) {
+-                              getVideosViewModel
+-                                  .updateCfrQualitySlider(value);
+-                            },
+-                          ),
+-                        ),
++                        Expanded(child: preview),
++
+                         const SizedBox(height: 12),
+-                        buildSliderBox(
+-                          context: context,
+-                          label: "Desired File Size",
+-                          minValue: getVideosViewModel.ffmpegPresets.first.desc,
+-                          maxValue: getVideosViewModel.ffmpegPresets.last.desc,
+-                          tootTipMessage: //"Choose a desired file size.\n"
+-                              "•${getVideosViewModel.ffmpegPresets.first.desc} = For archival\n"
+-                              "•${getVideosViewModel.ffmpegPresets[1].desc} = For social media\n"
+-                              "•${getVideosViewModel.ffmpegPresets.last.desc} = For quick sharing",
+-                          slider: Slider(
+-                            value: getVideosViewModel.selectedPresetIndex.state
+-                                .toDouble(),
+-                            min: 0,
+-                            max: (getVideosViewModel.ffmpegPresets.length - 1)
+-                                .toDouble(),
+-                            divisions:
+-                                getVideosViewModel.ffmpegPresets.length - 1,
+-                            label: getVideosViewModel.ffmpegPresets[
+-                                getVideosViewModel.selectedPresetIndex.state].desc,
+-                            onChanged: (value) {
+-                              getVideosViewModel.setPresetIndex(value.toInt());
+-                            },
+-                          ),
+-                        ),
+-                      ],
+-                    ),
+ 
+-                    // Space for FABs
+-                    const SizedBox(height: fabHeight),
+-                  ],
++                        _buildSliders(context),
++
++                        // Space for FABs
++                        const SizedBox(height: fabHeight),
++                      ],
++                    );
++                  },
+                 ),
+               )
+             else
+-              const Text(
+-                "Add a video and start compressing",
++              Text(
++                PlatformInfo.isDesktop
++                    ? "Add a video and start compressing\nor drop it anywhere in this window"
++                    : "Add a video and start compressing",
+                 textAlign: TextAlign.center,
+-                style: TextStyle(
++                style: const TextStyle(
+                   fontSize: 18,
+                 ),
+               ),
+@@ -198,7 +223,7 @@ class _VideosPageState extends State<VideosPage> {
+             onPressed: () async {
+               await getVideosViewModel.pickVideo();
+             },
+-            tooltip: "Pick video",
++            tooltip: withShortcut("Pick video", "O"),
+             child: const Icon(Icons.video_library),
+           );
+         } else {
+@@ -206,7 +231,8 @@ class _VideosPageState extends State<VideosPage> {
+             if (getVideosViewModel.currentTask.state != null) {
+               return FloatingActionButton.extended(
+                 icon: const Icon(Icons.clear),
+-                tooltip: "Cancel compression ",
++                tooltip: withShortcut("Cancel compression", "Esc",
++                    withModifier: false),
+                 onPressed: () async {
+                   try {
+                     getVideosViewModel.cancelCompressingVideo();
+@@ -252,7 +278,8 @@ class _VideosPageState extends State<VideosPage> {
+                       SizedBox(width: 10),
+                       FloatingActionButton.extended(
+                         icon: const Icon(Icons.delete_outline),
+-                        tooltip: "Remove video",
++                        tooltip: withShortcut("Remove video", "Del",
++                            withModifier: false),
+                         onPressed: () async {
+                           getVideosViewModel.removeVideo();
+                         },
+@@ -261,12 +288,12 @@ class _VideosPageState extends State<VideosPage> {
+                       SizedBox(width: 10),
+                       FloatingActionButton.extended(
+                         icon: const Icon(Icons.compress_outlined),
+-                        tooltip: "Compress Video",
++                        tooltip: withShortcut("Compress Video", "Enter"),
+                         onPressed: () async {
+                           await getVideosViewModel.compressVideo(
+                               onComplete: (summaryReport) {
+                             if (mounted) {
+-                              _showCompressionSummaryDialog(
++                              showCompressionSummaryDialog(
+                                   context: context,
+                                   summaryReport: summaryReport);
+                             }
+diff --git a/lib/features/videos/presentation/state/videos_viewmodel.dart b/lib/features/videos/presentation/state/videos_viewmodel.dart
+index 6eac406..e40807e 100644
+--- a/lib/features/videos/presentation/state/videos_viewmodel.dart
++++ b/lib/features/videos/presentation/state/videos_viewmodel.dart
+@@ -36,6 +36,9 @@ class VideosViewModel {
+   late final Workspace _workspace = sl<Workspace>();
+   late final CompressVideoUseCase _compressVideo = sl<CompressVideoUseCase>();
+ 
++  /// True while a video is being loaded or compressed.
++  bool get isBusy => isLoading.state || isCompressing.state;
++
+   List<SliderValue> ffmpegPresets = [
+     // SliderValue(value: "ultrafast", desc: "ultrafast"),
+     // SliderValue(value: "superfast", desc: "superfast"),
+@@ -107,21 +110,27 @@ class VideosViewModel {
+ 
+   Future<void> addSharedVideo(List<SharedAttachment>? sharedFiles) async {
+     if (sharedFiles != null && sharedFiles.isNotEmpty) {
+-      if (isCompressing.state) return;
+-      try {
+-        setIsLoading(true);
++      await addVideoPath(sharedFiles.elementAt(0).path);
++    }
++  }
+ 
+-        final file = File(sharedFiles.elementAt(0).path);
+-        final preview = createVideoPreview(file);
+-        videoPreview.state = preview;
+-        await preview.initialize();
+-        videoFile.state = file;
++  /// Loads the video at [path] (shared into the app, or dropped onto the
++  /// window), replacing the current one.
++  Future<void> addVideoPath(String path) async {
++    if (isCompressing.state) return;
++    try {
++      setIsLoading(true);
+ 
+-        setIsLoading(false);
+-      } catch (e) {
+-        await showResult("An error occurred - ${e.toString()}");
+-        setIsLoading(false);
+-      }
++      final file = File(path);
++      final preview = createVideoPreview(file);
++      videoPreview.state = preview;
++      await preview.initialize();
++      videoFile.state = file;
++
++      setIsLoading(false);
++    } catch (e) {
++      await showResult("An error occurred - ${e.toString()}");
++      setIsLoading(false);
+     }
+   }
+ 
+diff --git a/lib/main.dart b/lib/main.dart
+index 68b86f1..0c5fba8 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
+ import 'package:flutter_super/flutter_super.dart';
+ import 'package:dynamic_color/dynamic_color.dart';
+ import 'package:petit/common/data/shared_media_details.dart';
++import 'package:petit/core/utils/app_scroll_behavior.dart';
+ import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:share_handler/share_handler.dart';
+ import 'package:petit/features/home/presentation/pages/home_screen.dart';
+@@ -240,6 +241,7 @@ class _MyAppState extends State<MyApp> {
+           theme: lightTheme,
+           darkTheme: darkTheme,
+           themeMode: ThemeMode.system,
++          scrollBehavior: const AppScrollBehavior(),
+           navigatorKey: navigatorKey,
+           navigatorObservers: [if (observer != null) observer!],
+           initialRoute: '/',
+diff --git a/pubspec.yaml b/pubspec.yaml
+index ef9b830..9d3de07 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -55,6 +55,9 @@ dependencies:
+   #Native file/folder dialogs on desktop
+   file_selector: ^1.0.3
+ 
++  #Drag and drop files onto the window (desktop)
++  desktop_drop: ^0.8.1
++
+   #Gallery Saver
+   gallery_saver_plus: ^3.2.9
+ 
+diff --git a/test/adaptive_test.dart b/test/adaptive_test.dart
+new file mode 100644
+index 0000000..3cff464
+--- /dev/null
++++ b/test/adaptive_test.dart
+@@ -0,0 +1,19 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/core/utils/adaptive.dart';
++
++void main() {
++  test('window size classes follow the Material 3 breakpoints', () {
++    expect(windowSizeFor(360), WindowSize.compact);
++    expect(windowSizeFor(599.9), WindowSize.compact);
++    expect(windowSizeFor(600), WindowSize.medium);
++    expect(windowSizeFor(839.9), WindowSize.medium);
++    expect(windowSizeFor(840), WindowSize.expanded);
++    expect(windowSizeFor(1920), WindowSize.expanded);
++  });
++
++  test('the rail appears before the two-pane layout', () {
++    expect(kRailMinWidth, lessThan(kTwoPaneMinWidth));
++    // A two-pane page must leave room for the preview next to the controls.
++    expect(kTwoPaneMinWidth, greaterThan(kControlsPaneWidth * 1.5));
++  });
++}
+diff --git a/test/dropped_files_test.dart b/test/dropped_files_test.dart
+new file mode 100644
+index 0000000..020af54
+--- /dev/null
++++ b/test/dropped_files_test.dart
+@@ -0,0 +1,59 @@
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:path/path.dart' as p;
++import 'package:petit/core/utils/dropped_files.dart';
++
++void main() {
++  group('classifyDroppedFiles', () {
++    test('sorts images, videos and everything else', () {
++      final media = classifyDroppedFiles([
++        '/a/photo.JPG',
++        '/a/shot.heic',
++        '/a/clip.MP4',
++        '/a/movie.mkv',
++        '/a/notes.txt',
++        '/a/animation.gif',
++      ]);
++
++      expect(media.images, ['/a/photo.JPG', '/a/shot.heic']);
++      expect(media.videos, ['/a/clip.MP4', '/a/movie.mkv']);
++      expect(media.unsupported, ['/a/notes.txt', '/a/animation.gif']);
++      expect(media.isEmpty, isFalse);
++    });
++
++    test('is empty when nothing is usable', () {
++      expect(classifyDroppedFiles(['/a/notes.txt']).isEmpty, isTrue);
++      expect(classifyDroppedFiles(const []).isEmpty, isTrue);
++    });
++  });
++
++  group('expandDroppedFolders', () {
++    late Directory dir;
++
++    setUp(() => dir = Directory.systemTemp.createTempSync('petit_drop_'));
++    tearDown(() => dir.deleteSync(recursive: true));
++
++    test('replaces a folder with its files, sorted, not recursive', () {
++      final folder = Directory(p.join(dir.path, 'holiday'))..createSync();
++      File(p.join(folder.path, 'b.jpg')).writeAsStringSync('x');
++      File(p.join(folder.path, 'a.png')).writeAsStringSync('x');
++      Directory(p.join(folder.path, 'nested')).createSync();
++      File(p.join(folder.path, 'nested', 'c.jpg')).writeAsStringSync('x');
++
++      expect(expandDroppedFolders([folder.path]), [
++        p.join(folder.path, 'a.png'),
++        p.join(folder.path, 'b.jpg'),
++      ]);
++    });
++
++    test('keeps plain files and skips paths that cannot be read', () {
++      final file = File(p.join(dir.path, 'one.jpg'))..writeAsStringSync('x');
++
++      expect(
++        expandDroppedFolders([file.path, p.join(dir.path, 'missing')]),
++        [file.path, p.join(dir.path, 'missing')],
++      );
++    });
++  });
++}
+diff --git a/test/media_formats_test.dart b/test/media_formats_test.dart
+index 11988f0..e841221 100644
+--- a/test/media_formats_test.dart
++++ b/test/media_formats_test.dart
+@@ -17,6 +17,13 @@ void main() {
+       expect(isHeif('/a/photo_png.heic'), isTrue);
+     });
+ 
++    test('recognises common video formats', () {
++      expect(isVideoFile('/a/clip.MP4'), isTrue);
++      expect(isVideoFile('C:\\Videos\\movie.mkv'), isTrue);
++      expect(isVideoFile('/a/clip.mp4.txt'), isFalse);
++      expect(isVideoFile('/a/photo.jpg'), isFalse);
++    });
++
+     test('only matches at the end of the path', () {
+       expect(isImageSizeGetterSupported('/a/.png_folder/file.heic'), isFalse);
+       expect(isCompressibleImage('/a/b/file.gif'), isFalse);
+diff --git a/test/shortcut_labels_test.dart b/test/shortcut_labels_test.dart
+new file mode 100644
+index 0000000..376be60
+--- /dev/null
++++ b/test/shortcut_labels_test.dart
+@@ -0,0 +1,16 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/core/utils/platform_utils.dart';
++import 'package:petit/core/utils/shortcut_labels.dart';
++
++void main() {
++  test('shortcut hints only appear on desktop', () {
++    final modifier = PlatformInfo.isMacOS ? '\u2318' : 'Ctrl';
++
++    if (PlatformInfo.isDesktop) {
++      expect(withShortcut('Add images', 'O'), 'Add images ($modifier+O)');
++      expect(withShortcut('Cancel', 'Esc', withModifier: false), 'Cancel (Esc)');
++    } else {
++      expect(withShortcut('Add images', 'O'), 'Add images');
++    }
++  });
++}

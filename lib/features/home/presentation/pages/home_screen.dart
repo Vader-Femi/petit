@@ -4,6 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_super/flutter_super.dart';
 import 'package:in_app_update/in_app_update.dart';
+import 'package:petit/common/data/summary_report.dart';
+import 'package:petit/common/widgets/compression_summary_dialog.dart';
+import 'package:petit/common/widgets/drop_zone.dart';
+import 'package:petit/core/utils/adaptive.dart';
+import 'package:petit/core/utils/dropped_files.dart';
+import 'package:petit/core/utils/platform_utils.dart';
 import 'package:petit/features/home/presentation/state/home_viewmodel.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
 import 'package:petit/features/videos/presentation/pages/videos_page.dart';
@@ -121,44 +127,213 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  // ---- keyboard shortcuts -------------------------------------------------
+
+  bool get _isApple => PlatformInfo.isMacOS || PlatformInfo.isIOS;
+
+  /// Ctrl on Windows/Linux, Cmd on Apple platforms.
+  SingleActivator _withModifier(LogicalKeyboardKey key) =>
+      SingleActivator(key, control: !_isApple, meta: _isApple);
+
+  Map<ShortcutActivator, VoidCallback> get _shortcuts => {
+        _withModifier(LogicalKeyboardKey.keyO): _openFiles,
+        _withModifier(LogicalKeyboardKey.enter): _compress,
+        _withModifier(LogicalKeyboardKey.numpadEnter): _compress,
+        const SingleActivator(LogicalKeyboardKey.delete): _clear,
+        _withModifier(LogicalKeyboardKey.backspace): _clear,
+        const SingleActivator(LogicalKeyboardKey.escape): _cancelRunning,
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): _previousImage,
+        const SingleActivator(LogicalKeyboardKey.arrowRight): _nextImage,
+        _withModifier(LogicalKeyboardKey.digit1): () => _selectTab(0),
+        _withModifier(LogicalKeyboardKey.digit2): () => _selectTab(1),
+      };
+
+  int get _tab => getHomeViewModel.currentTabIndex.state;
+
+  void _openFiles() {
+    if (getHomeViewModel.isBusy) return;
+    if (_tab == 0) {
+      getImagesViewModel.selectImageButtonUseCase();
+    } else {
+      getVideosViewModel.pickVideo();
+    }
+  }
+
+  void _compress() {
+    if (getHomeViewModel.isBusy) return;
+    if (_tab == 0) {
+      if (getImagesViewModel.pickedImages.isEmpty) return;
+      getImagesViewModel.startCompression(onComplete: _showSummary);
+    } else {
+      if (getVideosViewModel.videoFile.state == null) return;
+      getVideosViewModel.compressVideo(onComplete: _showSummary);
+    }
+  }
+
+  void _clear() {
+    if (getHomeViewModel.isBusy) return;
+    if (_tab == 0) {
+      getImagesViewModel.cancelCompressingAllImages();
+    } else {
+      getVideosViewModel.removeVideo();
+    }
+  }
+
+  void _cancelRunning() {
+    if (getImagesViewModel.isBusy && getImagesViewModel.pickedImages.isNotEmpty) {
+      getImagesViewModel.requestCancel();
+    } else if (getVideosViewModel.currentTask.state != null) {
+      getVideosViewModel.cancelCompressingVideo();
+    }
+  }
+
+  void _previousImage() {
+    if (_tab == 0 && !getImagesViewModel.isBusy) {
+      getImagesViewModel.previousImage();
+    }
+  }
+
+  void _nextImage() {
+    if (_tab == 0 && !getImagesViewModel.isBusy) {
+      getImagesViewModel.nextImage();
+    }
+  }
+
+  void _selectTab(int index) {
+    if (getHomeViewModel.isBusy || _tab == index) return;
+    getHomeViewModel.updateCurrentTabIndex(index);
+  }
+
+  void _showSummary(SummaryReport summaryReport) {
+    if (!mounted) return;
+    showCompressionSummaryDialog(context: context, summaryReport: summaryReport);
+  }
+
+  // ---- drag and drop ------------------------------------------------------
+
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _handleDroppedFiles(List<String> droppedPaths) async {
+    // Switching tabs clears the other tab's work, so never do it mid-job.
+    if (getHomeViewModel.isBusy) {
+      _snack('Wait for the current job to finish.');
+      return;
+    }
+
+    final media = classifyDroppedFiles(expandDroppedFolders(droppedPaths));
+
+    if (media.isEmpty) {
+      _snack('Drop images (JPG, PNG, WebP, HEIC) or a video file.');
+      return;
+    }
+
+    if (media.images.isNotEmpty) {
+      await getHomeViewModel.updateCurrentTabIndex(0);
+      await getImagesViewModel.addImagePaths(media.images);
+      if (media.videos.isNotEmpty) {
+        _snack('Added the images. Drop videos separately.');
+      }
+    } else {
+      await getHomeViewModel.updateCurrentTabIndex(1);
+      await getVideosViewModel.addVideoPath(media.videos.first);
+      if (media.videos.length > 1) {
+        _snack('Only one video can be compressed at a time.');
+      }
+    }
+  }
+
+  // ---- layout -------------------------------------------------------------
+
   @override
   Widget build(BuildContext context) {
     return SuperBuilder(
       builder: (context) {
-        return Scaffold(
-          appBar: AppBar(
-            title: Text(
-              "Petit - ${getHomeViewModel.currentTabIndex.state == 0 ? "Image" : "Video"} Compressor",
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w600,
+        final selectedTab = getHomeViewModel.currentTabIndex.state;
+
+        return CallbackShortcuts(
+          bindings: _shortcuts,
+          child: Focus(
+            autofocus: true,
+            child: DropZone(
+              onFilesDropped: _handleDroppedFiles,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  // Wide windows get a side rail; narrow ones the bottom bar.
+                  final useRail = constraints.maxWidth >= kRailMinWidth;
+
+                  final pages = IndexedStack(
+                    index: selectedTab,
+                    children: const [
+                      ImagesPage(),
+                      VideosPage(),
+                    ],
+                  );
+
+                  return Scaffold(
+                    appBar: AppBar(
+                      title: Text(
+                        "Petit - ${selectedTab == 0 ? "Image" : "Video"} Compressor",
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      elevation: 8,
+                      backgroundColor:
+                          Theme.of(context).appBarTheme.backgroundColor,
+                    ),
+                    body: useRail
+                        ? Row(
+                            children: [
+                              NavigationRail(
+                                selectedIndex: selectedTab,
+                                onDestinationSelected:
+                                    getHomeViewModel.updateCurrentTabIndex,
+                                labelType: NavigationRailLabelType.all,
+                                destinations: const [
+                                  NavigationRailDestination(
+                                    icon: Icon(Icons.image_outlined),
+                                    selectedIcon: Icon(Icons.image),
+                                    label: Text('Images'),
+                                  ),
+                                  NavigationRailDestination(
+                                    icon: Icon(Icons.videocam_outlined),
+                                    selectedIcon: Icon(Icons.videocam),
+                                    label: Text('Videos'),
+                                  ),
+                                ],
+                              ),
+                              const VerticalDivider(width: 1),
+                              Expanded(child: pages),
+                            ],
+                          )
+                        : pages,
+                    bottomNavigationBar: useRail
+                        ? null
+                        : NavigationBar(
+                            selectedIndex: selectedTab,
+                            onDestinationSelected:
+                                getHomeViewModel.updateCurrentTabIndex,
+                            destinations: const [
+                              NavigationDestination(
+                                icon: Icon(Icons.image_outlined),
+                                selectedIcon: Icon(Icons.image),
+                                label: 'Images',
+                              ),
+                              NavigationDestination(
+                                icon: Icon(Icons.videocam_outlined),
+                                selectedIcon: Icon(Icons.videocam),
+                                label: 'Videos',
+                              ),
+                            ],
+                          ),
+                  );
+                },
               ),
             ),
-            elevation: 8,
-            backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
-          ),
-          body: IndexedStack(
-            index: getHomeViewModel.currentTabIndex.state,
-            children: const [
-              ImagesPage(),
-              VideosPage(),
-            ],
-          ),
-          bottomNavigationBar: NavigationBar(
-            selectedIndex: getHomeViewModel.currentTabIndex.state,
-            onDestinationSelected: getHomeViewModel.updateCurrentTabIndex,
-            destinations: const [
-              NavigationDestination(
-                icon: Icon(Icons.image_outlined),
-                selectedIcon: Icon(Icons.image),
-                label: 'Images',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.videocam_outlined),
-                selectedIcon: Icon(Icons.videocam),
-                label: 'Videos',
-              ),
-            ],
           ),
         );
       },

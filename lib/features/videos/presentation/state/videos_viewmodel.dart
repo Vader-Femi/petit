@@ -36,6 +36,9 @@ class VideosViewModel {
   late final Workspace _workspace = sl<Workspace>();
   late final CompressVideoUseCase _compressVideo = sl<CompressVideoUseCase>();
 
+  /// True while a video is being loaded or compressed.
+  bool get isBusy => isLoading.state || isCompressing.state;
+
   List<SliderValue> ffmpegPresets = [
     // SliderValue(value: "ultrafast", desc: "ultrafast"),
     // SliderValue(value: "superfast", desc: "superfast"),
@@ -107,21 +110,27 @@ class VideosViewModel {
 
   Future<void> addSharedVideo(List<SharedAttachment>? sharedFiles) async {
     if (sharedFiles != null && sharedFiles.isNotEmpty) {
-      if (isCompressing.state) return;
-      try {
-        setIsLoading(true);
+      await addVideoPath(sharedFiles.elementAt(0).path);
+    }
+  }
 
-        final file = File(sharedFiles.elementAt(0).path);
-        final preview = createVideoPreview(file);
-        videoPreview.state = preview;
-        await preview.initialize();
-        videoFile.state = file;
+  /// Loads the video at [path] (shared into the app, or dropped onto the
+  /// window), replacing the current one.
+  Future<void> addVideoPath(String path) async {
+    if (isCompressing.state) return;
+    try {
+      setIsLoading(true);
 
-        setIsLoading(false);
-      } catch (e) {
-        await showResult("An error occurred - ${e.toString()}");
-        setIsLoading(false);
-      }
+      final file = File(path);
+      final preview = createVideoPreview(file);
+      videoPreview.state = preview;
+      await preview.initialize();
+      videoFile.state = file;
+
+      setIsLoading(false);
+    } catch (e) {
+      await showResult("An error occurred - ${e.toString()}");
+      setIsLoading(false);
     }
   }
 
