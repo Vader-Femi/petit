@@ -1,0 +1,3475 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index cf1fe1e..21625b3 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -35,6 +35,10 @@ jobs:
+           test/shortcut_labels_test.dart
+           test/image_use_cases_test.dart
+           test/video_use_case_test.dart
++          test/format_bytes_test.dart
++          test/images_viewmodel_test.dart
++          test/videos_viewmodel_test.dart
++          test/home_viewmodel_test.dart
+ 
+   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
+   # it runs on demand and for pull requests into the production branch.
+diff --git a/docs/architecture.md b/docs/architecture.md
+index 97efa13..4fd1738 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -69,3 +69,23 @@ Rules
+ - Mouse dragging is enabled for scrollables (`core/utils/app_scroll_behavior.dart`) and the
+   image carousel shows previous/next buttons on desktop.
+ 
++## State management (Riverpod)
++
++Each tab has a **ViewModel**, which is a Riverpod `Notifier` holding one immutable **state** class:
++
++| ViewModel (provider) | State | Role |
++|---|---|---|
++| `ImagesViewModel` (`imagesViewModelProvider`) | `ImagesState` | picked images, quality settings, progress, one-shot message |
++| `VideosViewModel` (`videosViewModelProvider`) | `VideosState` | video, preview, settings, progress, running job |
++| `HomeViewModel` (`homeViewModelProvider`) | `int` (selected tab) | tab switching, `isBusy` |
++
++- Pages are `ConsumerStatefulWidget`s: `ref.watch(...)` for the state, `ref.read(....notifier)` to call
++  actions. State is never edited in place; ViewModels assign a new state with `copyWith`.
++- One-shot messages (`result`) are shown with `ref.listen` and then cleared.
++- `core/di/providers.dart` exposes the get_it services (use cases, picker, workspace, preview
++  factory) as providers. Tests override them with fakes (`test/helpers/viewmodel_fakes.dart`), so
++  the ViewModels are tested without plugins or a device.
++- Keep real state inside the state class, not in Notifier fields: Riverpod 3 creates a new Notifier
++  if its provider ever rebuilds. The only Notifier field is the cancelable handle of a running image
++  job (the provider watches nothing, so it never rebuilds). The carousel controller has its own provider.
++- The frozen web variants (`*_web.dart`) still use flutter_super; nothing else does.
+diff --git a/lib/core/di/providers.dart b/lib/core/di/providers.dart
+new file mode 100644
+index 0000000..8aea883
+--- /dev/null
++++ b/lib/core/di/providers.dart
+@@ -0,0 +1,32 @@
++import 'dart:io';
++
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:petit/common/domain/services/media_picker.dart';
++import 'package:petit/common/domain/services/workspace.dart';
++import 'package:petit/features/images/domain/usecases/compress_images.dart';
++import 'package:petit/features/images/domain/usecases/read_images.dart';
++import 'package:petit/features/videos/domain/usecases/compress_video.dart';
++import 'package:petit/features/videos/presentation/preview/video_preview.dart';
++import 'package:petit/features/videos/presentation/preview/video_preview_factory.dart';
++import 'package:petit/service_locator.dart';
++
++// get_it still wires the platform implementations (see service_locator.dart).
++// These providers hand them to the ViewModels, and let tests replace them
++// with fakes: `ProviderContainer.test(overrides: [mediaPickerProvider.overrideWithValue(fake)])`.
++
++final mediaPickerProvider = Provider<MediaPicker>((ref) => sl<MediaPicker>());
++
++final workspaceProvider = Provider<Workspace>((ref) => sl<Workspace>());
++
++final readImagesUseCaseProvider =
++    Provider<ReadImagesUseCase>((ref) => sl<ReadImagesUseCase>());
++
++final compressImagesUseCaseProvider =
++    Provider<CompressImagesUseCase>((ref) => sl<CompressImagesUseCase>());
++
++final compressVideoUseCaseProvider =
++    Provider<CompressVideoUseCase>((ref) => sl<CompressVideoUseCase>());
++
++/// Creates the preview for a picked video (playback or still frame).
++final videoPreviewFactoryProvider =
++    Provider<VideoPreview Function(File file)>((ref) => createVideoPreview);
+diff --git a/lib/core/utils/format_bytes.dart b/lib/core/utils/format_bytes.dart
+new file mode 100644
+index 0000000..80a2677
+--- /dev/null
++++ b/lib/core/utils/format_bytes.dart
+@@ -0,0 +1,8 @@
++/// Human readable size, e.g. `1.50 MB`. Zero or negative sizes give `0 B`.
++String formatBytes(int bytes, [int decimals = 2]) {
++  if (bytes <= 0) return "0 B";
++  const suffixes = ["B", "KB", "MB", "GB"];
++  final i = (bytes == 0) ? 0 : (bytes.bitLength / 10).floor();
++  final size = bytes / (1 << (10 * i));
++  return '${size.toStringAsFixed(decimals)} ${suffixes[i]}';
++}
+diff --git a/lib/features/home/presentation/pages/home_screen.dart b/lib/features/home/presentation/pages/home_screen.dart
+index e8198cf..79b7a0f 100644
+--- a/lib/features/home/presentation/pages/home_screen.dart
++++ b/lib/features/home/presentation/pages/home_screen.dart
+@@ -2,7 +2,7 @@ import 'dart:io';
+ import 'package:flutter/foundation.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter/services.dart';
+-import 'package:flutter_super/flutter_super.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:in_app_update/in_app_update.dart';
+ import 'package:petit/common/data/summary_report.dart';
+ import 'package:petit/common/widgets/compression_summary_dialog.dart';
+@@ -21,16 +21,20 @@ import '../../../../service_locator.dart';
+ import '../../../images/presentation/pages/images_page.dart';
+ import '../../../images/presentation/widget/intro_carousel_dialog.dart';
+ 
+-class HomeScreen extends StatefulWidget {
++class HomeScreen extends ConsumerStatefulWidget {
+   const HomeScreen({super.key, this.sharedMedia});
+ 
+   final SharedMediaDetails? sharedMedia;
+ 
+   @override
+-  State<HomeScreen> createState() => _HomeScreenState();
++  ConsumerState<HomeScreen> createState() => _HomeScreenState();
+ }
+ 
+-class _HomeScreenState extends State<HomeScreen> {
++class _HomeScreenState extends ConsumerState<HomeScreen> {
++  HomeViewModel get _home => ref.read(homeViewModelProvider.notifier);
++  ImagesViewModel get _images => ref.read(imagesViewModelProvider.notifier);
++  VideosViewModel get _videos => ref.read(videosViewModelProvider.notifier);
++
+   @override
+   void initState() {
+     super.initState();
+@@ -115,13 +119,13 @@ class _HomeScreenState extends State<HomeScreen> {
+     WidgetsBinding.instance.addPostFrameCallback((timeStamp) async {
+ 
+       if (widget.sharedMedia?.type == SharedMediaType.image) {
+-        getImagesViewModel.addSharedImages(widget.sharedMedia?.sharedAttachment);
+-        getHomeViewModel.updateCurrentTabIndex(0);
++        _images.addSharedImages(widget.sharedMedia?.sharedAttachment);
++        _home.updateCurrentTabIndex(0);
+       }
+ 
+       if (widget.sharedMedia?.type == SharedMediaType.video) {
+-        getVideosViewModel.addSharedVideo(widget.sharedMedia?.sharedAttachment);
+-        getHomeViewModel.updateCurrentTabIndex(1);
++        _videos.addSharedVideo(widget.sharedMedia?.sharedAttachment);
++        _home.updateCurrentTabIndex(1);
+       }
+ 
+     });
+@@ -148,60 +152,61 @@ class _HomeScreenState extends State<HomeScreen> {
+         _withModifier(LogicalKeyboardKey.digit2): () => _selectTab(1),
+       };
+ 
+-  int get _tab => getHomeViewModel.currentTabIndex.state;
++  int get _tab => ref.read(homeViewModelProvider);
+ 
+   void _openFiles() {
+-    if (getHomeViewModel.isBusy) return;
++    if (_home.isBusy) return;
+     if (_tab == 0) {
+-      getImagesViewModel.selectImageButtonUseCase();
++      _images.pickImages();
+     } else {
+-      getVideosViewModel.pickVideo();
++      _videos.pickVideo();
+     }
+   }
+ 
+   void _compress() {
+-    if (getHomeViewModel.isBusy) return;
++    if (_home.isBusy) return;
+     if (_tab == 0) {
+-      if (getImagesViewModel.pickedImages.isEmpty) return;
+-      getImagesViewModel.startCompression(onComplete: _showSummary);
++      if (ref.read(imagesViewModelProvider).pickedImages.isEmpty) return;
++      _images.startCompression(onComplete: _showSummary);
+     } else {
+-      if (getVideosViewModel.videoFile.state == null) return;
+-      getVideosViewModel.compressVideo(onComplete: _showSummary);
++      if (ref.read(videosViewModelProvider).videoFile == null) return;
++      _videos.compressVideo(onComplete: _showSummary);
+     }
+   }
+ 
+   void _clear() {
+-    if (getHomeViewModel.isBusy) return;
++    if (_home.isBusy) return;
+     if (_tab == 0) {
+-      getImagesViewModel.cancelCompressingAllImages();
++      _images.clearPickedImages();
+     } else {
+-      getVideosViewModel.removeVideo();
++      _videos.removeVideo();
+     }
+   }
+ 
+   void _cancelRunning() {
+-    if (getImagesViewModel.isBusy && getImagesViewModel.pickedImages.isNotEmpty) {
+-      getImagesViewModel.requestCancel();
+-    } else if (getVideosViewModel.currentTask.state != null) {
+-      getVideosViewModel.cancelCompressingVideo();
++    if (_images.isBusy &&
++        ref.read(imagesViewModelProvider).pickedImages.isNotEmpty) {
++      _images.requestCancel();
++    } else if (ref.read(videosViewModelProvider).currentJob != null) {
++      _videos.cancelCompressingVideo();
+     }
+   }
+ 
+   void _previousImage() {
+-    if (_tab == 0 && !getImagesViewModel.isBusy) {
+-      getImagesViewModel.previousImage();
++    if (_tab == 0 && !_images.isBusy) {
++      _images.previousImage();
+     }
+   }
+ 
+   void _nextImage() {
+-    if (_tab == 0 && !getImagesViewModel.isBusy) {
+-      getImagesViewModel.nextImage();
++    if (_tab == 0 && !_images.isBusy) {
++      _images.nextImage();
+     }
+   }
+ 
+   void _selectTab(int index) {
+-    if (getHomeViewModel.isBusy || _tab == index) return;
+-    getHomeViewModel.updateCurrentTabIndex(index);
++    if (_home.isBusy || _tab == index) return;
++    _home.updateCurrentTabIndex(index);
+   }
+ 
+   void _showSummary(SummaryReport summaryReport) {
+@@ -218,7 +223,7 @@ class _HomeScreenState extends State<HomeScreen> {
+ 
+   Future<void> _handleDroppedFiles(List<String> droppedPaths) async {
+     // Switching tabs clears the other tab's work, so never do it mid-job.
+-    if (getHomeViewModel.isBusy) {
++    if (_home.isBusy) {
+       _snack('Wait for the current job to finish.');
+       return;
+     }
+@@ -231,14 +236,14 @@ class _HomeScreenState extends State<HomeScreen> {
+     }
+ 
+     if (media.images.isNotEmpty) {
+-      await getHomeViewModel.updateCurrentTabIndex(0);
+-      await getImagesViewModel.addImagePaths(media.images);
++      await _home.updateCurrentTabIndex(0);
++      await _images.addImagePaths(media.images);
+       if (media.videos.isNotEmpty) {
+         _snack('Added the images. Drop videos separately.');
+       }
+     } else {
+-      await getHomeViewModel.updateCurrentTabIndex(1);
+-      await getVideosViewModel.addVideoPath(media.videos.first);
++      await _home.updateCurrentTabIndex(1);
++      await _videos.addVideoPath(media.videos.first);
+       if (media.videos.length > 1) {
+         _snack('Only one video can be compressed at a time.');
+       }
+@@ -249,94 +254,90 @@ class _HomeScreenState extends State<HomeScreen> {
+ 
+   @override
+   Widget build(BuildContext context) {
+-    return SuperBuilder(
+-      builder: (context) {
+-        final selectedTab = getHomeViewModel.currentTabIndex.state;
+-
+-        return CallbackShortcuts(
+-          bindings: _shortcuts,
+-          child: Focus(
+-            autofocus: true,
+-            child: DropZone(
+-              onFilesDropped: _handleDroppedFiles,
+-              child: LayoutBuilder(
+-                builder: (context, constraints) {
+-                  // Wide windows get a side rail; narrow ones the bottom bar.
+-                  final useRail = constraints.maxWidth >= kRailMinWidth;
+-
+-                  final pages = IndexedStack(
+-                    index: selectedTab,
+-                    children: const [
+-                      ImagesPage(),
+-                      VideosPage(),
+-                    ],
+-                  );
+-
+-                  return Scaffold(
+-                    appBar: AppBar(
+-                      title: Text(
+-                        "Petit - ${selectedTab == 0 ? "Image" : "Video"} Compressor",
+-                        style: TextStyle(
+-                          fontSize: 20,
+-                          fontWeight: FontWeight.w600,
+-                        ),
+-                      ),
+-                      elevation: 8,
+-                      backgroundColor:
+-                          Theme.of(context).appBarTheme.backgroundColor,
++    final selectedTab = ref.watch(homeViewModelProvider);
++
++    return CallbackShortcuts(
++      bindings: _shortcuts,
++      child: Focus(
++        autofocus: true,
++        child: DropZone(
++          onFilesDropped: _handleDroppedFiles,
++          child: LayoutBuilder(
++            builder: (context, constraints) {
++              // Wide windows get a side rail; narrow ones the bottom bar.
++              final useRail = constraints.maxWidth >= kRailMinWidth;
++
++              final pages = IndexedStack(
++                index: selectedTab,
++                children: const [
++                  ImagesPage(),
++                  VideosPage(),
++                ],
++              );
++
++              return Scaffold(
++                appBar: AppBar(
++                  title: Text(
++                    "Petit - ${selectedTab == 0 ? "Image" : "Video"} Compressor",
++                    style: TextStyle(
++                      fontSize: 20,
++                      fontWeight: FontWeight.w600,
+                     ),
+-                    body: useRail
+-                        ? Row(
+-                            children: [
+-                              NavigationRail(
+-                                selectedIndex: selectedTab,
+-                                onDestinationSelected:
+-                                    getHomeViewModel.updateCurrentTabIndex,
+-                                labelType: NavigationRailLabelType.all,
+-                                destinations: const [
+-                                  NavigationRailDestination(
+-                                    icon: Icon(Icons.image_outlined),
+-                                    selectedIcon: Icon(Icons.image),
+-                                    label: Text('Images'),
+-                                  ),
+-                                  NavigationRailDestination(
+-                                    icon: Icon(Icons.videocam_outlined),
+-                                    selectedIcon: Icon(Icons.videocam),
+-                                    label: Text('Videos'),
+-                                  ),
+-                                ],
+-                              ),
+-                              const VerticalDivider(width: 1),
+-                              Expanded(child: pages),
+-                            ],
+-                          )
+-                        : pages,
+-                    bottomNavigationBar: useRail
+-                        ? null
+-                        : NavigationBar(
++                  ),
++                  elevation: 8,
++                  backgroundColor:
++                      Theme.of(context).appBarTheme.backgroundColor,
++                ),
++                body: useRail
++                    ? Row(
++                        children: [
++                          NavigationRail(
+                             selectedIndex: selectedTab,
+                             onDestinationSelected:
+-                                getHomeViewModel.updateCurrentTabIndex,
++                                _home.updateCurrentTabIndex,
++                            labelType: NavigationRailLabelType.all,
+                             destinations: const [
+-                              NavigationDestination(
++                              NavigationRailDestination(
+                                 icon: Icon(Icons.image_outlined),
+                                 selectedIcon: Icon(Icons.image),
+-                                label: 'Images',
++                                label: Text('Images'),
+                               ),
+-                              NavigationDestination(
++                              NavigationRailDestination(
+                                 icon: Icon(Icons.videocam_outlined),
+                                 selectedIcon: Icon(Icons.videocam),
+-                                label: 'Videos',
++                                label: Text('Videos'),
+                               ),
+                             ],
+                           ),
+-                  );
+-                },
+-              ),
+-            ),
++                          const VerticalDivider(width: 1),
++                          Expanded(child: pages),
++                        ],
++                      )
++                    : pages,
++                bottomNavigationBar: useRail
++                    ? null
++                    : NavigationBar(
++                        selectedIndex: selectedTab,
++                        onDestinationSelected:
++                            _home.updateCurrentTabIndex,
++                        destinations: const [
++                          NavigationDestination(
++                            icon: Icon(Icons.image_outlined),
++                            selectedIcon: Icon(Icons.image),
++                            label: 'Images',
++                          ),
++                          NavigationDestination(
++                            icon: Icon(Icons.videocam_outlined),
++                            selectedIcon: Icon(Icons.videocam),
++                            label: 'Videos',
++                          ),
++                        ],
++                      ),
++              );
++            },
+           ),
+-        );
+-      },
++        ),
++      ),
+     );
+   }
+ }
+diff --git a/lib/features/home/presentation/state/home_viewmodel.dart b/lib/features/home/presentation/state/home_viewmodel.dart
+index 6a636a2..e5b81eb 100644
+--- a/lib/features/home/presentation/state/home_viewmodel.dart
++++ b/lib/features/home/presentation/state/home_viewmodel.dart
+@@ -1,40 +1,30 @@
+-import 'package:flutter_super/flutter_super.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
++import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
+ 
+-import '../../../videos/presentation/state/videos_viewmodel.dart';
+-
+-HomeViewModel get getHomeViewModel => Super.init(HomeViewModel());
+-
+-class HomeViewModel {
+-  final result = RxT<String?>(null);
+-  final isLoading = RxBool(false);
+-  final currentTabIndex = RxInt(0);
++final homeViewModelProvider =
++    NotifierProvider<HomeViewModel, int>(HomeViewModel.new);
+ 
++/// ViewModel of the home screen. Its state is the selected tab (0 = images,
++/// 1 = videos).
++class HomeViewModel extends Notifier<int> {
++  @override
++  int build() => 0;
+ 
+   /// True while either tab is loading or compressing. Switching tabs or adding
+   /// files then would clear the other tab's work, so callers must not.
+-  bool get isBusy => getImagesViewModel.isBusy || getVideosViewModel.isBusy;
+-
+-  void setIsLoading(bool isLoading) {
+-    this.isLoading.state = isLoading;
+-  }
+-
+-  void changeTab(int newTab) {
+-    currentTabIndex.state = newTab;
+-  }
+-
+-  Future<void> showResult(String? result) async {
+-    this.result.state = result;
+-  }
++  bool get isBusy =>
++      ref.read(imagesViewModelProvider).isBusy ||
++      ref.read(videosViewModelProvider).isBusy;
+ 
++  /// Selects a tab. Leaving a tab discards its content.
+   Future<void> updateCurrentTabIndex(int index) async {
+     if (index == 0) {
+-      getVideosViewModel.removeVideo();
++      ref.read(videosViewModelProvider.notifier).removeVideo();
+     }
+     if (index == 1) {
+-      getImagesViewModel.pickedImages.state = [];
++      ref.read(imagesViewModelProvider.notifier).clearPickedImages();
+     }
+-    currentTabIndex.state = index;
++    state = index;
+   }
+-
+ }
+diff --git a/lib/features/images/data/loading_data.dart b/lib/features/images/data/loading_data.dart
+index 41632ad..40fd4d2 100644
+--- a/lib/features/images/data/loading_data.dart
++++ b/lib/features/images/data/loading_data.dart
+@@ -1,29 +1,3 @@
+-import 'package:flutter_super/flutter_super.dart';
+-
+-class LoadingData with SuperModel {
+-  final int? progressCounter;
+-  final int? totalSteps;
+-  final int? completedSteps;
+-  final bool isLoading;
+-
+-  const LoadingData({
+-    this.progressCounter,
+-    this.totalSteps,
+-    this.completedSteps,
+-    required this.isLoading,
+-  });
+-
+-  LoadingData copyWith(
+-      {int? progressCounter, int? totalSteps, int? completedSteps, bool? isLoading}) {
+-    return LoadingData(
+-      progressCounter: progressCounter ?? this.progressCounter,
+-      totalSteps: totalSteps ?? this.totalSteps,
+-      completedSteps: completedSteps ?? this.completedSteps,
+-      isLoading: isLoading ?? this.isLoading,
+-    );
+-  }
+-
+-  @override
+-  List<Object?> get props => [progressCounter, totalSteps, completedSteps, isLoading];
+-
+-}
++// Moved to the presentation layer (it is UI state). Kept so the web variants
++// keep compiling; new code should import it from there.
++export 'package:petit/features/images/presentation/state/loading_data.dart';
+diff --git a/lib/features/images/presentation/pages/images_page.dart b/lib/features/images/presentation/pages/images_page.dart
+index 7573ce8..c4757a9 100644
+--- a/lib/features/images/presentation/pages/images_page.dart
++++ b/lib/features/images/presentation/pages/images_page.dart
+@@ -1,44 +1,31 @@
+ import 'package:carousel_slider/carousel_slider.dart';
+ import 'package:flutter/material.dart';
+-import 'package:flutter_super/flutter_super.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:petit/core/utils/adaptive.dart';
+ import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:petit/core/utils/shortcut_labels.dart';
++import 'package:petit/features/images/presentation/state/images_state.dart';
+ import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+ import 'package:step_progress_indicator/step_progress_indicator.dart';
+ import '../../../../common/widgets/compression_summary_dialog.dart';
+ import '../../../../common/widgets/slider_box.dart';
+ 
+-class ImagesPage extends StatefulWidget {
+-  const ImagesPage({
+-    super.key,
+-    // this.sharedFiles
+-  });
+-
+-  // final List<SharedMediaFile>? sharedFiles;
++class ImagesPage extends ConsumerStatefulWidget {
++  const ImagesPage({super.key});
+ 
+   @override
+-  State<ImagesPage> createState() => _ImagesPageState();
++  ConsumerState<ImagesPage> createState() => _ImagesPageState();
+ }
+ 
+-class _ImagesPageState extends State<ImagesPage> {
++class _ImagesPageState extends ConsumerState<ImagesPage> {
+   // Adjust to actual height of your FAB + margin
+   static const fabHeight = 72.0;
+ 
+-  @override
+-  void initState() {
+-    super.initState();
+-    getImagesViewModel.addSharedImages(
+-        // widget.sharedFiles
+-        );
+-  }
+-
+   /// The image carousel, with previous/next buttons on desktop (dragging with
+   /// a mouse is not obvious there).
+-  Widget _buildCarousel() {
+-    final viewModel = getImagesViewModel;
+-    final count = viewModel.pickedImages.state.length;
+-    final currentIndex = viewModel.currentImageIndex.state ?? 0;
++  Widget _buildCarousel(ImagesState state, ImagesViewModel viewModel) {
++    final count = state.pickedImages.length;
++    final currentIndex = state.currentImageIndex ?? 0;
+     final showArrows = PlatformInfo.isDesktop && count > 1;
+ 
+     // StackFit.expand keeps the carousel's constraints tight, as they were
+@@ -47,7 +34,7 @@ class _ImagesPageState extends State<ImagesPage> {
+       fit: StackFit.expand,
+       children: [
+         CarouselSlider(
+-          items: viewModel.pickedImages.state.map((imageData) {
++          items: state.pickedImages.map((imageData) {
+             return ClipRRect(
+               borderRadius: BorderRadius.circular(12),
+               child: Image.file(
+@@ -78,7 +65,7 @@ class _ImagesPageState extends State<ImagesPage> {
+               ),
+             );
+           }).toList(),
+-          carouselController: viewModel.carouselController,
++          carouselController: ref.read(carouselControllerProvider),
+           options: CarouselOptions(
+               autoPlay: false,
+               enlargeStrategy: CenterPageEnlargeStrategy.zoom,
+@@ -112,7 +99,8 @@ class _ImagesPageState extends State<ImagesPage> {
+             child: Center(
+               child: IconButton.filledTonal(
+                 tooltip: 'Next image (\u2192)',
+-                onPressed: currentIndex < count - 1 ? viewModel.nextImage : null,
++                onPressed:
++                    currentIndex < count - 1 ? viewModel.nextImage : null,
+                 icon: const Icon(Icons.chevron_right),
+               ),
+             ),
+@@ -122,20 +110,26 @@ class _ImagesPageState extends State<ImagesPage> {
+   }
+ 
+   /// "2 of 5" and the quality slider.
+-  List<Widget> _buildControls(BuildContext context) {
++  List<Widget> _buildControls(
++    BuildContext context,
++    ImagesState state,
++    ImagesViewModel viewModel,
++  ) {
++    final currentImage = state.currentImage;
++
+     return [
+       // Current image index
+       Padding(
+         padding: const EdgeInsets.symmetric(vertical: 6),
+         child: Text(
+-          "${(getImagesViewModel.currentImageIndex.state ?? -1) + 1} of ${getImagesViewModel.pickedImages.state.length}",
++          "${(state.currentImageIndex ?? -1) + 1} of ${state.pickedImages.length}",
+           style: const TextStyle(fontSize: 16),
+         ),
+       ),
+ 
+       const SizedBox(height: 10),
+ 
+-      if (getImagesViewModel.currentImage.state != null)
++      if (currentImage != null)
+         buildSliderBox(
+           context: context,
+           label: "Image Quality",
+@@ -147,250 +141,248 @@ class _ImagesPageState extends State<ImagesPage> {
+               "•Middle = same clarity, smaller size\n"
+               "•Recommended = Between 20% - 98%",
+           slider: Slider(
+-            value: ((getImagesViewModel.globalQualitySlider.state ??
+-                        getImagesViewModel.currentImage.state!.quality) /
+-                    100)
++            value: ((state.globalQuality ?? currentImage.quality) / 100)
+                 .clamp(0.0, 1.0),
+             min: 0,
+             max: 1,
+             divisions: 99,
+-            label:
+-                "${(getImagesViewModel.globalQualitySlider.state ?? getImagesViewModel.currentImage.state!.quality).round()}%",
++            label: "${(state.globalQuality ?? currentImage.quality).round()}%",
+             onChanged: (value) {
+-              if (getImagesViewModel.globalQualitySlider.state != null) {
+-                getImagesViewModel.updateGlobalQualitySlider(value);
++              if (state.globalQuality != null) {
++                viewModel.updateGlobalQualitySlider(value);
+               } else {
+-                getImagesViewModel.updateCurrentImageQuality(value);
++                viewModel.updateCurrentImageQuality(value);
+               }
+             },
+           ),
+-          showGlobalSwitch: getImagesViewModel.pickedImages.length > 1,
+-          isGlobal: getImagesViewModel.globalQualitySlider.state != null,
+-          onGlobalToggle: (value) {
+-            getImagesViewModel.globalQualitySlider.state = value ? 50 : null;
+-          },
++          showGlobalSwitch: state.pickedImages.length > 1,
++          isGlobal: state.globalQuality != null,
++          onGlobalToggle: viewModel.setGlobalQualityEnabled,
+         ),
+     ];
+   }
+ 
+-  @override
+-  Widget build(BuildContext context) {
+-    return Scaffold(
+-      body: SuperBuilder(builder: (context) {
+-        if (getImagesViewModel.result.state != null) {
+-          WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
+-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+-              content: Text("${getImagesViewModel.result.state}"),
+-            ));
+-            getImagesViewModel.showResult(null);
+-          });
+-        }
++  Widget _buildBody(
++    BuildContext context,
++    ImagesState state,
++    ImagesViewModel viewModel,
++  ) {
++    final loading = state.loading;
+ 
+-        return Stack(
+-          alignment: Alignment.center,
+-          children: [
+-            getImagesViewModel.pickedImages.isEmpty
+-                ? Text(
+-                    PlatformInfo.isDesktop
+-                        ? "Add images and start compressing\nor drop them anywhere in this window"
+-                        : "Add images and start compressing",
+-                    textAlign: TextAlign.center,
+-                    style: const TextStyle(
+-                      fontSize: 18,
+-                    ),
+-                  )
+-                : Padding(
+-                    padding: const EdgeInsets.fromLTRB(10, 10, 10, 15),
+-                    child: LayoutBuilder(
+-                      builder: (context, constraints) {
+-                        final controls = _buildControls(context);
++    return Stack(
++      alignment: Alignment.center,
++      children: [
++        state.pickedImages.isEmpty
++            ? Text(
++                PlatformInfo.isDesktop
++                    ? "Add images and start compressing\nor drop them anywhere in this window"
++                    : "Add images and start compressing",
++                textAlign: TextAlign.center,
++                style: const TextStyle(
++                  fontSize: 18,
++                ),
++              )
++            : Padding(
++                padding: const EdgeInsets.fromLTRB(10, 10, 10, 15),
++                child: LayoutBuilder(
++                  builder: (context, constraints) {
++                    final controls = _buildControls(context, state, viewModel);
+ 
+-                        // Wide: preview on the left, controls on the right.
+-                        if (constraints.maxWidth >= kTwoPaneMinWidth) {
+-                          return Row(
+-                            children: [
+-                              Expanded(child: _buildCarousel()),
+-                              const SizedBox(width: 24),
+-                              SizedBox(
+-                                width: kControlsPaneWidth,
+-                                child: Center(
+-                                  child: SingleChildScrollView(
+-                                    child: Column(
+-                                      mainAxisSize: MainAxisSize.min,
+-                                      children: [
+-                                        ...controls,
+-                                        // Reserve space for FABs
+-                                        const SizedBox(height: fabHeight),
+-                                      ],
+-                                    ),
+-                                  ),
++                    // Wide: preview on the left, controls on the right.
++                    if (constraints.maxWidth >= kTwoPaneMinWidth) {
++                      return Row(
++                        children: [
++                          Expanded(child: _buildCarousel(state, viewModel)),
++                          const SizedBox(width: 24),
++                          SizedBox(
++                            width: kControlsPaneWidth,
++                            child: Center(
++                              child: SingleChildScrollView(
++                                child: Column(
++                                  mainAxisSize: MainAxisSize.min,
++                                  children: [
++                                    ...controls,
++                                    // Reserve space for FABs
++                                    const SizedBox(height: fabHeight),
++                                  ],
+                                 ),
+                               ),
+-                            ],
+-                          );
+-                        }
+-
+-                        // Narrow: stacked, as on a phone.
+-                        return Column(
+-                          children: [
+-                            Expanded(child: _buildCarousel()),
+-                            const SizedBox(height: 10),
+-                            ...controls,
+-                            // Reserve space for FABs
+-                            const SizedBox(height: fabHeight),
+-                          ],
+-                        );
+-                      },
+-                    ),
+-                  ),
+-            getImagesViewModel.isLoading.state.isLoading
+-                ? Container(
+-                    color: Colors.black.withValues(alpha: 0.85),
+-                  )
+-                : Container(),
+-            getImagesViewModel.isLoading.state.isLoading
+-                ? getImagesViewModel.isLoading.state.totalSteps == null
+-                    ? Column(
+-                        mainAxisAlignment: MainAxisAlignment.center,
+-                        mainAxisSize: MainAxisSize.max,
+-                        children: [
+-                          Text("Loading Please Wait"),
+-                          SizedBox(height: 5),
+-                          CircularProgressIndicator()
++                            ),
++                          ),
+                         ],
+-                      )
+-                    : Container(
+-                        width: 100,
+-                        height: 100,
+-                        alignment: Alignment.center,
+-                        decoration: BoxDecoration(
+-                            color:
+-                                Theme.of(context).colorScheme.primaryContainer,
+-                            borderRadius: BorderRadius.circular(50)),
+-                        child: Text(
+-                          '${getImagesViewModel.isLoading.state.progressCounter}%',
+-                          style: TextStyle(
+-                              fontSize: 30,
+-                              fontWeight: FontWeight.w900,
+-                              color: Theme.of(context).colorScheme.primary),
+-                        ),
+-                      )
+-                : Container(),
+-            (getImagesViewModel.isLoading.state.isLoading &&
+-                    getImagesViewModel.isLoading.state.totalSteps != null)
++                      );
++                    }
++
++                    // Narrow: stacked, as on a phone.
++                    return Column(
++                      children: [
++                        Expanded(child: _buildCarousel(state, viewModel)),
++                        const SizedBox(height: 10),
++                        ...controls,
++                        // Reserve space for FABs
++                        const SizedBox(height: fabHeight),
++                      ],
++                    );
++                  },
++                ),
++              ),
++        loading.isLoading
++            ? Container(
++                color: Colors.black.withValues(alpha: 0.85),
++              )
++            : Container(),
++        loading.isLoading
++            ? loading.totalSteps == null
+                 ? Column(
+                     mainAxisAlignment: MainAxisAlignment.center,
++                    mainAxisSize: MainAxisSize.max,
+                     children: [
+-                      SizedBox(
+-                        height: 40,
+-                      ),
+-                      CircularStepProgressIndicator(
+-                        totalSteps:
+-                            getImagesViewModel.isLoading.state.totalSteps ?? 1,
+-                        stepSize: 20,
+-                        selectedStepSize: 30,
+-                        currentStep:
+-                            getImagesViewModel.isLoading.state.completedSteps ??
+-                                1,
+-                        width: 180,
+-                        height: 180,
+-                        padding: 0.02,
+-                        selectedColor: Theme.of(context).colorScheme.primary,
+-                        unselectedColor:
+-                            Theme.of(context).colorScheme.surfaceContainer,
+-                      ),
+-                      Text(
+-                        "Please keep app open\nwhile compressing",
+-                        textAlign: TextAlign.center,
+-                        style: TextStyle(
+-                            fontSize: 15,
+-                            fontWeight: FontWeight.w700,
+-                            color: Theme.of(context).colorScheme.primary),
+-                      ),
++                      Text("Loading Please Wait"),
++                      SizedBox(height: 5),
++                      CircularProgressIndicator()
+                     ],
+                   )
+-                : Container(),
+-          ],
+-        );
+-      }),
+-      floatingActionButton: SuperBuilder(
+-        builder: (context) {
+-          if (getImagesViewModel.pickedImages.isEmpty) {
+-            return FloatingActionButton(
+-              onPressed: () async =>
+-                  getImagesViewModel.selectImageButtonUseCase(),
+-              tooltip: withShortcut("Add Images", "O"),
+-              child: const Icon(Icons.add_photo_alternate_outlined),
+-            );
+-          } else {
+-            if (getImagesViewModel.isLoading.state.isLoading) {
+-              return FloatingActionButton.extended(
+-                icon: const Icon(Icons.clear),
+-                tooltip: withShortcut("Cancel compression", "Esc",
+-                    withModifier: false),
+-                onPressed: () async => getImagesViewModel.requestCancel(),
+-                label: const Text('Cancel'),
+-              );
+-            } else {
+-              return SingleChildScrollView(
+-                scrollDirection: Axis.horizontal,
+-                child: Padding(
+-                  padding: const EdgeInsets.all(8.0),
+-                  child: Row(
+-                    mainAxisAlignment: MainAxisAlignment.end,
+-                    crossAxisAlignment: CrossAxisAlignment.end,
+-                    children: [
+-                      if (getImagesViewModel.isFabOpen.state) ...[
+-                        FloatingActionButton.extended(
+-                          icon: const Icon(Icons.compress_outlined),
+-                          tooltip: withShortcut("Compress Images", "Enter"),
+-                          onPressed: () async {
+-                            getImagesViewModel.startCompression(
+-                                onComplete: (summaryReport) {
+-                              if (context.mounted) {
+-                                showCompressionSummaryDialog(
+-                                    context: context,
+-                                    summaryReport: summaryReport);
+-                              }
+-                            });
+-                          },
+-                          label: const Text('Compress'),
+-                        ),
+-                        SizedBox(width: 10),
+-                        FloatingActionButton.extended(
+-                          icon: const Icon(Icons.delete_outline),
+-                          tooltip: withShortcut("Remove images", "Del",
+-                              withModifier: false),
+-                          onPressed: () async {
+-                            getImagesViewModel.cancelCompressingAllImages();
+-                          },
+-                          label: const Text('Clear'),
+-                        ),
+-                      ],
+-                      const SizedBox(width: 10),
+-                      FloatingActionButton(
+-                        heroTag: "toggle_fab",
+-                        onPressed: () {
+-                          setState(() {
+-                            getImagesViewModel.isFabOpen.state =
+-                                !getImagesViewModel.isFabOpen.state;
+-                          });
+-                        },
+-                        tooltip: getImagesViewModel.isFabOpen.state
+-                            ? "Close Actions"
+-                            : "Show Actions",
+-                        child: Icon(getImagesViewModel.isFabOpen.state
+-                            ? Icons.close
+-                            : Icons.compress_outlined),
+-                      ),
+-                    ],
++                : Container(
++                    width: 100,
++                    height: 100,
++                    alignment: Alignment.center,
++                    decoration: BoxDecoration(
++                        color: Theme.of(context).colorScheme.primaryContainer,
++                        borderRadius: BorderRadius.circular(50)),
++                    child: Text(
++                      '${loading.progressCounter}%',
++                      style: TextStyle(
++                          fontSize: 30,
++                          fontWeight: FontWeight.w900,
++                          color: Theme.of(context).colorScheme.primary),
++                    ),
++                  )
++            : Container(),
++        (loading.isLoading && loading.totalSteps != null)
++            ? Column(
++                mainAxisAlignment: MainAxisAlignment.center,
++                children: [
++                  SizedBox(
++                    height: 40,
+                   ),
+-                ),
+-              );
+-            }
+-          }
+-        },
++                  CircularStepProgressIndicator(
++                    totalSteps: loading.totalSteps ?? 1,
++                    stepSize: 20,
++                    selectedStepSize: 30,
++                    currentStep: loading.completedSteps ?? 1,
++                    width: 180,
++                    height: 180,
++                    padding: 0.02,
++                    selectedColor: Theme.of(context).colorScheme.primary,
++                    unselectedColor:
++                        Theme.of(context).colorScheme.surfaceContainer,
++                  ),
++                  Text(
++                    "Please keep app open\nwhile compressing",
++                    textAlign: TextAlign.center,
++                    style: TextStyle(
++                        fontSize: 15,
++                        fontWeight: FontWeight.w700,
++                        color: Theme.of(context).colorScheme.primary),
++                  ),
++                ],
++              )
++            : Container(),
++      ],
++    );
++  }
++
++  Widget _buildFab(
++    BuildContext context,
++    ImagesState state,
++    ImagesViewModel viewModel,
++  ) {
++    if (state.pickedImages.isEmpty) {
++      return FloatingActionButton(
++        onPressed: () async => viewModel.pickImages(),
++        tooltip: withShortcut("Add Images", "O"),
++        child: const Icon(Icons.add_photo_alternate_outlined),
++      );
++    }
++
++    if (state.loading.isLoading) {
++      return FloatingActionButton.extended(
++        icon: const Icon(Icons.clear),
++        tooltip: withShortcut("Cancel compression", "Esc", withModifier: false),
++        onPressed: () async => viewModel.requestCancel(),
++        label: const Text('Cancel'),
++      );
++    }
++
++    return SingleChildScrollView(
++      scrollDirection: Axis.horizontal,
++      child: Padding(
++        padding: const EdgeInsets.all(8.0),
++        child: Row(
++          mainAxisAlignment: MainAxisAlignment.end,
++          crossAxisAlignment: CrossAxisAlignment.end,
++          children: [
++            if (state.isFabOpen) ...[
++              FloatingActionButton.extended(
++                icon: const Icon(Icons.compress_outlined),
++                tooltip: withShortcut("Compress Images", "Enter"),
++                onPressed: () async {
++                  viewModel.startCompression(onComplete: (summaryReport) {
++                    if (mounted) {
++                      showCompressionSummaryDialog(
++                          context: context, summaryReport: summaryReport);
++                    }
++                  });
++                },
++                label: const Text('Compress'),
++              ),
++              SizedBox(width: 10),
++              FloatingActionButton.extended(
++                icon: const Icon(Icons.delete_outline),
++                tooltip:
++                    withShortcut("Remove images", "Del", withModifier: false),
++                onPressed: () async {
++                  viewModel.clearPickedImages();
++                },
++                label: const Text('Clear'),
++              ),
++            ],
++            const SizedBox(width: 10),
++            FloatingActionButton(
++              heroTag: "toggle_fab",
++              onPressed: viewModel.toggleFab,
++              tooltip: state.isFabOpen ? "Close Actions" : "Show Actions",
++              child: Icon(
++                  state.isFabOpen ? Icons.close : Icons.compress_outlined),
++            ),
++          ],
++        ),
+       ),
+     );
+   }
++
++  @override
++  Widget build(BuildContext context) {
++    final state = ref.watch(imagesViewModelProvider);
++    final viewModel = ref.read(imagesViewModelProvider.notifier);
++
++    // Show one-shot messages as snackbars, then clear them.
++    ref.listen<String?>(
++      imagesViewModelProvider.select((s) => s.result),
++      (previous, message) {
++        if (message == null) return;
++        WidgetsBinding.instance.addPostFrameCallback((_) {
++          if (!mounted) return;
++          ScaffoldMessenger.of(context)
++              .showSnackBar(SnackBar(content: Text(message)));
++          viewModel.clearResult();
++        });
++      },
++    );
++
++    return Scaffold(
++      body: _buildBody(context, state, viewModel),
++      floatingActionButton: _buildFab(context, state, viewModel),
++    );
++  }
+ }
+diff --git a/lib/features/images/presentation/state/images_state.dart b/lib/features/images/presentation/state/images_state.dart
+new file mode 100644
+index 0000000..d86e402
+--- /dev/null
++++ b/lib/features/images/presentation/state/images_state.dart
+@@ -0,0 +1,59 @@
++import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/presentation/state/loading_data.dart';
++
++const Object _unset = Object();
++
++/// Everything the Images tab shows. Immutable: change it with [copyWith].
++class ImagesState {
++  const ImagesState({
++    this.pickedImages = const [],
++    this.currentImage,
++    this.currentImageIndex,
++    this.globalQuality,
++    this.loading = const LoadingData(isLoading: false),
++    this.result,
++    this.isFabOpen = true,
++  });
++
++  final List<ImageData> pickedImages;
++  final ImageData? currentImage;
++  final int? currentImageIndex;
++
++  /// Quality (0..100) used for every image, or null when each image has its own.
++  final int? globalQuality;
++  final LoadingData loading;
++
++  /// One-shot message for a snackbar; the page clears it once shown.
++  final String? result;
++  final bool isFabOpen;
++
++  /// True while images are being read or compressed.
++  bool get isBusy => loading.isLoading;
++
++  /// Nullable fields can be set to null by passing null explicitly.
++  ImagesState copyWith({
++    List<ImageData>? pickedImages,
++    Object? currentImage = _unset,
++    Object? currentImageIndex = _unset,
++    Object? globalQuality = _unset,
++    LoadingData? loading,
++    Object? result = _unset,
++    bool? isFabOpen,
++  }) {
++    return ImagesState(
++      pickedImages: pickedImages ?? this.pickedImages,
++      currentImage: identical(currentImage, _unset)
++          ? this.currentImage
++          : currentImage as ImageData?,
++      currentImageIndex: identical(currentImageIndex, _unset)
++          ? this.currentImageIndex
++          : currentImageIndex as int?,
++      globalQuality: identical(globalQuality, _unset)
++          ? this.globalQuality
++          : globalQuality as int?,
++      loading: loading ?? this.loading,
++      result: identical(result, _unset) ? this.result : result as String?,
++      isFabOpen: isFabOpen ?? this.isFabOpen,
++    );
++  }
++}
+diff --git a/lib/features/images/presentation/state/images_viewmodel.dart b/lib/features/images/presentation/state/images_viewmodel.dart
+index e6de0f0..3ee4c30 100644
+--- a/lib/features/images/presentation/state/images_viewmodel.dart
++++ b/lib/features/images/presentation/state/images_viewmodel.dart
+@@ -2,79 +2,83 @@ import 'package:async/async.dart';
+ import 'package:carousel_slider/carousel_slider.dart';
+ import 'package:flutter/animation.dart';
+ import 'package:flutter/foundation.dart';
+-import 'package:flutter_super/flutter_super.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:petit/common/data/summary_report.dart';
+ import 'package:petit/common/domain/media_exception.dart';
+-import 'package:petit/common/domain/services/media_picker.dart';
+-import 'package:petit/common/domain/services/workspace.dart';
++import 'package:petit/core/di/providers.dart';
++import 'package:petit/core/utils/format_bytes.dart';
+ import 'package:petit/features/images/domain/entities/image_data.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
+-import 'package:petit/features/images/domain/usecases/read_images.dart';
+-import 'package:petit/service_locator.dart';
+ import 'package:share_handler/share_handler.dart';
+-import '../../data/loading_data.dart';
+-import '../../../../common/data/summary_report.dart';
++import 'images_state.dart';
++import 'loading_data.dart';
+ 
+-ImagesViewModel get getImagesViewModel => Super.init(ImagesViewModel());
++final imagesViewModelProvider =
++    NotifierProvider<ImagesViewModel, ImagesState>(ImagesViewModel.new);
+ 
+-/// UI state for the image tab. Picking, reading, compressing and saving live
+-/// in the domain use cases; this class only holds state and reacts to them.
+-class ImagesViewModel {
+-  final result = RxT<String?>(null);
+-  final isLoading = RxT<LoadingData>(LoadingData(isLoading: false));
+-  final pickedImages = RxList<ImageData>([]);
+-  final currentImage = RxT<ImageData?>(null);
+-  final currentImageIndex = RxT<int?>(null);
+-  final globalQualitySlider = RxT<int?>(null);
+-  final isFabOpen = RxT<bool>(true);
++/// Lives in its own provider so keyboard shortcuts and the page share one
++/// controller without storing it in the ViewModel.
++final carouselControllerProvider =
++    Provider<CarouselSliderController>((ref) => CarouselSliderController());
+ 
++/// ViewModel of the Images tab. Picking, reading, compressing and saving live
++/// in the domain use cases; this class only holds state and reacts to them.
++class ImagesViewModel extends Notifier<ImagesState> {
++  /// Handle of the running batch, replaced for every job. It is never
++  /// rebuilt by Riverpod because [build] watches nothing.
+   CancelableCompleter<void> completer = CancelableCompleter();
+ 
+-  /// Owned here (not by the page) so keyboard shortcuts can move the carousel.
+-  final carouselController = CarouselSliderController();
++  @override
++  ImagesState build() => const ImagesState();
+ 
+   /// True while images are being read or compressed.
+-  bool get isBusy => isLoading.state.isLoading;
+-
+-  // Resolved lazily: `getImagesViewModel` constructs a new instance on every
+-  // access, so nothing may be looked up in the constructor.
+-  late final MediaPicker _picker = sl<MediaPicker>();
+-  late final Workspace _workspace = sl<Workspace>();
+-  late final ReadImagesUseCase _readImages = sl<ReadImagesUseCase>();
+-  late final CompressImagesUseCase _compressImages =
+-      sl<CompressImagesUseCase>();
+-
+-  void setIsLoading(LoadingData loadingData) {
+-    isLoading.state = loadingData;
++  bool get isBusy => state.isBusy;
++
++  void setLoading(LoadingData loading) {
++    state = state.copyWith(loading: loading);
++  }
++
++  void showResult(String? message) {
++    state = state.copyWith(result: message);
+   }
+ 
+-  Future<void> showResult(String? result) async {
+-    this.result.state = result;
++  void clearResult() => showResult(null);
++
++  void toggleFab() {
++    state = state.copyWith(isFabOpen: !state.isFabOpen);
+   }
+ 
+-  Future<void> updateCurrentImageAndIndex(int index) async {
+-    final image = pickedImages.state.elementAt(index);
+-    currentImage.state = image;
+-    currentImageIndex.state = index;
++  void updateCurrentImageAndIndex(int index) {
++    final images = state.pickedImages;
++    if (index < 0 || index >= images.length) return;
++    state = state.copyWith(currentImage: images[index], currentImageIndex: index);
+   }
+ 
+   void updateCurrentImageQuality(double value) {
+-    if (currentImage.state != null) {
+-      final currentImageIndex =
+-          pickedImages.state.indexOf(currentImage.state!, 0);
++    final current = state.currentImage;
++    if (current == null) return;
+ 
+-      final newImageData =
+-          currentImage.state!.copyWith(quality: (value * 100).toInt());
+-      pickedImages.state[currentImageIndex] = newImageData;
+-      currentImage.state = newImageData;
++    final index = state.pickedImages.indexOf(current);
++    if (index < 0) return;
+ 
+-      if (globalQualitySlider.state != null) {
+-        globalQualitySlider.state = null;
+-      }
+-    }
++    final updated = current.copyWith(quality: (value * 100).toInt());
++    final images = List<ImageData>.of(state.pickedImages)..[index] = updated;
++
++    // Editing one image's quality turns the shared quality off.
++    state = state.copyWith(
++      pickedImages: images,
++      currentImage: updated,
++      globalQuality: null,
++    );
+   }
+ 
+   void updateGlobalQualitySlider(double value) {
+-    globalQualitySlider.state = (value * 100).toInt();
++    state = state.copyWith(globalQuality: (value * 100).toInt());
++  }
++
++  /// Switches "same quality for all images" on (at 50) or off.
++  void setGlobalQualityEnabled(bool enabled) {
++    state = state.copyWith(globalQuality: enabled ? 50 : null);
+   }
+ 
+   Future<void> addSharedImages([List<SharedAttachment>? sharedFiles]) async {
+@@ -87,127 +91,131 @@ class ImagesViewModel {
+   /// the app, or dropped onto the window).
+   Future<void> addImagePaths(List<String> paths) async {
+     if (paths.isEmpty) return;
+-    if (isLoading.state.isLoading) return;
++    if (state.isBusy) return;
+ 
+     try {
+-      setIsLoading(
+-        LoadingData(
+-            isLoading: true,
+-            completedSteps: null,
+-            totalSteps: null,
+-            progressCounter: null),
+-      );
++      setLoading(const LoadingData(isLoading: true));
+ 
+-      pickedImages.state = [];
+-      currentImage.state = null;
+-      globalQualitySlider.state = null;
++      state = state.copyWith(
++        pickedImages: const [],
++        currentImage: null,
++        globalQuality: null,
++      );
+ 
+-      final picked = await _readImages(paths);
++      final picked = await ref.read(readImagesUseCaseProvider)(paths);
+ 
+-      pickedImages.state = picked;
+-      currentImage.state = picked[0];
+-      currentImageIndex.state = 0;
+-      setIsLoading(LoadingData(isLoading: false));
++      state = state.copyWith(
++        pickedImages: picked,
++        currentImage: picked[0],
++        currentImageIndex: 0,
++        loading: const LoadingData(isLoading: false),
++      );
+     } catch (e) {
+-      await showResult("An error ocurred - ${e.toString()}");
+-      setIsLoading(LoadingData(isLoading: false));
++      state = state.copyWith(
++        result: "An error ocurred - ${e.toString()}",
++        loading: const LoadingData(isLoading: false),
++      );
+     }
+   }
+ 
+-  Future<void> pickMultipleImages() async {
++  Future<void> pickImages() async {
++    if (state.isBusy) return;
++
+     try {
+-      setIsLoading(
+-        LoadingData(
+-            isLoading: true,
+-            completedSteps: null,
+-            totalSteps: null,
+-            progressCounter: null),
+-      );
++      setLoading(const LoadingData(isLoading: true));
+ 
+-      final paths = await _picker.pickImages();
++      final paths = await ref.read(mediaPickerProvider).pickImages();
+ 
+       if (paths.isNotEmpty) {
+-        pickedImages.state = [];
+-        currentImage.state = null;
+-        globalQualitySlider.state = null;
++        state = state.copyWith(
++          pickedImages: const [],
++          currentImage: null,
++          globalQuality: null,
++        );
+ 
+-        final picked = await _readImages(paths);
++        final picked = await ref.read(readImagesUseCaseProvider)(paths);
+ 
+-        pickedImages.state = picked;
+-        currentImage.state = picked[0];
+-        currentImageIndex.state = 0;
+-        setIsLoading(LoadingData(isLoading: false));
++        state = state.copyWith(
++          pickedImages: picked,
++          currentImage: picked[0],
++          currentImageIndex: 0,
++          loading: const LoadingData(isLoading: false),
++        );
+       } else {
+-        await showResult("No file picked!");
+-        setIsLoading(LoadingData(isLoading: false));
+-        return;
++        state = state.copyWith(
++          result: "No file picked!",
++          loading: const LoadingData(isLoading: false),
++        );
+       }
+     } catch (e) {
+-      await showResult("An error ocurred - ${e.toString()}");
+-      setIsLoading(LoadingData(isLoading: false));
++      state = state.copyWith(
++        result: "An error ocurred - ${e.toString()}",
++        loading: const LoadingData(isLoading: false),
++      );
+     }
+   }
+ 
+   Future<SummaryReport?> compressAllSelectedImages() async {
+-    if (!isLoading.state.isLoading) {
+-      if (pickedImages.isEmpty) {
+-        await showResult("Select images first");
+-        return null;
+-      }
++    if (state.isBusy) return null;
+ 
+-      final totalLength = pickedImages.state.length;
+-
+-      final ImageBatchResult batch;
+-      try {
+-        batch = await _compressImages(
+-          images: List.of(pickedImages.state),
+-          globalQuality: globalQualitySlider.state,
+-          isCancelled: () => completer.isCanceled == true,
+-          onProgress: (progress) => setIsLoading(
+-            LoadingData(
+-                isLoading: true,
+-                completedSteps: progress.completedSteps,
+-                totalSteps: progress.totalSteps,
+-                progressCounter: progress.percent),
+-          ),
+-          onError: showResult,
+-        );
+-      } on MediaException catch (e) {
+-        // e.g. the user closed the folder dialog on desktop.
+-        await showResult(e.message);
+-        return null;
+-      }
++    if (state.pickedImages.isEmpty) {
++      showResult("Select images first");
++      return null;
++    }
+ 
+-      currentImage.state = null;
+-      currentImageIndex.state = 0;
+-      globalQualitySlider.state = null;
++    final totalLength = state.pickedImages.length;
+ 
+-      await _workspace.clear();
++    final ImageBatchResult batch;
++    try {
++      batch = await ref.read(compressImagesUseCaseProvider)(
++        images: List.of(state.pickedImages),
++        globalQuality: state.globalQuality,
++        isCancelled: () => completer.isCanceled,
++        onProgress: (progress) => setLoading(
++          LoadingData(
++              isLoading: true,
++              completedSteps: progress.completedSteps,
++              totalSteps: progress.totalSteps,
++              progressCounter: progress.percent),
++        ),
++        onError: showResult,
++      );
++    } on MediaException catch (e) {
++      // e.g. the user closed the folder dialog on desktop.
++      showResult(e.message);
++      return null;
++    }
+ 
+-      pickedImages.state = [];
++    state = state.copyWith(
++      currentImage: null,
++      currentImageIndex: 0,
++      globalQuality: null,
++    );
+ 
+-      setIsLoading(
+-        LoadingData(
+-            progressCounter: 100,
+-            isLoading: false,
+-            completedSteps: totalLength,
+-            totalSteps: totalLength),
+-      );
++    await ref.read(workspaceProvider).clear();
+ 
+-      return SummaryReport(
+-          originalSizeBytes: formatBytes(batch.originalBytes),
+-          compressedSizeBytes: formatBytes(batch.compressedBytes),
+-          savedBytes: formatBytes(batch.savedBytes),
+-          savedPercent: batch.savedFraction,
+-          path: batch.destinationLabel);
+-    }
+-    return null;
++    state = state.copyWith(
++      pickedImages: const [],
++      loading: LoadingData(
++          progressCounter: 100,
++          isLoading: false,
++          completedSteps: totalLength,
++          totalSteps: totalLength),
++    );
++
++    return SummaryReport(
++        originalSizeBytes: formatBytes(batch.originalBytes),
++        compressedSizeBytes: formatBytes(batch.compressedBytes),
++        savedBytes: formatBytes(batch.savedBytes),
++        savedPercent: batch.savedFraction,
++        path: batch.destinationLabel);
+   }
+ 
+   /// Starts compressing every picked image. [onComplete] receives the summary
+   /// unless the job was cancelled or could not start.
+-  void startCompression({required void Function(SummaryReport summary) onComplete}) {
+-    completer = CancelableCompleter(onCancel: cancelCompressingAllImages);
++  void startCompression(
++      {required void Function(SummaryReport summary) onComplete}) {
++    completer = CancelableCompleter(onCancel: clearPickedImages);
+ 
+     completer.complete(compressAllSelectedImages().then((summaryReport) {
+       if (summaryReport != null) onComplete(summaryReport);
+@@ -226,52 +234,41 @@ class ImagesViewModel {
+     }
+   }
+ 
++  /// Drops the selection (the "Clear" button, tab switches, and a cancelled job).
++  void clearPickedImages() {
++    final totalLength = state.pickedImages.length;
++
++    state = state.copyWith(
++      pickedImages: const [],
++      currentImage: null,
++      currentImageIndex: 0,
++      globalQuality: null,
++      loading: LoadingData(
++          progressCounter: 100,
++          isLoading: false,
++          completedSteps: totalLength,
++          totalSteps: totalLength),
++    );
++  }
++
+   Future<void> previousImage() => _moveCarousel(forward: false);
+ 
+   Future<void> nextImage() => _moveCarousel(forward: true);
+ 
+   Future<void> _moveCarousel({required bool forward}) async {
+-    if (pickedImages.state.length < 2) return;
++    if (state.pickedImages.length < 2) return;
++
++    final controller = ref.read(carouselControllerProvider);
+     const duration = Duration(milliseconds: 250);
+     try {
+       if (forward) {
+-        await carouselController.nextPage(duration: duration, curve: Curves.easeOut);
++        await controller.nextPage(duration: duration, curve: Curves.easeOut);
+       } else {
+-        await carouselController.previousPage(duration: duration, curve: Curves.easeOut);
++        await controller.previousPage(
++            duration: duration, curve: Curves.easeOut);
+       }
+     } catch (e) {
+       debugPrint('Could not move the carousel: $e');
+     }
+   }
+-
+-  String formatBytes(int bytes, [int decimals = 2]) {
+-    if (bytes <= 0) return "0 B";
+-    const suffixes = ["B", "KB", "MB", "GB"];
+-    final i = (bytes == 0) ? 0 : (bytes.bitLength / 10).floor();
+-    final size = bytes / (1 << (10 * i));
+-    return '${size.toStringAsFixed(decimals)} ${suffixes[i]}';
+-  }
+-
+-  Future<void> selectImageButtonUseCase() async {
+-    if (!isLoading.state.isLoading) {
+-      await pickMultipleImages();
+-    }
+-  }
+-
+-  void cancelCompressingAllImages() {
+-    final totalLength = pickedImages.state.length;
+-
+-    currentImage.state = null;
+-    currentImageIndex.state = 0;
+-    globalQualitySlider.state = null;
+-    pickedImages.state = [];
+-
+-    setIsLoading(
+-      LoadingData(
+-          progressCounter: 100,
+-          isLoading: false,
+-          completedSteps: totalLength,
+-          totalSteps: totalLength),
+-    );
+-  }
+ }
+diff --git a/lib/features/images/presentation/state/loading_data.dart b/lib/features/images/presentation/state/loading_data.dart
+new file mode 100644
+index 0000000..3900be7
+--- /dev/null
++++ b/lib/features/images/presentation/state/loading_data.dart
+@@ -0,0 +1,40 @@
++/// Progress of an image job. Plain immutable value class.
++class LoadingData {
++  final int? progressCounter;
++  final int? totalSteps;
++  final int? completedSteps;
++  final bool isLoading;
++
++  const LoadingData({
++    this.progressCounter,
++    this.totalSteps,
++    this.completedSteps,
++    required this.isLoading,
++  });
++
++  LoadingData copyWith(
++      {int? progressCounter,
++      int? totalSteps,
++      int? completedSteps,
++      bool? isLoading}) {
++    return LoadingData(
++      progressCounter: progressCounter ?? this.progressCounter,
++      totalSteps: totalSteps ?? this.totalSteps,
++      completedSteps: completedSteps ?? this.completedSteps,
++      isLoading: isLoading ?? this.isLoading,
++    );
++  }
++
++  @override
++  bool operator ==(Object other) =>
++      identical(this, other) ||
++      other is LoadingData &&
++          other.progressCounter == progressCounter &&
++          other.totalSteps == totalSteps &&
++          other.completedSteps == completedSteps &&
++          other.isLoading == isLoading;
++
++  @override
++  int get hashCode =>
++      Object.hash(progressCounter, totalSteps, completedSteps, isLoading);
++}
+diff --git a/lib/features/videos/presentation/pages/videos_page.dart b/lib/features/videos/presentation/pages/videos_page.dart
+index d69d507..abaae5c 100644
+--- a/lib/features/videos/presentation/pages/videos_page.dart
++++ b/lib/features/videos/presentation/pages/videos_page.dart
+@@ -1,330 +1,323 @@
+ import 'package:flutter/material.dart';
+-import 'package:flutter_super/flutter_super.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:petit/core/utils/adaptive.dart';
+ import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:petit/core/utils/shortcut_labels.dart';
++import 'package:petit/features/videos/presentation/state/video_presets.dart';
++import 'package:petit/features/videos/presentation/state/videos_state.dart';
+ import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
+ import 'package:step_progress_indicator/step_progress_indicator.dart';
+ import '../../../../common/widgets/compression_summary_dialog.dart';
+ import '../../../../common/widgets/slider_box.dart';
+ 
+-
+-class VideosPage extends StatefulWidget {
++class VideosPage extends ConsumerStatefulWidget {
+   const VideosPage({super.key});
+ 
+   @override
+-  State<VideosPage> createState() => _VideosPageState();
++  ConsumerState<VideosPage> createState() => _VideosPageState();
+ }
+ 
+-class _VideosPageState extends State<VideosPage> {
++class _VideosPageState extends ConsumerState<VideosPage> {
+   // Adjust to actual height of your FAB + margin
+   static const fabHeight = 72.0;
+ 
+-  @override
+-  void dispose() {
+-    // getVideosViewModel.videoPreview.state?.dispose();
+-    super.dispose();
+-  }
+-
+   /// The two quality sliders.
+-  Widget _buildSliders(BuildContext context) {
++  Widget _buildSliders(
++    BuildContext context,
++    VideosState state,
++    VideosViewModel viewModel,
++  ) {
+     return Column(
+       mainAxisSize: MainAxisSize.min,
+       children: [
+         buildSliderBox(
+           context: context,
+           label: "Compression Level",
+-          minValue: getVideosViewModel.getLabelForCRFSlider(0),
+-          maxValue: getVideosViewModel.getLabelForCRFSlider(100),
++          minValue: labelForCrfSlider(0),
++          maxValue: labelForCrfSlider(100),
+           tootTipMessage: "Adjusts the compression level.\n"
+-              "•${getVideosViewModel.getLabelForCRFSlider(100)} = smallest size, less clarity\n"
+-              "•${getVideosViewModel.getLabelForCRFSlider(0)} = smaller size, more clarity\n"
+-              "•Recommended = ${getVideosViewModel.getLabelForCRFSlider(80)}",
++              "•${labelForCrfSlider(100)} = smallest size, less clarity\n"
++              "•${labelForCrfSlider(0)} = smaller size, more clarity\n"
++              "•Recommended = ${labelForCrfSlider(80)}",
+           slider: Slider(
+-            value: getVideosViewModel.cfrQualitySlider.state / 100,
++            value: state.crfQuality / 100,
+             min: 0,
+             max: 1,
+             divisions: 4,
+-            label: "${getVideosViewModel.getLabelForCRFSlider(
+-                getVideosViewModel.cfrQualitySlider.state)} Compression",
+-            onChanged: (value) {
+-              getVideosViewModel.updateCfrQualitySlider(value);
+-            },
++            label: "${labelForCrfSlider(state.crfQuality)} Compression",
++            onChanged: viewModel.updateCfrQualitySlider,
+           ),
+         ),
+         const SizedBox(height: 12),
+         buildSliderBox(
+           context: context,
+           label: "Desired File Size",
+-          minValue: getVideosViewModel.ffmpegPresets.first.desc,
+-          maxValue: getVideosViewModel.ffmpegPresets.last.desc,
++          minValue: kFfmpegPresets.first.desc,
++          maxValue: kFfmpegPresets.last.desc,
+           tootTipMessage: //"Choose a desired file size.\n"
+-              "•${getVideosViewModel.ffmpegPresets.first.desc} = For archival\n"
+-              "•${getVideosViewModel.ffmpegPresets[1].desc} = For social media\n"
+-              "•${getVideosViewModel.ffmpegPresets.last.desc} = For quick sharing",
++              "•${kFfmpegPresets.first.desc} = For archival\n"
++              "•${kFfmpegPresets[1].desc} = For social media\n"
++              "•${kFfmpegPresets.last.desc} = For quick sharing",
+           slider: Slider(
+-            value: getVideosViewModel.selectedPresetIndex.state.toDouble(),
++            value: state.presetIndex.toDouble(),
+             min: 0,
+-            max: (getVideosViewModel.ffmpegPresets.length - 1).toDouble(),
+-            divisions: getVideosViewModel.ffmpegPresets.length - 1,
+-            label: getVideosViewModel
+-                .ffmpegPresets[getVideosViewModel.selectedPresetIndex.state]
+-                .desc,
+-            onChanged: (value) {
+-              getVideosViewModel.setPresetIndex(value.toInt());
+-            },
++            max: (kFfmpegPresets.length - 1).toDouble(),
++            divisions: kFfmpegPresets.length - 1,
++            label: kFfmpegPresets[state.presetIndex].desc,
++            onChanged: (value) => viewModel.setPresetIndex(value.toInt()),
+           ),
+         ),
+       ],
+     );
+   }
+ 
+-  @override
+-  Widget build(BuildContext context) {
+-    return Scaffold(
+-      body: SuperBuilder(builder: (context) {
+-        if (getVideosViewModel.result.state != null) {
+-          WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
+-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+-              content: Text("${getVideosViewModel.result.state}"),
+-            ));
+-            getVideosViewModel.showResult(null);
+-          });
+-        }
++  Widget _buildBody(
++    BuildContext context,
++    VideosState state,
++    VideosViewModel viewModel,
++  ) {
++    final preview = state.preview;
+ 
+-        return Stack(
+-          alignment: Alignment.center,
+-          children: [
+-            if (getVideosViewModel.videoPreview.state != null &&
+-                getVideosViewModel.videoPreview.state!.isInitialized)
+-              Padding(
+-                padding: const EdgeInsets.fromLTRB(10, 10, 10, 15),
+-                child: LayoutBuilder(
+-                  builder: (context, constraints) {
+-                    final preview = ClipRRect(
+-                      borderRadius: BorderRadius.circular(12),
+-                      child: AspectRatio(
+-                        aspectRatio:
+-                            getVideosViewModel.videoPreview.state!.aspectRatio,
+-                        child:
+-                            getVideosViewModel.videoPreview.state!.build(context),
+-                      ),
+-                    );
++    return Stack(
++      alignment: Alignment.center,
++      children: [
++        if (preview != null && preview.isInitialized)
++          Padding(
++            padding: const EdgeInsets.fromLTRB(10, 10, 10, 15),
++            child: LayoutBuilder(
++              builder: (context, constraints) {
++                final previewBox = ClipRRect(
++                  borderRadius: BorderRadius.circular(12),
++                  child: AspectRatio(
++                    aspectRatio: preview.aspectRatio,
++                    child: preview.build(context),
++                  ),
++                );
+ 
+-                    // Wide: preview on the left, sliders on the right.
+-                    if (constraints.maxWidth >= kTwoPaneMinWidth) {
+-                      return Row(
+-                        children: [
+-                          Expanded(child: Center(child: preview)),
+-                          const SizedBox(width: 24),
+-                          SizedBox(
+-                            width: kControlsPaneWidth,
+-                            child: Center(
+-                              child: SingleChildScrollView(
+-                                child: Column(
+-                                  mainAxisSize: MainAxisSize.min,
+-                                  children: [
+-                                    _buildSliders(context),
+-                                    // Space for FABs
+-                                    const SizedBox(height: fabHeight),
+-                                  ],
+-                                ),
+-                              ),
++                // Wide: preview on the left, sliders on the right.
++                if (constraints.maxWidth >= kTwoPaneMinWidth) {
++                  return Row(
++                    children: [
++                      Expanded(child: Center(child: previewBox)),
++                      const SizedBox(width: 24),
++                      SizedBox(
++                        width: kControlsPaneWidth,
++                        child: Center(
++                          child: SingleChildScrollView(
++                            child: Column(
++                              mainAxisSize: MainAxisSize.min,
++                              children: [
++                                _buildSliders(context, state, viewModel),
++                                // Space for FABs
++                                const SizedBox(height: fabHeight),
++                              ],
+                             ),
+                           ),
+-                        ],
+-                      );
+-                    }
++                        ),
++                      ),
++                    ],
++                  );
++                }
+ 
+-                    // Narrow: stacked, as on a phone.
+-                    return Column(
+-                      mainAxisAlignment: MainAxisAlignment.center,
+-                      children: [
+-                        Expanded(child: preview),
++                // Narrow: stacked, as on a phone.
++                return Column(
++                  mainAxisAlignment: MainAxisAlignment.center,
++                  children: [
++                    Expanded(child: previewBox),
+ 
+-                        const SizedBox(height: 12),
++                    const SizedBox(height: 12),
+ 
+-                        _buildSliders(context),
++                    _buildSliders(context, state, viewModel),
+ 
+-                        // Space for FABs
+-                        const SizedBox(height: fabHeight),
+-                      ],
+-                    );
+-                  },
+-                ),
++                    // Space for FABs
++                    const SizedBox(height: fabHeight),
++                  ],
++                );
++              },
++            ),
++          )
++        else
++          Text(
++            PlatformInfo.isDesktop
++                ? "Add a video and start compressing\nor drop it anywhere in this window"
++                : "Add a video and start compressing",
++            textAlign: TextAlign.center,
++            style: const TextStyle(
++              fontSize: 18,
++            ),
++          ),
++        (state.isLoading || state.isCompressing)
++            ? Container(
++                color: Colors.black.withValues(alpha: 0.85),
+               )
+-            else
+-              Text(
+-                PlatformInfo.isDesktop
+-                    ? "Add a video and start compressing\nor drop it anywhere in this window"
+-                    : "Add a video and start compressing",
+-                textAlign: TextAlign.center,
+-                style: const TextStyle(
+-                  fontSize: 18,
+-                ),
+-              ),
+-            (getVideosViewModel.isLoading.state ||
+-                    getVideosViewModel.isCompressing.state)
+-                ? Container(
+-                    color: Colors.black.withValues(alpha: 0.85),
+-                  )
+-                : Container(),
+-            (getVideosViewModel.isLoading.state)
+-                ? const CircularProgressIndicator()
+-                : Container(),
+-            (getVideosViewModel.isCompressing.state)
+-                ? Column(
+-                    mainAxisAlignment: MainAxisAlignment.center,
+-                    children: [
+-                      SizedBox(
+-                        height: 40,
+-                      ),
+-                      CircularStepProgressIndicator(
+-                        totalSteps: 100,
+-                        currentStep:
+-                            getVideosViewModel.percentageComplete.state,
+-                        stepSize: 10,
+-                        selectedColor: Theme.of(context).colorScheme.primary,
+-                        unselectedColor:
+-                            Theme.of(context).colorScheme.surfaceContainer,
+-                        padding: 0,
+-                        width: 200,
+-                        height: 200,
+-                        selectedStepSize: 30,
+-                        roundedCap: (_, __) => true,
+-                      ),
+-                      Text(
+-                        "Please keep app open\nwhile compressing",
+-                        textAlign: TextAlign.center,
+-                        style: TextStyle(
+-                            fontSize: 15,
+-                            fontWeight: FontWeight.w700,
+-                            color: Theme.of(context).colorScheme.primary),
+-                      ),
+-                    ],
+-                  )
+-                : Container(),
+-            (getVideosViewModel.isCompressing.state)
+-                ? Text(
+-                    "${getVideosViewModel.percentageComplete.state}%",
++            : Container(),
++        (state.isLoading) ? const CircularProgressIndicator() : Container(),
++        (state.isCompressing)
++            ? Column(
++                mainAxisAlignment: MainAxisAlignment.center,
++                children: [
++                  SizedBox(
++                    height: 40,
++                  ),
++                  CircularStepProgressIndicator(
++                    totalSteps: 100,
++                    currentStep: state.percentComplete,
++                    stepSize: 10,
++                    selectedColor: Theme.of(context).colorScheme.primary,
++                    unselectedColor:
++                        Theme.of(context).colorScheme.surfaceContainer,
++                    padding: 0,
++                    width: 200,
++                    height: 200,
++                    selectedStepSize: 30,
++                    roundedCap: (_, __) => true,
++                  ),
++                  Text(
++                    "Please keep app open\nwhile compressing",
+                     textAlign: TextAlign.center,
+                     style: TextStyle(
+-                        fontSize: 50,
++                        fontSize: 15,
+                         fontWeight: FontWeight.w700,
+                         color: Theme.of(context).colorScheme.primary),
+-                  )
+-                : Container(),
+-          ],
+-        );
+-      }),
+-      floatingActionButton: SuperBuilder(builder: (context) {
+-        if (getVideosViewModel.videoFile.state == null) {
+-          return FloatingActionButton(
+-            onPressed: () async {
+-              await getVideosViewModel.pickVideo();
+-            },
+-            tooltip: withShortcut("Pick video", "O"),
+-            child: const Icon(Icons.video_library),
+-          );
+-        } else {
+-          if (getVideosViewModel.isCompressing.state) {
+-            if (getVideosViewModel.currentTask.state != null) {
+-              return FloatingActionButton.extended(
+-                icon: const Icon(Icons.clear),
+-                tooltip: withShortcut("Cancel compression", "Esc",
+-                    withModifier: false),
+-                onPressed: () async {
+-                  try {
+-                    getVideosViewModel.cancelCompressingVideo();
+-                  } catch (e) {
+-                    debugPrint('Error during cancel: $e');
+-                  }
+-                },
+-                label: const Text('Cancel'),
+-              );
+-            } else {
+-              return Container();
++                  ),
++                ],
++              )
++            : Container(),
++        (state.isCompressing)
++            ? Text(
++                "${state.percentComplete}%",
++                textAlign: TextAlign.center,
++                style: TextStyle(
++                    fontSize: 50,
++                    fontWeight: FontWeight.w700,
++                    color: Theme.of(context).colorScheme.primary),
++              )
++            : Container(),
++      ],
++    );
++  }
++
++  Widget _buildFab(
++    BuildContext context,
++    VideosState state,
++    VideosViewModel viewModel,
++  ) {
++    if (state.videoFile == null) {
++      return FloatingActionButton(
++        onPressed: () async {
++          await viewModel.pickVideo();
++        },
++        tooltip: withShortcut("Pick video", "O"),
++        child: const Icon(Icons.video_library),
++      );
++    }
++
++    if (state.isCompressing) {
++      if (state.currentJob != null) {
++        return FloatingActionButton.extended(
++          icon: const Icon(Icons.clear),
++          tooltip:
++              withShortcut("Cancel compression", "Esc", withModifier: false),
++          onPressed: () async {
++            try {
++              viewModel.cancelCompressingVideo();
++            } catch (e) {
++              debugPrint('Error during cancel: $e');
+             }
+-          } else {
+-            return SingleChildScrollView(
+-              scrollDirection: Axis.horizontal,
+-              child: Padding(
+-                padding: const EdgeInsets.all(8.0),
+-                child: Row(
+-                  mainAxisAlignment: MainAxisAlignment.end,
+-                  crossAxisAlignment: CrossAxisAlignment.end,
+-                  children: [
+-                    if (getVideosViewModel.isFabOpen.state) ...[
+-                      SizedBox(width: 30),
+-                      getVideosViewModel.videoPreview.state != null &&
+-                              getVideosViewModel
+-                                  .videoPreview.state!.isInitialized &&
+-                              getVideosViewModel.videoPreview.state!.canPlay
+-                          ? FloatingActionButton(
+-                              onPressed: () {
+-                                setState(() {
+-                                  getVideosViewModel.videoPreview.state!
+-                                      .togglePlayback();
+-                                });
+-                              },
+-                              child: Icon(
+-                                getVideosViewModel
+-                                        .videoPreview.state!.isPlaying
+-                                    ? Icons.pause
+-                                    : Icons.play_arrow,
+-                              ),
+-                            )
+-                          : Container(),
+-                      SizedBox(width: 10),
+-                      FloatingActionButton.extended(
+-                        icon: const Icon(Icons.delete_outline),
+-                        tooltip: withShortcut("Remove video", "Del",
+-                            withModifier: false),
+-                        onPressed: () async {
+-                          getVideosViewModel.removeVideo();
+-                        },
+-                        label: const Text('Remove video'),
+-                      ),
+-                      SizedBox(width: 10),
+-                      FloatingActionButton.extended(
+-                        icon: const Icon(Icons.compress_outlined),
+-                        tooltip: withShortcut("Compress Video", "Enter"),
+-                        onPressed: () async {
+-                          await getVideosViewModel.compressVideo(
+-                              onComplete: (summaryReport) {
+-                            if (mounted) {
+-                              showCompressionSummaryDialog(
+-                                  context: context,
+-                                  summaryReport: summaryReport);
+-                            }
+-                          });
+-                        },
+-                        label: const Text('Compress'),
+-                      ),
+-                    ],
+-                    const SizedBox(width: 10),
+-                    FloatingActionButton(
+-                      heroTag: "toggle_fab",
++          },
++          label: const Text('Cancel'),
++        );
++      }
++      return Container();
++    }
++
++    final preview = state.preview;
++    final canPlay = preview != null && preview.isInitialized && preview.canPlay;
++
++    return SingleChildScrollView(
++      scrollDirection: Axis.horizontal,
++      child: Padding(
++        padding: const EdgeInsets.all(8.0),
++        child: Row(
++          mainAxisAlignment: MainAxisAlignment.end,
++          crossAxisAlignment: CrossAxisAlignment.end,
++          children: [
++            if (state.isFabOpen) ...[
++              SizedBox(width: 30),
++              canPlay
++                  ? FloatingActionButton(
+                       onPressed: () {
++                        // Playing is not part of the ViewModel state.
+                         setState(() {
+-                          getVideosViewModel.isFabOpen.state =
+-                              !getVideosViewModel.isFabOpen.state;
++                          preview.togglePlayback();
+                         });
+                       },
+-                      tooltip: getVideosViewModel.isFabOpen.state
+-                          ? "Close Actions"
+-                          : "Show Actions",
+-                      child: Icon(getVideosViewModel.isFabOpen.state
+-                          ? Icons.close
+-                          : Icons.compress_outlined),
+-                    ),
+-                  ],
+-                ),
++                      child: Icon(
++                        preview.isPlaying ? Icons.pause : Icons.play_arrow,
++                      ),
++                    )
++                  : Container(),
++              SizedBox(width: 10),
++              FloatingActionButton.extended(
++                icon: const Icon(Icons.delete_outline),
++                tooltip:
++                    withShortcut("Remove video", "Del", withModifier: false),
++                onPressed: () async {
++                  viewModel.removeVideo();
++                },
++                label: const Text('Remove video'),
++              ),
++              SizedBox(width: 10),
++              FloatingActionButton.extended(
++                icon: const Icon(Icons.compress_outlined),
++                tooltip: withShortcut("Compress Video", "Enter"),
++                onPressed: () async {
++                  await viewModel.compressVideo(onComplete: (summaryReport) {
++                    if (mounted) {
++                      showCompressionSummaryDialog(
++                          context: context, summaryReport: summaryReport);
++                    }
++                  });
++                },
++                label: const Text('Compress'),
+               ),
+-            );
+-          }
+-        }
+-      }),
++            ],
++            const SizedBox(width: 10),
++            FloatingActionButton(
++              heroTag: "toggle_fab",
++              onPressed: viewModel.toggleFab,
++              tooltip: state.isFabOpen ? "Close Actions" : "Show Actions",
++              child: Icon(
++                  state.isFabOpen ? Icons.close : Icons.compress_outlined),
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final state = ref.watch(videosViewModelProvider);
++    final viewModel = ref.read(videosViewModelProvider.notifier);
++
++    // Show one-shot messages as snackbars, then clear them.
++    ref.listen<String?>(
++      videosViewModelProvider.select((s) => s.result),
++      (previous, message) {
++        if (message == null) return;
++        WidgetsBinding.instance.addPostFrameCallback((_) {
++          if (!mounted) return;
++          ScaffoldMessenger.of(context)
++              .showSnackBar(SnackBar(content: Text(message)));
++          viewModel.clearResult();
++        });
++      },
++    );
++
++    return Scaffold(
++      body: _buildBody(context, state, viewModel),
++      floatingActionButton: _buildFab(context, state, viewModel),
+     );
+   }
+ }
+diff --git a/lib/features/videos/presentation/state/video_presets.dart b/lib/features/videos/presentation/state/video_presets.dart
+new file mode 100644
+index 0000000..4efc365
+--- /dev/null
++++ b/lib/features/videos/presentation/state/video_presets.dart
+@@ -0,0 +1,23 @@
++import 'package:petit/features/videos/data/slider_value.dart';
++
++/// FFmpeg presets offered by the "Desired File Size" slider.
++final List<SliderValue> kFfmpegPresets = [
++  // SliderValue(value: "ultrafast", desc: "ultrafast"),
++  // SliderValue(value: "superfast", desc: "superfast"),
++  // SliderValue(value: "veryfast", desc: "veryfast"),
++  // SliderValue(value: "faster", desc: "faster"),
++  SliderValue(value: "fast", desc: "Best Quality"),
++  SliderValue(value: "medium", desc: "Balanced File"), // good default
++  SliderValue(value: "slow", desc: "Smallest File"),
++  // SliderValue(value: "slower", desc: "slower"),
++  // SliderValue(value: "veryslow", desc: "veryslow"),
++];
++
++/// Label for a 0..100 value of the "Compression Level" slider.
++String labelForCrfSlider(int value) {
++  if (value <= 20) return "Minimal";
++  if (value <= 40) return "Very Light";
++  if (value <= 60) return "Light";
++  if (value <= 80) return "Moderate";
++  return "Heavy";
++}
+diff --git a/lib/features/videos/presentation/state/videos_state.dart b/lib/features/videos/presentation/state/videos_state.dart
+new file mode 100644
+index 0000000..579f03c
+--- /dev/null
++++ b/lib/features/videos/presentation/state/videos_state.dart
+@@ -0,0 +1,74 @@
++import 'dart:io';
++
++import 'package:petit/features/videos/domain/usecases/compress_video.dart';
++import 'package:petit/features/videos/presentation/preview/video_preview.dart';
++
++const Object _unset = Object();
++
++/// Everything the Videos tab shows. Immutable: change it with [copyWith].
++class VideosState {
++  const VideosState({
++    this.result,
++    this.isLoading = false,
++    this.videoFile,
++    this.preview,
++    this.isCompressing = false,
++    this.crfQuality = 80,
++    this.percentComplete = 0,
++    this.presetIndex = 1,
++    this.isFabOpen = true,
++    this.currentJob,
++  });
++
++  /// One-shot message for a snackbar; the page clears it once shown.
++  final String? result;
++  final bool isLoading;
++  final File? videoFile;
++  final VideoPreview? preview;
++  final bool isCompressing;
++
++  /// "Compression Level" slider, 0..100.
++  final int crfQuality;
++  final int percentComplete;
++
++  /// Index into the FFmpeg presets ("Desired File Size" slider).
++  final int presetIndex;
++  final bool isFabOpen;
++
++  /// The running compression, if any.
++  final VideoCompressionJob? currentJob;
++
++  /// True while a video is being loaded or compressed.
++  bool get isBusy => isLoading || isCompressing;
++
++  /// Nullable fields can be set to null by passing null explicitly.
++  VideosState copyWith({
++    Object? result = _unset,
++    bool? isLoading,
++    Object? videoFile = _unset,
++    Object? preview = _unset,
++    bool? isCompressing,
++    int? crfQuality,
++    int? percentComplete,
++    int? presetIndex,
++    bool? isFabOpen,
++    Object? currentJob = _unset,
++  }) {
++    return VideosState(
++      result: identical(result, _unset) ? this.result : result as String?,
++      isLoading: isLoading ?? this.isLoading,
++      videoFile:
++          identical(videoFile, _unset) ? this.videoFile : videoFile as File?,
++      preview:
++          identical(preview, _unset) ? this.preview : preview as VideoPreview?,
++      isCompressing: isCompressing ?? this.isCompressing,
++      crfQuality: crfQuality ?? this.crfQuality,
++      percentComplete: percentComplete ?? this.percentComplete,
++      presetIndex: presetIndex ?? this.presetIndex,
++      isFabOpen: isFabOpen ?? this.isFabOpen,
++      currentJob: identical(currentJob, _unset)
++          ? this.currentJob
++          : currentJob as VideoCompressionJob?,
++    );
++  }
++}
+diff --git a/lib/features/videos/presentation/state/videos_viewmodel.dart b/lib/features/videos/presentation/state/videos_viewmodel.dart
+index e40807e..d302304 100644
+--- a/lib/features/videos/presentation/state/videos_viewmodel.dart
++++ b/lib/features/videos/presentation/state/videos_viewmodel.dart
+@@ -2,109 +2,61 @@ import 'dart:async';
+ import 'dart:io';
+ 
+ import 'package:flutter/foundation.dart';
+-import 'package:flutter_super/flutter_super.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:petit/common/data/summary_report.dart';
+ import 'package:petit/common/domain/media_exception.dart';
+-import 'package:petit/common/domain/services/media_picker.dart';
+-import 'package:petit/common/domain/services/workspace.dart';
+-import 'package:petit/features/videos/data/slider_value.dart';
++import 'package:petit/core/di/providers.dart';
++import 'package:petit/core/utils/format_bytes.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+-import 'package:petit/features/videos/presentation/preview/video_preview.dart';
+-import 'package:petit/features/videos/presentation/preview/video_preview_factory.dart';
+-import 'package:petit/service_locator.dart';
+ import 'package:share_handler/share_handler.dart';
++import 'video_presets.dart';
++import 'videos_state.dart';
+ 
+-VideosViewModel get getVideosViewModel => Super.init(VideosViewModel());
+-
+-/// UI state for the video tab. Probing, compressing and saving live in
+-/// [CompressVideoUseCase]; this class only holds state and reacts to it.
+-class VideosViewModel {
+-  final result = RxT<String?>(null);
+-  final isLoading = RxBool(false);
+-  final videoFile = RxT<File?>(null);
+-  final videoPreview = RxT<VideoPreview?>(null);
+-  final isCompressing = RxBool(false);
+-  final cfrQualitySlider = RxInt(80);
+-  final percentageComplete = RxInt(0);
+-  final selectedPresetIndex = RxInt(1);
+-  final isFabOpen = RxT<bool>(true);
+-  final currentTask = RxT<VideoCompressionJob?>(null);
+-
+-  // Resolved lazily: `getVideosViewModel` constructs a new instance on every
+-  // access, so nothing may be looked up in the constructor.
+-  late final MediaPicker _picker = sl<MediaPicker>();
+-  late final Workspace _workspace = sl<Workspace>();
+-  late final CompressVideoUseCase _compressVideo = sl<CompressVideoUseCase>();
++final videosViewModelProvider =
++    NotifierProvider<VideosViewModel, VideosState>(VideosViewModel.new);
++
++/// ViewModel of the Videos tab. Probing, compressing and saving live in
++/// `CompressVideoUseCase`; this class only holds state and reacts to it.
++class VideosViewModel extends Notifier<VideosState> {
++  @override
++  VideosState build() => const VideosState();
+ 
+   /// True while a video is being loaded or compressed.
+-  bool get isBusy => isLoading.state || isCompressing.state;
+-
+-  List<SliderValue> ffmpegPresets = [
+-    // SliderValue(value: "ultrafast", desc: "ultrafast"),
+-    // SliderValue(value: "superfast", desc: "superfast"),
+-    // SliderValue(value: "veryfast", desc: "veryfast"),
+-    // SliderValue(value: "faster", desc: "faster"),
+-    SliderValue(value: "fast", desc: "Best Quality"),
+-    SliderValue(value: "medium", desc: "Balanced File"), // 🟢 good default
+-    SliderValue(value: "slow", desc: "Smallest File"),
+-    // SliderValue(value: "slower", desc: "slower"),
+-    // SliderValue(value: "veryslow", desc: "veryslow"),
+-  ];
+-
+-  String getLabelForCRFSlider(int value) {
+-    if (value <= 20) return "Minimal";
+-    if (value <= 40) return "Very Light";
+-    if (value <= 60) return "Light";
+-    if (value <= 80) return "Moderate";
+-    return "Heavy";
+-  }
++  bool get isBusy => state.isBusy;
+ 
+-  void setIsLoading(bool isLoading) {
+-    this.isLoading.state = isLoading;
++  void showResult(String? message) {
++    state = state.copyWith(result: message);
+   }
+ 
+-  void setIsCompressing(bool isCompressing) {
+-    this.isCompressing.state = isCompressing;
+-  }
++  void clearResult() => showResult(null);
+ 
+-  void setPercentageComplete(int value) {
+-    percentageComplete.state = value;
++  void toggleFab() {
++    state = state.copyWith(isFabOpen: !state.isFabOpen);
+   }
+ 
+   void setPresetIndex(int index) {
+-    selectedPresetIndex.state = index;
+-  }
+-
+-  Future<void> showResult(String? result) async {
+-    this.result.state = result;
++    state = state.copyWith(presetIndex: index);
+   }
+ 
+   void updateCfrQualitySlider(double value) {
+-    cfrQualitySlider.state = (value * 100).toInt();
++    state = state.copyWith(crfQuality: (value * 100).toInt());
+   }
+ 
+   Future<void> pickVideo() async {
+-    if (isCompressing.state) return;
++    if (state.isCompressing) return;
+     try {
+-      setIsLoading(true);
++      state = state.copyWith(isLoading: true);
+ 
+-      final path = await _picker.pickVideo();
++      final path = await ref.read(mediaPickerProvider).pickVideo();
+ 
+       if (path != null) {
+-        final file = File(path);
+-        final preview = createVideoPreview(file);
+-        videoPreview.state = preview;
+-        await preview.initialize();
+-        videoFile.state = file;
+-
+-        setIsLoading(false);
++        await _loadVideo(path);
+       } else {
+-        await showResult("No file picked!");
+-        setIsLoading(false);
++        state = state.copyWith(result: "No file picked!", isLoading: false);
+       }
+     } catch (e) {
+-      await showResult("An error occurred - ${e.toString()}");
+-      setIsLoading(false);
++      state = state.copyWith(
++          result: "An error occurred - ${e.toString()}", isLoading: false);
+     }
+   }
+ 
+@@ -117,71 +69,76 @@ class VideosViewModel {
+   /// Loads the video at [path] (shared into the app, or dropped onto the
+   /// window), replacing the current one.
+   Future<void> addVideoPath(String path) async {
+-    if (isCompressing.state) return;
++    if (state.isCompressing) return;
+     try {
+-      setIsLoading(true);
+-
+-      final file = File(path);
+-      final preview = createVideoPreview(file);
+-      videoPreview.state = preview;
+-      await preview.initialize();
+-      videoFile.state = file;
+-
+-      setIsLoading(false);
++      state = state.copyWith(isLoading: true);
++      await _loadVideo(path);
+     } catch (e) {
+-      await showResult("An error occurred - ${e.toString()}");
+-      setIsLoading(false);
++      state = state.copyWith(
++          result: "An error occurred - ${e.toString()}", isLoading: false);
+     }
+   }
+ 
+-  /// Starts compressing the selected video. Returns immediately; the summary
+-  /// is delivered through [onComplete] when compression finishes.
+-  Future<SummaryReport?> compressVideo({
+-    required Function(SummaryReport summaryReport) onComplete,
++  Future<void> _loadVideo(String path) async {
++    final file = File(path);
++    final preview = ref.read(videoPreviewFactoryProvider)(file);
++
++    // The preview is shown only once it reports isInitialized.
++    state = state.copyWith(preview: preview);
++    await preview.initialize();
++
++    state = state.copyWith(videoFile: file, isLoading: false);
++  }
++
++  /// Starts compressing the selected video. Returns once the job has started;
++  /// the summary is delivered through [onComplete] when it finishes.
++  Future<void> compressVideo({
++    required void Function(SummaryReport summaryReport) onComplete,
+   }) async {
+     try {
+-      currentTask.state?.cancel();
+-      currentTask.state = null;
+-      if (videoFile.state == null) return null;
+-      final originalFile = videoFile.state!;
+-      setIsCompressing(true);
+-      percentageComplete.state = 0;
+-
+-      final job = await _compressVideo(
++      state.currentJob?.cancel();
++      state = state.copyWith(currentJob: null);
++
++      final originalFile = state.videoFile;
++      if (originalFile == null) return;
++
++      state = state.copyWith(isCompressing: true, percentComplete: 0);
++
++      final job = await ref.read(compressVideoUseCaseProvider)(
+         input: originalFile,
+-        qualityPercent: cfrQualitySlider.state,
+-        preset: ffmpegPresets[selectedPresetIndex.state].value,
+-        totalDurationMs: videoPreview.state?.duration.inMilliseconds,
+-        onProgress: (percent) => percentageComplete.state = percent,
++        qualityPercent: state.crfQuality,
++        preset: kFfmpegPresets[state.presetIndex].value,
++        totalDurationMs: state.preview?.duration.inMilliseconds,
++        onProgress: (percent) =>
++            state = state.copyWith(percentComplete: percent),
+         onError: showResult,
+       );
+ 
+-      currentTask.state = job;
++      state = state.copyWith(currentJob: job);
+       unawaited(_awaitOutcome(job, onComplete));
+     } on MediaException catch (e) {
+-      await showResult(e.message);
+-      setIsCompressing(false);
++      state = state.copyWith(result: e.message, isCompressing: false);
+     } catch (e) {
+-      await showResult('Error compressing video: $e');
+-      setIsCompressing(false);
+-      setIsLoading(false);
++      state = state.copyWith(
++        result: 'Error compressing video: $e',
++        isCompressing: false,
++        isLoading: false,
++      );
+     }
+-    return null; // the summary is delivered through onComplete
+   }
+ 
+   Future<void> _awaitOutcome(
+     VideoCompressionJob job,
+-    Function(SummaryReport summaryReport) onComplete,
++    void Function(SummaryReport summaryReport) onComplete,
+   ) async {
+     try {
+       final outcome = await job.outcome;
+ 
+-      if (identical(currentTask.state, job)) currentTask.state = null;
++      _forgetJob(job);
+       removeVideo();
+-      await _workspace.clear();
++      await ref.read(workspaceProvider).clear();
+ 
+-      setIsCompressing(false);
+-      setIsLoading(false);
++      state = state.copyWith(isCompressing: false, isLoading: false);
+ 
+       onComplete(SummaryReport(
+         originalSizeBytes: formatBytes(outcome.originalBytes),
+@@ -191,44 +148,44 @@ class VideosViewModel {
+         path: outcome.destinationLabel,
+       ));
+     } on MediaException catch (e) {
+-      if (identical(currentTask.state, job)) currentTask.state = null;
+-      await showResult(e.message);
+-      setIsCompressing(false);
+-      setIsLoading(false);
++      _forgetJob(job);
++      state = state.copyWith(
++          result: e.message, isCompressing: false, isLoading: false);
+     } catch (e) {
+-      if (identical(currentTask.state, job)) currentTask.state = null;
+-      await showResult('Error compressing video: $e');
+-      setIsCompressing(false);
+-      setIsLoading(false);
++      _forgetJob(job);
++      state = state.copyWith(
++          result: 'Error compressing video: $e',
++          isCompressing: false,
++          isLoading: false);
+     }
+   }
+ 
+-  String formatBytes(int bytes, [int decimals = 2]) {
+-    if (bytes <= 0) return "0 B";
+-    const suffixes = ["B", "KB", "MB", "GB"];
+-    final i = (bytes == 0) ? 0 : (bytes.bitLength / 10).floor();
+-    final size = bytes / (1 << (10 * i));
+-    return '${size.toStringAsFixed(decimals)} ${suffixes[i]}';
++  void _forgetJob(VideoCompressionJob job) {
++    if (identical(state.currentJob, job)) {
++      state = state.copyWith(currentJob: null);
++    }
+   }
+ 
++  /// Drops the selected video and resets the compression state.
+   void removeVideo() {
+-    videoPreview.state?.dispose();
+-    videoPreview.state = null;
+-    videoFile.state = null;
+-    isCompressing.state = false;
+-    isLoading.state = false;
+-    percentageComplete.state = 0;
++    state.preview?.dispose();
++    state = state.copyWith(
++      preview: null,
++      videoFile: null,
++      isCompressing: false,
++      isLoading: false,
++      percentComplete: 0,
++    );
+   }
+ 
+   void cancelCompressingVideo() {
+-    final task = currentTask.state;
+-    if (task != null) {
+-      unawaited(task.cancel());
+-      currentTask.state = null;
+-      setIsCompressing(false);
+-      setIsLoading(false);
++    final job = state.currentJob;
++    if (job != null) {
++      unawaited(job.cancel());
++      state = state.copyWith(
++          currentJob: null, isCompressing: false, isLoading: false);
+     } else {
+-      debugPrint("⚠️ Tried to cancel but there was no running task");
++      debugPrint("Tried to cancel but there was no running task");
+     }
+   }
+ }
+diff --git a/lib/main.dart b/lib/main.dart
+index 0c5fba8..2fd046b 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -6,6 +6,7 @@ import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+ import 'package:firebase_analytics/firebase_analytics.dart';
+ import 'package:flutter/foundation.dart';
+ import 'package:flutter/material.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:flutter_super/flutter_super.dart';
+ import 'package:dynamic_color/dynamic_color.dart';
+ import 'package:petit/common/data/shared_media_details.dart';
+@@ -37,7 +38,12 @@ Future<void> main() async {
+     }
+   }
+ 
+-  runApp(const SuperApp(child: MyApp()));
++  // flutter_super is only still used by the frozen web variants.
++  runApp(
++    ProviderScope(
++      child: kIsWeb ? const SuperApp(child: MyApp()) : const MyApp(),
++    ),
++  );
+ }
+ 
+ /// Firebase is not configured for Linux, and Crashlytics has no Windows or
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 9d3de07..d4f8d40 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -28,7 +28,10 @@ dependencies:
+   #Service locator
+   get_it: ^9.2.0
+ 
+-  #State management
++  #State management (Riverpod: the ViewModels are Notifiers)
++  flutter_riverpod: ^3.3.2
++
++  #State management of the frozen web variants only
+   flutter_super: ^1.4.10
+ 
+   #Image carousel slider
+diff --git a/test/format_bytes_test.dart b/test/format_bytes_test.dart
+new file mode 100644
+index 0000000..6ef791c
+--- /dev/null
++++ b/test/format_bytes_test.dart
+@@ -0,0 +1,22 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/core/utils/format_bytes.dart';
++
++void main() {
++  test('zero and negative sizes', () {
++    expect(formatBytes(0), '0 B');
++    expect(formatBytes(-5), '0 B');
++  });
++
++  test('picks the unit from the size', () {
++    expect(formatBytes(500), '500.00 B');
++    expect(formatBytes(1024), '1.00 KB');
++    expect(formatBytes(1536), '1.50 KB');
++    expect(formatBytes(1048576), '1.00 MB');
++    expect(formatBytes(1073741824), '1.00 GB');
++  });
++
++  test('decimals can be changed', () {
++    expect(formatBytes(1536, 0), '2 KB');
++    expect(formatBytes(1536, 1), '1.5 KB');
++  });
++}
+diff --git a/test/helpers/viewmodel_fakes.dart b/test/helpers/viewmodel_fakes.dart
+new file mode 100644
+index 0000000..0fe4cd0
+--- /dev/null
++++ b/test/helpers/viewmodel_fakes.dart
+@@ -0,0 +1,209 @@
++import 'dart:async';
++import 'dart:io';
++
++import 'package:flutter/widgets.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/common/domain/services/media_picker.dart';
++import 'package:petit/common/domain/services/media_saver.dart';
++import 'package:petit/common/domain/services/workspace.dart';
++import 'package:petit/core/di/providers.dart';
++import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/entities/image_size.dart';
++import 'package:petit/features/images/domain/services/image_compressor.dart';
++import 'package:petit/features/images/domain/usecases/compress_images.dart';
++import 'package:petit/features/images/domain/usecases/read_images.dart';
++import 'package:petit/features/videos/domain/entities/video_data.dart';
++import 'package:petit/features/videos/domain/services/video_compressor.dart';
++import 'package:petit/features/videos/domain/usecases/compress_video.dart';
++import 'package:petit/features/videos/presentation/preview/video_preview.dart';
++
++/// Picker that returns what the test sets. Set [gate] to hold a pick open.
++class FakePicker implements MediaPicker {
++  List<String> images = [];
++  String? video;
++  Completer<void>? gate;
++  int imageCalls = 0;
++
++  @override
++  Future<List<String>> pickImages() async {
++    imageCalls++;
++    if (gate != null) await gate!.future;
++    return images;
++  }
++
++  @override
++  Future<String?> pickVideo() async {
++    if (gate != null) await gate!.future;
++    return video;
++  }
++}
++
++class FakeWorkspace implements Workspace {
++  int clears = 0;
++
++  @override
++  Future<void> clear() async => clears++;
++}
++
++class FakeSaver implements MediaSaver {
++  bool declineToPrepare = false;
++  final saved = <String>[];
++
++  @override
++  Future<void> prepare() async {
++    if (declineToPrepare) {
++      throw const MediaException('No output folder selected.');
++    }
++  }
++
++  @override
++  Future<void> saveImage(String path) async => saved.add(path);
++
++  @override
++  Future<void> saveVideo(String path) async => saved.add(path);
++
++  @override
++  String get imageDestinationLabel => 'Photos';
++
++  @override
++  String get videoDestinationLabel => 'Movies/Petit';
++}
++
++/// Every image is 640x480 and compresses to a 40-byte file.
++class FakeImageCompressor implements ImageCompressor {
++  FakeImageCompressor(this.dir);
++
++  final Directory dir;
++  int _counter = 0;
++
++  @override
++  Future<ImageSize> readSize(String path) async => const ImageSize(640, 480);
++
++  @override
++  Future<File> compress(ImageData image, {required int quality}) async {
++    final out = File('${dir.path}/out_${_counter++}.bin');
++    await out.writeAsBytes(List.filled(40, 1));
++    return out;
++  }
++}
++
++class FakeVideoTask implements VideoCompressionTask {
++  final completer = Completer<File>();
++  bool cancelled = false;
++
++  @override
++  Future<File> get result => completer.future;
++
++  @override
++  Future<void> cancel() async {
++    cancelled = true;
++  }
++}
++
++class FakeVideoCompressor implements VideoCompressor {
++  FakeVideoTask? lastTask;
++  void Function(int percent)? progressCallback;
++
++  @override
++  Future<VideoData> probe(File video) async => VideoData(
++        videoFile: video,
++        pixelWidth: 1920,
++        pixelHeight: 1080,
++        videoCodec: 'h264',
++        frameRate: 30,
++        durationMs: 5000,
++      );
++
++  @override
++  Future<VideoCompressionTask> start({
++    required File input,
++    required String videoCodec,
++    required int crf,
++    required String preset,
++    required int totalDurationMs,
++    required void Function(int percent) onProgress,
++  }) async {
++    progressCallback = onProgress;
++    return lastTask = FakeVideoTask();
++  }
++}
++
++class FakeVideoPreview implements VideoPreview {
++  FakeVideoPreview({this.initializeError});
++
++  final Object? initializeError;
++  bool initialized = false;
++  bool disposed = false;
++
++  @override
++  Future<void> initialize() async {
++    if (initializeError != null) throw initializeError!;
++    initialized = true;
++  }
++
++  @override
++  bool get isInitialized => initialized;
++
++  @override
++  Duration get duration => const Duration(seconds: 5);
++
++  @override
++  double get aspectRatio => 16 / 9;
++
++  @override
++  bool get canPlay => false;
++
++  @override
++  bool get isPlaying => false;
++
++  @override
++  Future<void> togglePlayback() async {}
++
++  @override
++  Widget build(BuildContext context) => const SizedBox();
++
++  @override
++  void dispose() {
++    disposed = true;
++  }
++}
++
++/// Wires fakes into a [ProviderContainer] so the ViewModels can be tested
++/// without plugins, dialogs or a device.
++class Harness {
++  Harness(this.dir);
++
++  final Directory dir;
++  final picker = FakePicker();
++  final workspace = FakeWorkspace();
++  final saver = FakeSaver();
++  final videoCompressor = FakeVideoCompressor();
++  final previews = <FakeVideoPreview>[];
++
++  /// Set to make the next previews fail to initialize.
++  Object? previewInitializeError;
++
++  late final imageCompressor = FakeImageCompressor(dir);
++
++  File file(String name, int bytes) =>
++      File('${dir.path}/$name')..writeAsBytesSync(List.filled(bytes, 0));
++
++  /// Disposed automatically at the end of the test.
++  ProviderContainer container() => ProviderContainer.test(overrides: [
++        mediaPickerProvider.overrideWithValue(picker),
++        workspaceProvider.overrideWithValue(workspace),
++        readImagesUseCaseProvider
++            .overrideWithValue(ReadImagesUseCase(imageCompressor)),
++        compressImagesUseCaseProvider.overrideWithValue(
++            CompressImagesUseCase(imageCompressor, saver)),
++        compressVideoUseCaseProvider.overrideWithValue(
++            CompressVideoUseCase(videoCompressor, saver)),
++        videoPreviewFactoryProvider.overrideWithValue((file) {
++          final preview =
++              FakeVideoPreview(initializeError: previewInitializeError);
++          previews.add(preview);
++          return preview;
++        }),
++      ]);
++}
+diff --git a/test/home_viewmodel_test.dart b/test/home_viewmodel_test.dart
+new file mode 100644
+index 0000000..da5c994
+--- /dev/null
++++ b/test/home_viewmodel_test.dart
+@@ -0,0 +1,72 @@
++import 'dart:async';
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/features/home/presentation/state/home_viewmodel.dart';
++import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
++import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
++
++import 'helpers/viewmodel_fakes.dart';
++
++void main() {
++  late Directory dir;
++  late Harness h;
++
++  setUp(() {
++    dir = Directory.systemTemp.createTempSync('petit_home_vm_');
++    h = Harness(dir);
++  });
++  tearDown(() => dir.deleteSync(recursive: true));
++
++  test('starts on the Images tab', () {
++    final c = h.container();
++    expect(c.read(homeViewModelProvider), 0);
++  });
++
++  test('switching to Videos clears the picked images', () async {
++    h.picker.images = [h.file('a.jpg', 100).path];
++    final c = h.container();
++    await c.read(imagesViewModelProvider.notifier).pickImages();
++
++    await c.read(homeViewModelProvider.notifier).updateCurrentTabIndex(1);
++
++    expect(c.read(homeViewModelProvider), 1);
++    expect(c.read(imagesViewModelProvider).pickedImages, isEmpty);
++  });
++
++  test('switching to Images removes the video', () async {
++    h.picker.video = h.file('in.mp4', 100).path;
++    final c = h.container();
++    await c.read(videosViewModelProvider.notifier).pickVideo();
++
++    await c.read(homeViewModelProvider.notifier).updateCurrentTabIndex(0);
++
++    expect(c.read(homeViewModelProvider), 0);
++    expect(c.read(videosViewModelProvider).videoFile, isNull);
++    expect(h.previews.single.disposed, isTrue);
++  });
++
++  test('is busy while either tab is working', () async {
++    final c = h.container();
++    final home = c.read(homeViewModelProvider.notifier);
++    expect(home.isBusy, isFalse);
++
++    // Images tab busy
++    h.picker.images = [h.file('a.jpg', 100).path];
++    h.picker.gate = Completer<void>();
++    final pickingImages = c.read(imagesViewModelProvider.notifier).pickImages();
++    expect(home.isBusy, isTrue);
++    h.picker.gate!.complete();
++    await pickingImages;
++    expect(home.isBusy, isFalse);
++
++    // Videos tab busy
++    h.picker.video = h.file('in.mp4', 100).path;
++    h.picker.gate = Completer<void>();
++    final pickingVideo = c.read(videosViewModelProvider.notifier).pickVideo();
++    expect(home.isBusy, isTrue);
++    h.picker.gate!.complete();
++    await pickingVideo;
++    expect(home.isBusy, isFalse);
++  });
++}
+diff --git a/test/images_viewmodel_test.dart b/test/images_viewmodel_test.dart
+new file mode 100644
+index 0000000..5ee0136
+--- /dev/null
++++ b/test/images_viewmodel_test.dart
+@@ -0,0 +1,221 @@
++import 'dart:async';
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/common/data/summary_report.dart';
++import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
++
++import 'helpers/viewmodel_fakes.dart';
++
++void main() {
++  late Directory dir;
++  late Harness h;
++
++  setUp(() {
++    dir = Directory.systemTemp.createTempSync('petit_images_vm_');
++    h = Harness(dir);
++  });
++  tearDown(() => dir.deleteSync(recursive: true));
++
++  group('picking', () {
++    test('loads the images and selects the first', () async {
++      h.picker.images = [h.file('a.jpg', 100).path, h.file('b.jpg', 100).path];
++      final c = h.container();
++
++      await c.read(imagesViewModelProvider.notifier).pickImages();
++
++      final s = c.read(imagesViewModelProvider);
++      expect(s.pickedImages.length, 2);
++      expect(s.currentImage, s.pickedImages.first);
++      expect(s.currentImageIndex, 0);
++      expect(s.pickedImages.first.pixelWidth, 640);
++      expect(s.isBusy, isFalse);
++    });
++
++    test('picking nothing reports it', () async {
++      final c = h.container();
++
++      await c.read(imagesViewModelProvider.notifier).pickImages();
++
++      final s = c.read(imagesViewModelProvider);
++      expect(s.result, 'No file picked!');
++      expect(s.pickedImages, isEmpty);
++      expect(s.isBusy, isFalse);
++    });
++
++    test('is ignored while a pick is already running', () async {
++      h.picker.images = [h.file('a.jpg', 100).path];
++      h.picker.gate = Completer<void>();
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++
++      final first = vm.pickImages();
++      expect(c.read(imagesViewModelProvider).isBusy, isTrue);
++
++      await vm.pickImages(); // ignored
++      expect(h.picker.imageCalls, 1);
++
++      h.picker.gate!.complete();
++      await first;
++      expect(c.read(imagesViewModelProvider).pickedImages.length, 1);
++    });
++
++    test('addImagePaths replaces the selection', () async {
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++
++      await vm.addImagePaths([h.file('a.jpg', 100).path]);
++      await vm.addImagePaths([h.file('b.jpg', 100).path, h.file('c.jpg', 100).path]);
++
++      expect(c.read(imagesViewModelProvider).pickedImages.length, 2);
++    });
++  });
++
++  group('quality', () {
++    test('changing one image replaces it without mutating the old list',
++        () async {
++      h.picker.images = [h.file('a.jpg', 100).path, h.file('b.jpg', 100).path];
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++      await vm.pickImages();
++      vm.setGlobalQualityEnabled(true);
++      final before = c.read(imagesViewModelProvider);
++
++      vm.updateCurrentImageQuality(0.3);
++
++      final after = c.read(imagesViewModelProvider);
++      expect(after.pickedImages, isNot(same(before.pickedImages)));
++      expect(before.pickedImages.first.quality, 50);
++      expect(after.pickedImages.first.quality, 30);
++      expect(after.currentImage, after.pickedImages.first);
++      expect(after.globalQuality, isNull);
++    });
++
++    test('shared quality can be switched on, changed and off', () async {
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++
++      vm.setGlobalQualityEnabled(true);
++      expect(c.read(imagesViewModelProvider).globalQuality, 50);
++
++      vm.updateGlobalQualitySlider(0.8);
++      expect(c.read(imagesViewModelProvider).globalQuality, 80);
++
++      vm.setGlobalQualityEnabled(false);
++      expect(c.read(imagesViewModelProvider).globalQuality, isNull);
++    });
++
++    test('moving to another image selects it', () async {
++      h.picker.images = [h.file('a.jpg', 100).path, h.file('b.jpg', 100).path];
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++      await vm.pickImages();
++
++      vm.updateCurrentImageAndIndex(1);
++      final s = c.read(imagesViewModelProvider);
++      expect(s.currentImageIndex, 1);
++      expect(s.currentImage, s.pickedImages[1]);
++
++      vm.updateCurrentImageAndIndex(9); // out of range: ignored
++      expect(c.read(imagesViewModelProvider).currentImageIndex, 1);
++    });
++  });
++
++  group('clearing', () {
++    test('clearPickedImages empties the selection', () async {
++      h.picker.images = [h.file('a.jpg', 100).path];
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++      await vm.pickImages();
++
++      vm.clearPickedImages();
++
++      final s = c.read(imagesViewModelProvider);
++      expect(s.pickedImages, isEmpty);
++      expect(s.currentImage, isNull);
++      expect(s.globalQuality, isNull);
++      expect(s.isBusy, isFalse);
++    });
++
++    test('messages can be cleared once shown', () {
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++
++      vm.showResult('Hello');
++      expect(c.read(imagesViewModelProvider).result, 'Hello');
++
++      vm.clearResult();
++      expect(c.read(imagesViewModelProvider).result, isNull);
++    });
++
++    test('the actions menu can be toggled', () {
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++
++      expect(c.read(imagesViewModelProvider).isFabOpen, isTrue);
++      vm.toggleFab();
++      expect(c.read(imagesViewModelProvider).isFabOpen, isFalse);
++    });
++  });
++
++  group('compressing', () {
++    test('returns a summary, saves, and cleans up', () async {
++      h.picker.images = [h.file('a.jpg', 100).path, h.file('b.jpg', 100).path];
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++      await vm.pickImages();
++
++      final report = await vm.compressAllSelectedImages();
++
++      expect(report, isNotNull);
++      expect(report!.originalSizeBytes, '200.00 B');
++      expect(report.compressedSizeBytes, '80.00 B');
++      expect(report.savedBytes, '120.00 B');
++      expect(report.savedPercent, closeTo(0.6, 1e-9));
++      expect(report.path, 'Photos');
++      expect(h.saver.saved.length, 2);
++      expect(h.workspace.clears, 1);
++
++      final s = c.read(imagesViewModelProvider);
++      expect(s.pickedImages, isEmpty);
++      expect(s.isBusy, isFalse);
++      expect(s.loading.progressCounter, 100);
++    });
++
++    test('startCompression delivers the summary to onComplete', () async {
++      h.picker.images = [h.file('a.jpg', 100).path];
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++      await vm.pickImages();
++
++      final done = Completer<SummaryReport>();
++      vm.startCompression(onComplete: done.complete);
++
++      final report = await done.future;
++      expect(report.path, 'Photos');
++    });
++
++    test('with nothing selected it says so', () async {
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++
++      expect(await vm.compressAllSelectedImages(), isNull);
++      expect(c.read(imagesViewModelProvider).result, 'Select images first');
++    });
++
++    test('declining the destination keeps the selection', () async {
++      h.picker.images = [h.file('a.jpg', 100).path];
++      h.saver.declineToPrepare = true;
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++      await vm.pickImages();
++
++      expect(await vm.compressAllSelectedImages(), isNull);
++
++      final s = c.read(imagesViewModelProvider);
++      expect(s.result, 'No output folder selected.');
++      expect(s.pickedImages.length, 1);
++      expect(s.isBusy, isFalse);
++    });
++  });
++}
+diff --git a/test/videos_viewmodel_test.dart b/test/videos_viewmodel_test.dart
+new file mode 100644
+index 0000000..cc0f1b4
+--- /dev/null
++++ b/test/videos_viewmodel_test.dart
+@@ -0,0 +1,191 @@
++import 'dart:async';
++import 'dart:io';
++
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/common/data/summary_report.dart';
++import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/core/utils/format_bytes.dart';
++import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
++
++import 'helpers/viewmodel_fakes.dart';
++
++void main() {
++  late Directory dir;
++  late Harness h;
++
++  setUp(() {
++    dir = Directory.systemTemp.createTempSync('petit_videos_vm_');
++    h = Harness(dir);
++  });
++  tearDown(() => dir.deleteSync(recursive: true));
++
++  group('loading a video', () {
++    test('shows the preview and keeps the file', () async {
++      final input = h.file('in.mp4', 1000);
++      h.picker.video = input.path;
++      final c = h.container();
++
++      await c.read(videosViewModelProvider.notifier).pickVideo();
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.videoFile?.path, input.path);
++      expect(s.preview, isNotNull);
++      expect(s.preview!.isInitialized, isTrue);
++      expect(s.isLoading, isFalse);
++    });
++
++    test('picking nothing reports it', () async {
++      final c = h.container();
++
++      await c.read(videosViewModelProvider.notifier).pickVideo();
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.result, 'No file picked!');
++      expect(s.videoFile, isNull);
++      expect(s.isLoading, isFalse);
++    });
++
++    test('a preview that cannot start reports an error', () async {
++      h.picker.video = h.file('in.mp4', 10).path;
++      h.previewInitializeError = const MediaException('bad video');
++      final c = h.container();
++
++      await c.read(videosViewModelProvider.notifier).pickVideo();
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.result, startsWith('An error occurred'));
++      expect(s.videoFile, isNull);
++      expect(s.isLoading, isFalse);
++    });
++
++    test('addVideoPath loads a dropped video', () async {
++      final input = h.file('dropped.mp4', 10);
++      final c = h.container();
++
++      await c.read(videosViewModelProvider.notifier).addVideoPath(input.path);
++
++      expect(c.read(videosViewModelProvider).videoFile?.path, input.path);
++    });
++
++    test('removeVideo disposes the preview and resets', () async {
++      h.picker.video = h.file('in.mp4', 10).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      await vm.pickVideo();
++
++      vm.removeVideo();
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.videoFile, isNull);
++      expect(s.preview, isNull);
++      expect(s.isBusy, isFalse);
++      expect(h.previews.single.disposed, isTrue);
++    });
++  });
++
++  group('settings', () {
++    test('sliders update the state', () {
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++
++      expect(c.read(videosViewModelProvider).crfQuality, 80);
++      expect(c.read(videosViewModelProvider).presetIndex, 1);
++
++      vm.updateCfrQualitySlider(0.4);
++      vm.setPresetIndex(2);
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.crfQuality, 40);
++      expect(s.presetIndex, 2);
++    });
++  });
++
++  group('compressing', () {
++    Future<(ProviderContainer, VideosViewModel)> start() async {
++      h.picker.video = h.file('in.mp4', 1000).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      await vm.pickVideo();
++      return (c, vm);
++    }
++
++    test('runs, reports progress, and delivers a summary', () async {
++      final (c, vm) = await start();
++      final done = Completer<SummaryReport>();
++
++      await vm.compressVideo(onComplete: done.complete);
++
++      var s = c.read(videosViewModelProvider);
++      expect(s.isCompressing, isTrue);
++      expect(s.currentJob, isNotNull);
++
++      h.videoCompressor.progressCallback!(42);
++      expect(c.read(videosViewModelProvider).percentComplete, 42);
++
++      h.videoCompressor.lastTask!.completer.complete(h.file('out.mp4', 400));
++      final report = await done.future;
++
++      expect(report.originalSizeBytes, formatBytes(1000));
++      expect(report.compressedSizeBytes, formatBytes(400));
++      expect(report.savedBytes, formatBytes(600));
++      expect(report.path, 'Movies/Petit');
++
++      s = c.read(videosViewModelProvider);
++      expect(s.videoFile, isNull);
++      expect(s.isCompressing, isFalse);
++      expect(s.currentJob, isNull);
++      expect(h.workspace.clears, 1);
++      expect(h.previews.single.disposed, isTrue);
++    });
++
++    test('a failed compression reports it and resets', () async {
++      final (c, vm) = await start();
++
++      await vm.compressVideo(onComplete: (_) => fail('should not complete'));
++      h.videoCompressor.lastTask!.completer
++          .completeError(const MediaException('Compression failed.'));
++      await pumpEventQueue();
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.result, 'Compression failed.');
++      expect(s.isCompressing, isFalse);
++      expect(s.currentJob, isNull);
++    });
++
++    test('cancelling stops the task and resets', () async {
++      final (c, vm) = await start();
++      await vm.compressVideo(onComplete: (_) {});
++
++      vm.cancelCompressingVideo();
++
++      expect(h.videoCompressor.lastTask!.cancelled, isTrue);
++      final s = c.read(videosViewModelProvider);
++      expect(s.currentJob, isNull);
++      expect(s.isCompressing, isFalse);
++      expect(s.isLoading, isFalse);
++    });
++
++    test('declining the destination does not start', () async {
++      final (c, vm) = await start();
++      h.saver.declineToPrepare = true;
++
++      await vm.compressVideo(onComplete: (_) => fail('should not complete'));
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.result, 'No output folder selected.');
++      expect(s.isCompressing, isFalse);
++      expect(s.currentJob, isNull);
++      expect(h.videoCompressor.lastTask, isNull);
++    });
++
++    test('with no video it does nothing', () async {
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++
++      await vm.compressVideo(onComplete: (_) => fail('should not complete'));
++
++      expect(c.read(videosViewModelProvider).isCompressing, isFalse);
++    });
++  });
++}

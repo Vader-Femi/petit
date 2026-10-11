@@ -1,0 +1,1700 @@
+diff --git a/docs/architecture.md b/docs/architecture.md
+index 4fd1738..2d0b2c1 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -47,9 +47,7 @@ Rules
+   there (see the `TODO(desktop)` comment).
+ - Files created while compressing go into the work folder (`core/utils/work_dir.dart`),
+   never next to the user's originals.
+-- The `*_web.dart` files are a frozen, separate web implementation. The old
+-  `features/*/data/{image_data,video_data,codec_config}.dart` files only re-export
+-  the domain entities so those web files keep compiling.
++- Web is not a supported target (the web variants were removed).
+ 
+ ## Adaptive UI and desktop input
+ 
+@@ -88,4 +86,4 @@ Each tab has a **ViewModel**, which is a Riverpod `Notifier` holding one immutab
+ - Keep real state inside the state class, not in Notifier fields: Riverpod 3 creates a new Notifier
+   if its provider ever rebuilds. The only Notifier field is the cancelable handle of a running image
+   job (the provider watches nothing, so it never rebuilds). The carousel controller has its own provider.
+-- The frozen web variants (`*_web.dart`) still use flutter_super; nothing else does.
++- flutter_super is no longer a dependency.
+diff --git a/lib/config/routes/app_routes.dart b/lib/config/routes/app_routes.dart
+index 0e1ba54..a34518e 100644
+--- a/lib/config/routes/app_routes.dart
++++ b/lib/config/routes/app_routes.dart
+@@ -1,10 +1,7 @@
+ import 'package:flutter/material.dart';
+ import 'package:petit/features/home/presentation/pages/home_screen.dart';
+-import 'package:petit/features/home/presentation/pages/home_screen_web.dart';
+ import 'package:petit/features/images/presentation/pages/images_page.dart';
+-import 'package:petit/features/images/presentation/pages/images_page_web.dart';
+ import 'package:petit/features/videos/presentation/pages/videos_page.dart';
+-import 'package:petit/features/videos/presentation/pages/videos_page_web.dart';
+ 
+ class AppRoutes {
+   static Route onGenerateRoutes(RouteSettings settings) {
+@@ -12,21 +9,12 @@ class AppRoutes {
+       case '/':
+         return _materialRoute(const HomeScreen());
+ 
+-      case '/web':
+-        return _materialRoute(const HomeScreenWeb());
+-
+       case '/images':
+         return _materialRoute(const ImagesPage());
+ 
+-      case '/images_web':
+-        return _materialRoute(const ImagesPageWeb());
+-
+       case '/videos':
+         return _materialRoute(const VideosPage());
+ 
+-      case '/videos_web':
+-        return _materialRoute(const VideosPageWeb());
+-        
+       default:
+         return _materialRoute(const HomeScreen());
+     }
+diff --git a/lib/features/home/presentation/pages/home_screen_web.dart b/lib/features/home/presentation/pages/home_screen_web.dart
+deleted file mode 100644
+index 0c5e73a..0000000
+--- a/lib/features/home/presentation/pages/home_screen_web.dart
++++ /dev/null
+@@ -1,99 +0,0 @@
+-import 'dart:io';
+-import 'package:flutter/foundation.dart';
+-import 'package:flutter/material.dart';
+-import 'package:flutter/services.dart';
+-import 'package:flutter_super/flutter_super.dart';
+-import 'package:in_app_update/in_app_update.dart';
+-import 'package:petit/features/home/presentation/state/home_viewmodel_web.dart';
+-import 'package:petit/features/images/presentation/state/images_viewmodel_web.dart';
+-import 'package:petit/features/videos/presentation/pages/videos_page_web.dart';
+-import 'package:petit/features/videos/presentation/state/videos_viewmodel_web.dart';
+-import 'package:shared_preferences/shared_preferences.dart';
+-import '../../../../common/data/shared_media_details.dart';
+-import '../../../../core/constants/consts.dart';
+-import '../../../../service_locator.dart';
+-import '../../../images/presentation/pages/images_page_web.dart';
+-import '../../../images/presentation/widget/intro_carousel_dialog.dart';
+-
+-class HomeScreenWeb extends StatefulWidget {
+-  const HomeScreenWeb({super.key, this.sharedMedia});
+-
+-  final SharedMediaDetails? sharedMedia;
+-
+-  @override
+-  State<HomeScreenWeb> createState() => _HomeScreenWebState();
+-}
+-
+-class _HomeScreenWebState extends State<HomeScreenWeb> {
+-  @override
+-  void initState() {
+-    super.initState();
+-
+-    _checkFirstLaunch();
+-  }
+-
+-  Future<void> _checkFirstLaunch() async {
+-    var prefs = sl.call<SharedPreferencesAsync>();
+-    final hasSeenDialog =
+-        await prefs.getBool(Consts.hasSeenIntroDialog) ?? false;
+-
+-    if (!hasSeenDialog) {
+-      WidgetsBinding.instance.addPostFrameCallback((_) {
+-        _showIntroDialogCarousel();
+-      });
+-      await prefs.setBool(Consts.hasSeenIntroDialog, true);
+-    }
+-  }
+-
+-  void _showIntroDialogCarousel() {
+-    showDialog(
+-      context: context,
+-      barrierDismissible: false,
+-      builder: (context) => const IntroCarouselDialog(),
+-    );
+-  }
+-
+-  @override
+-  Widget build(BuildContext context) {
+-    return SuperBuilder(
+-      builder: (context) {
+-        return Scaffold(
+-          appBar: AppBar(
+-            title: Text(
+-              "Petit Web - ${getHomeViewModelWeb.currentTabIndex.state == 0 ? "Image" : "Video"} Compressor",
+-              style: TextStyle(
+-                fontSize: 20,
+-                fontWeight: FontWeight.w600,
+-              ),
+-            ),
+-            elevation: 8,
+-            backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
+-          ),
+-          body: IndexedStack(
+-            index: getHomeViewModelWeb.currentTabIndex.state,
+-            children: const [
+-              ImagesPageWeb(),
+-              VideosPageWeb(),
+-            ],
+-          ),
+-          bottomNavigationBar: NavigationBar(
+-            selectedIndex: getHomeViewModelWeb.currentTabIndex.state,
+-            onDestinationSelected: getHomeViewModelWeb.updateCurrentTabIndex,
+-            destinations: const [
+-              NavigationDestination(
+-                icon: Icon(Icons.image_outlined),
+-                selectedIcon: Icon(Icons.image),
+-                label: 'Images',
+-              ),
+-              NavigationDestination(
+-                icon: Icon(Icons.videocam_outlined),
+-                selectedIcon: Icon(Icons.videocam),
+-                label: 'Videos',
+-              ),
+-            ],
+-          ),
+-        );
+-      },
+-    );
+-  }
+-}
+diff --git a/lib/features/home/presentation/state/home_viewmodel_web.dart b/lib/features/home/presentation/state/home_viewmodel_web.dart
+deleted file mode 100644
+index 418eaae..0000000
+--- a/lib/features/home/presentation/state/home_viewmodel_web.dart
++++ /dev/null
+@@ -1,35 +0,0 @@
+-import 'package:flutter_super/flutter_super.dart';
+-import 'package:petit/features/images/presentation/state/images_viewmodel_web.dart';
+-import 'package:petit/features/videos/presentation/state/videos_viewmodel_web.dart';
+-
+-HomeViewModelWeb get getHomeViewModelWeb => Super.init(HomeViewModelWeb());
+-
+-class HomeViewModelWeb {
+-  final result = RxT<String?>(null);
+-  final isLoading = RxBool(false);
+-  final currentTabIndex = RxInt(0);
+-
+-
+-  void setIsLoading(bool isLoading) {
+-    this.isLoading.state = isLoading;
+-  }
+-
+-  void changeTab(int newTab) {
+-    currentTabIndex.state = newTab;
+-  }
+-
+-  Future<void> showResult(String? result) async {
+-    this.result.state = result;
+-  }
+-
+-  Future<void> updateCurrentTabIndex(int index) async {
+-    if (index == 0) {
+-      getVideosViewModelWeb.removeVideo();
+-    }
+-    if (index == 1) {
+-      getImagesViewModelWeb.pickedImages.state = [];
+-    }
+-    currentTabIndex.state = index;
+-  }
+-
+-}
+diff --git a/lib/features/images/data/image_data.dart b/lib/features/images/data/image_data.dart
+deleted file mode 100644
+index c3ec23d..0000000
+--- a/lib/features/images/data/image_data.dart
++++ /dev/null
+@@ -1,3 +0,0 @@
+-// Moved to the domain layer. Kept so the web variants keep compiling;
+-// new code should import the domain entity directly.
+-export 'package:petit/features/images/domain/entities/image_data.dart';
+diff --git a/lib/features/images/data/loading_data.dart b/lib/features/images/data/loading_data.dart
+deleted file mode 100644
+index 40fd4d2..0000000
+--- a/lib/features/images/data/loading_data.dart
++++ /dev/null
+@@ -1,3 +0,0 @@
+-// Moved to the presentation layer (it is UI state). Kept so the web variants
+-// keep compiling; new code should import it from there.
+-export 'package:petit/features/images/presentation/state/loading_data.dart';
+diff --git a/lib/features/images/presentation/pages/images_page_web.dart b/lib/features/images/presentation/pages/images_page_web.dart
+deleted file mode 100644
+index 061f9a5..0000000
+--- a/lib/features/images/presentation/pages/images_page_web.dart
++++ /dev/null
+@@ -1,341 +0,0 @@
+-import 'package:async/async.dart';
+-import 'package:carousel_slider/carousel_slider.dart';
+-import 'package:flutter/material.dart';
+-import 'package:flutter_super/flutter_super.dart';
+-// Conditional import for ImagesViewModel
+-import 'package:petit/features/images/presentation/state/images_viewmodel_web.dart';
+-import 'package:step_progress_indicator/step_progress_indicator.dart';
+-import '../../../../common/data/summary_report.dart';
+-import '../../../../common/widgets/compression_summary_dialog.dart';
+-import '../../../../common/widgets/slider_box.dart';
+-
+-class ImagesPageWeb extends StatefulWidget {
+-  const ImagesPageWeb({
+-    super.key,
+-    // this.sharedFiles
+-  });
+-
+-  // final List<SharedMediaFile>? sharedFiles;
+-
+-  @override
+-  State<ImagesPageWeb> createState() => _ImagesPageWebState();
+-}
+-
+-class _ImagesPageWebState extends State<ImagesPageWeb> {
+-  @override
+-  void initState() {
+-    super.initState();
+-  }
+-
+-  void _showCompressionSummaryDialog({
+-    required BuildContext context,
+-    required SummaryReport summaryReport,
+-  }) {
+-    showDialog(
+-      context: context,
+-      barrierDismissible: false,
+-      builder: (context) =>
+-          CompressionSummaryDialog(summaryReport: summaryReport),
+-    );
+-  }
+-
+-  @override
+-  Widget build(BuildContext context) {
+-
+-    final carouselSliderController = CarouselSliderController();
+-
+-    const fabHeight = 72.0; // Adjust to actual height of your FAB + margin
+-
+-    return Scaffold(
+-      body: SuperBuilder(builder: (context) {
+-        if (getImagesViewModelWeb.result.state != null) {
+-          WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
+-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+-              content: Text("${getImagesViewModelWeb.result.state}"),
+-            ));
+-            getImagesViewModelWeb.showResult(null);
+-          });
+-        }
+-
+-        return Stack(
+-          alignment: Alignment.center,
+-          children: [
+-            getImagesViewModelWeb.pickedImages.isEmpty
+-                ? const Text(
+-              "Add images and start compressing",
+-              textAlign: TextAlign.center,
+-              style: TextStyle(
+-                fontSize: 18,
+-              ),
+-            )
+-                : Padding(
+-              padding: EdgeInsets.fromLTRB(10, 10, 10, 15),
+-              child: Column(
+-                children: [
+-                  Expanded(
+-                    child: CarouselSlider(
+-                      items: getImagesViewModelWeb.pickedImages.state
+-                          .map((imageData) {
+-                        return ClipRRect(
+-                          borderRadius: BorderRadius.circular(12),
+-                          child: Image.network(
+-                            imageData.imageFile.path,
+-                            frameBuilder: (BuildContext context, Widget child, int? frame, bool? wasSynchronouslyLoaded) {
+-                              return AnimatedOpacity(
+-                                opacity: frame == null ? 0 : 1,
+-                                duration: Duration(milliseconds: 200),
+-                                curve: Curves.easeIn,
+-                                child: child,
+-                              );
+-                            },
+-                            fit: BoxFit.contain,
+-                            filterQuality: FilterQuality.none,
+-                          ),
+-                        );
+-                      }).toList(),
+-                      carouselController: carouselSliderController,
+-                      options: CarouselOptions(
+-                          autoPlay: false,
+-                          enlargeStrategy: CenterPageEnlargeStrategy.zoom,
+-                          enlargeCenterPage: true,
+-                          pageSnapping: true,
+-                          scrollDirection: Axis.horizontal,
+-                          pauseAutoPlayOnTouch: true,
+-                          enableInfiniteScroll: false,
+-                          onPageChanged: (index, _) => getImagesViewModelWeb
+-                              .updateCurrentImageAndIndex(index),
+-                          reverse: false),
+-                    ),
+-                  ),
+-                  SizedBox(height: 10),
+-                  // Current image index
+-                  if (getImagesViewModelWeb.pickedImages.isNotEmpty)
+-                    Padding(
+-                      padding: const EdgeInsets.symmetric(vertical: 6),
+-                      child: Text(
+-                        "${(getImagesViewModelWeb.currentImageIndex.state ?? -1) + 1} of ${getImagesViewModelWeb.pickedImages.state.length}",
+-                        style: const TextStyle(fontSize: 16),
+-                      ),
+-                    ),
+-
+-                  SizedBox(height: 10),
+-
+-                  if (getImagesViewModelWeb.currentImage.state != null)
+-                    buildSliderBox(
+-                      context: context,
+-                      label: "Image Quality",
+-                      minValue: "Compressed",
+-                      maxValue: "Original Quality",
+-                      tootTipMessage: "Adjust image quality.\n"
+-                          "•Compressed = less clarity, smaller size\n"
+-                          "•Original = same clarity, same size\n"
+-                          "•Middle = same clarity, smaller size\n"
+-                          "•Recommended = Between 20% - 98%",
+-                      slider: Slider(
+-                        value: ((getImagesViewModelWeb
+-                            .globalQualitySlider.state ??
+-                            getImagesViewModelWeb
+-                                .currentImage.state!.quality) /
+-                            100)
+-                            .clamp(0.0, 1.0),
+-                        min: 0,
+-                        max: 1,
+-                        divisions: 99,
+-                        label:
+-                        "${(getImagesViewModelWeb.globalQualitySlider.state ?? getImagesViewModelWeb.currentImage.state!.quality).round()}%",
+-                        onChanged: (value) {
+-                          if (getImagesViewModelWeb
+-                              .globalQualitySlider.state !=
+-                              null) {
+-                            getImagesViewModelWeb
+-                                .updateGlobalQualitySlider(value);
+-                          } else {
+-                            getImagesViewModelWeb
+-                                .updateCurrentImageQuality(value);
+-                          }
+-                        },
+-                      ),
+-                      showGlobalSwitch:
+-                      getImagesViewModelWeb.pickedImages.length > 1,
+-                      isGlobal:
+-                      getImagesViewModelWeb.globalQualitySlider.state !=
+-                          null,
+-                      onGlobalToggle: (value) {
+-                        getImagesViewModelWeb.globalQualitySlider.state =
+-                        value ? 50 : null;
+-                      },
+-                    ),
+-                  // Reserve space for FABs
+-                  const SizedBox(height: fabHeight),
+-                ],
+-              ),
+-            ),
+-            getImagesViewModelWeb.isLoading.state.isLoading
+-                ? Container(
+-              color: Colors.black.withValues(alpha: 0.85),
+-            )
+-                : Container(),
+-            getImagesViewModelWeb.isLoading.state.isLoading
+-                ? getImagesViewModelWeb.isLoading.state.totalSteps == null
+-                ? Column(
+-              mainAxisAlignment: MainAxisAlignment.center,
+-              mainAxisSize: MainAxisSize.max,
+-              children: [
+-                Text("Loading Please Wait"),
+-                SizedBox(height: 5),
+-                CircularProgressIndicator()
+-              ],
+-            )
+-                : Container(
+-              width: 100,
+-              height: 100,
+-              alignment: Alignment.center,
+-              decoration: BoxDecoration(
+-                  color:
+-                  Theme.of(context).colorScheme.primaryContainer,
+-                  borderRadius: BorderRadius.circular(50)),
+-              child: Text(
+-                '${getImagesViewModelWeb.isLoading.state.progressCounter}%',
+-                style: TextStyle(
+-                    fontSize: 30,
+-                    fontWeight: FontWeight.w900,
+-                    color: Theme.of(context).colorScheme.primary),
+-              ),
+-            )
+-                : Container(),
+-            (getImagesViewModelWeb.isLoading.state.isLoading &&
+-                getImagesViewModelWeb.isLoading.state.totalSteps != null)
+-                ? Column(
+-              mainAxisAlignment: MainAxisAlignment.center,
+-              children: [
+-                SizedBox(
+-                  height: 40,
+-                ),
+-                CircularStepProgressIndicator(
+-                  totalSteps:
+-                  getImagesViewModelWeb.isLoading.state.totalSteps ?? 1,
+-                  stepSize: 20,
+-                  selectedStepSize: 30,
+-                  currentStep:
+-                  getImagesViewModelWeb.isLoading.state.completedSteps ??
+-                      1,
+-                  width: 180,
+-                  height: 180,
+-                  padding: 0.02,
+-                  selectedColor: Theme.of(context).colorScheme.primary,
+-                  unselectedColor: Theme.of(context).colorScheme.surfaceContainer,
+-                ),
+-                Text(
+-                  "Please keep app open\nwhile compressing",
+-                  textAlign: TextAlign.center,
+-                  style: TextStyle(
+-                      fontSize: 15,
+-                      fontWeight: FontWeight.w700,
+-                      color: Theme.of(context).colorScheme.primary
+-
+-                  ),
+-                ),
+-              ],
+-            )
+-                : Container(),
+-          ],
+-        );
+-      }),
+-      floatingActionButton: SuperBuilder(
+-        builder: (context) {
+-          if (getImagesViewModelWeb.pickedImages.isEmpty) {
+-            return FloatingActionButton(
+-              onPressed: () async =>
+-                  getImagesViewModelWeb.selectImageButtonUseCase(),
+-              tooltip: "Add Images",
+-              child: const Icon(Icons.add_photo_alternate_outlined),
+-            );
+-          } else {
+-            if (getImagesViewModelWeb.isLoading.state.isLoading) {
+-              return FloatingActionButton.extended(
+-                icon: const Icon(Icons.clear),
+-                tooltip: "Cancel compression ",
+-                onPressed: () async {
+-                  try {
+-                    if (!getImagesViewModelWeb.completer.isCanceled ||
+-                        !getImagesViewModelWeb.completer.isCompleted) {
+-                      getImagesViewModelWeb.completer.operation.cancel();
+-                    }
+-                    getImagesViewModelWeb.showResult("Cancelling");
+-                  } catch (e) {
+-                    debugPrint('Error during cancel: $e');
+-                  }
+-                },
+-                label: const Text('Cancel'),
+-              );
+-            } else {
+-              return SingleChildScrollView(
+-                scrollDirection: Axis.horizontal,
+-                child: Padding(
+-                  padding: const EdgeInsets.all(8.0),
+-                  child: Row(
+-                    mainAxisAlignment: MainAxisAlignment.end,
+-                    crossAxisAlignment: CrossAxisAlignment.end,
+-                    children: [
+-                      if (getImagesViewModelWeb.isFabOpen.state) ...[
+-                        FloatingActionButton.extended(
+-                          icon: const Icon(Icons.compress_outlined),
+-                          tooltip: "Compress Images",
+-                          onPressed: () async {
+-                            getImagesViewModelWeb.completer = CancelableCompleter(
+-                              onCancel:
+-                              getImagesViewModelWeb.cancelCompressingAllImages,
+-                            );
+-
+-                            getImagesViewModelWeb.completer.complete(
+-                                getImagesViewModelWeb
+-                                    .compressAllSelectedImages()
+-                                    .then((summaryReport) {
+-                                  if (summaryReport != null) {
+-                                    if (context.mounted) {
+-                                      _showCompressionSummaryDialog(
+-                                          context: context,
+-                                          summaryReport: summaryReport);
+-                                    }
+-                                  }
+-                                }));
+-                          },
+-                          label: const Text('Compress'),
+-                        ),
+-                        SizedBox(width: 10),
+-                        FloatingActionButton.extended(
+-                          icon: const Icon(Icons.delete_outline),
+-                          tooltip: "Remove images",
+-                          onPressed: () async {
+-                            getImagesViewModelWeb.cancelCompressingAllImages();
+-                          },
+-                          label: const Text('Clear'),
+-                        ),
+-                      ],
+-                      const SizedBox(width: 10),
+-                      FloatingActionButton(
+-                        heroTag: "toggle_fab",
+-                        onPressed: () {
+-                          setState(() {
+-                            getImagesViewModelWeb.isFabOpen.state =
+-                            !getImagesViewModelWeb.isFabOpen.state;
+-                          });
+-                        },
+-                        tooltip: getImagesViewModelWeb.isFabOpen.state
+-                            ? "Close Actions"
+-                            : "Show Actions",
+-                        child: Icon(getImagesViewModelWeb.isFabOpen.state
+-                            ? Icons.close
+-                            : Icons.compress_outlined),
+-                      ),
+-                    ],
+-                  ),
+-                ),
+-              );
+-            }
+-          }
+-        },
+-      ),
+-    );
+-  }
+-}
+diff --git a/lib/features/images/presentation/state/images_viewmodel_web.dart b/lib/features/images/presentation/state/images_viewmodel_web.dart
+deleted file mode 100644
+index 28e74f5..0000000
+--- a/lib/features/images/presentation/state/images_viewmodel_web.dart
++++ /dev/null
+@@ -1,368 +0,0 @@
+-import 'dart:ui'; // Still needed for ImageDescriptor
+-import 'package:async/async.dart';
+-import 'package:flutter/foundation.dart';
+-import 'package:flutter_super/flutter_super.dart';
+-import 'dart:io'; // Still needed for File type, XFile uses it.
+-// import 'dart:html' as html; // Web spec
+-import 'package:flutter_image_compress/flutter_image_compress.dart';
+-import 'package:gallery_saver_plus/gallery_saver.dart';
+-// import 'package:gallery_saver_plus/gallery_saver.dart'; // Not for web
+-// import 'package:heif_converter_plus/heif_converter.dart'; // Not for web
+-import 'package:image/image.dart' as img; // Used for re-encoding non-JPG to JPG if not HEIC
+-import 'package:image_picker/image_picker.dart';
+-import 'package:image_size_getter/file_input.dart'; // May need web adaptation if it uses dart:io directly for non-standard formats
+-import 'package:image_size_getter/image_size_getter.dart';
+-import 'package:path_provider/path_provider.dart';
+-import 'package:petit/features/images/data/image_data.dart';
+-import 'package:share_handler/share_handler.dart'; // Assuming this has web support or is handled
+-import '../../data/loading_data.dart';
+-import '../../../../common/data/summary_report.dart';
+-
+-// See comment in videos_viewmodel.web.dart about this global getter pattern
+-ImagesViewModelWeb get getImagesViewModelWeb => Super.init(ImagesViewModelWeb());
+-
+-class ImagesViewModelWeb {
+-  final result = RxT<String?>(null);
+-  final isLoading = RxT<LoadingData>(LoadingData(isLoading: false));
+-  final pickedImages = RxList<ImageData>([]);
+-  final currentImage = RxT<ImageData?>(null);
+-  final currentImageIndex = RxT<int?>(null);
+-  final globalQualitySlider = RxT<int?>(null);
+-  final isFabOpen = RxT<bool>(true);
+-
+-  CancelableCompleter<void> completer = CancelableCompleter();
+-
+-  void setIsLoading(LoadingData loadingData) {
+-    isLoading.state = loadingData;
+-  }
+-
+-  Future<void> showResult(String? result) async {
+-    this.result.state = result;
+-  }
+-
+-  Future<void> updateCurrentImageAndIndex(int index) async {
+-    final image = pickedImages.state.elementAt(index);
+-    currentImage.state = image;
+-    currentImageIndex.state = index;
+-  }
+-
+-  void updateCurrentImageQuality(double value) {
+-    if (currentImage.state != null) {
+-      final currentImageIndex = pickedImages.state.indexOf(currentImage.state!, 0);
+-      final newImageData = currentImage.state!.copyWith(quality: (value * 100).toInt());
+-      pickedImages.state[currentImageIndex] = newImageData;
+-      currentImage.state = newImageData;
+-      if (globalQualitySlider.state != null) {
+-        globalQualitySlider.state = null;
+-      }
+-    }
+-  }
+-
+-  void updateGlobalQualitySlider(double value) {
+-    globalQualitySlider.state = (value * 100).toInt();
+-  }
+-
+-  Future<void> pickSingleImage() async {
+-    try {
+-      setIsLoading(LoadingData(isLoading: true));
+-      final xFile = await ImagePicker().pickImage(source: ImageSource.gallery);
+-      if (xFile != null) {
+-        pickedImages.state = [];
+-        currentImage.state = null;
+-        currentImageIndex.state = null;
+-        globalQualitySlider.state = null;
+-
+-        // For web, XFile.path is a blob URL. ImageDescriptor.encoded should work with bytes.
+-        final imageBytes = await xFile.readAsBytes();
+-        final buffer = await ImmutableBuffer.fromUint8List(imageBytes);
+-        final descriptor = await ImageDescriptor.encoded(buffer);
+-
+-        pickedImages.state = [
+-          ImageData(
+-            imageFile: File(xFile.path), // File(blob_url)
+-            pixelWidth: descriptor.width,
+-            pixelHeight: descriptor.height,
+-            quality: 50,
+-          ),
+-        ];
+-        currentImage.state = pickedImages[0];
+-        currentImageIndex.state = 0;
+-        descriptor.dispose();
+-        buffer.dispose();
+-      } else {
+-        await showResult("No file picked!");
+-      }
+-    } catch (e) {
+-      await showResult("An error occurred - ${e.toString()}");
+-    } finally {
+-      setIsLoading(LoadingData(isLoading: false));
+-    }
+-  }
+-
+-  Future<void> _processPickedFiles(List<XFile> files) async {
+-    pickedImages.state = [];
+-    currentImage.state = null;
+-    globalQualitySlider.state = null;
+-    List<ImageData> newPickedImages = [];
+-
+-    for (var xFile in files) {
+-      final path = xFile.path; // This is a blob URL on web
+-      int width = 1080; // Default
+-      int height = 1080; // Default
+-
+-      final lowerPath = path.toLowerCase();
+-      if (lowerPath.endsWith(".heic") || lowerPath.endsWith(".heif")) {
+-        await showResult("HEIC/HEIF files are not fully supported on web for preview/dimensions.");
+-        // Use default dimensions or try to get from ImageDescriptor if possible without conversion
+-        try {
+-          final imageBytes = await xFile.readAsBytes();
+-          final buffer = await ImmutableBuffer.fromUint8List(imageBytes);
+-          final descriptor = await ImageDescriptor.encoded(buffer);
+-          width = descriptor.width;
+-          height = descriptor.height;
+-          descriptor.dispose();
+-          buffer.dispose();
+-        } catch (e) {
+-          debugPrint("Could not get dimensions for HEIC/HEIF on web: $e");
+-        }
+-      } else {
+-        // For standard web formats (PNG, JPG, GIF, WebP), ImageDescriptor should work
+-        try {
+-          final imageBytes = await xFile.readAsBytes();
+-          final buffer = await ImmutableBuffer.fromUint8List(imageBytes);
+-          final descriptor = await ImageDescriptor.encoded(buffer);
+-          width = descriptor.width;
+-          height = descriptor.height;
+-          descriptor.dispose();
+-          buffer.dispose();
+-        } catch (e) {
+-          debugPrint("Could not get dimensions for ${xFile.name} on web: $e");
+-          // Fallback to ImageSizeGetter if ImageDescriptor fails for some common format
+-          // This part might be tricky as ImageSizeGetter expects a FileInput.
+-          // For web, direct FileInput(File(blob_url)) might not work for all its internal checks.
+-          // Sticking to ImageDescriptor for web is safer.
+-        }
+-      }
+-      newPickedImages.add(ImageData(
+-        imageFile: File(path), // File(blob_url)
+-        pixelWidth: width,
+-        pixelHeight: height,
+-        quality: 50,
+-      ));
+-    }
+-    pickedImages.state = newPickedImages;
+-    if (pickedImages.isNotEmpty) {
+-      currentImage.state = pickedImages[0];
+-      currentImageIndex.state = 0;
+-    }
+-  }
+-
+-  Future<void> pickMultipleImages() async {
+-    try {
+-      setIsLoading(LoadingData(isLoading: true));
+-      final result = await ImagePicker().pickMultiImage();
+-      if (result.isNotEmpty) {
+-        await _processPickedFiles(result);
+-      } else {
+-        await showResult("No files picked!");
+-      }
+-    } catch (e) {
+-      await showResult("An error occurred - ${e.toString()}");
+-    } finally {
+-      setIsLoading(LoadingData(isLoading: false));
+-    }
+-  }
+-
+-  Future<XFile?> compressImage({required ImageData imageData}) async {
+-    try {
+-      var originalXFile = XFile(imageData.imageFile.path); // imageFile.path is blob URL
+-      var filePathForCompression = originalXFile.path; // Path to be passed to FlutterImageCompress
+-      String outPathName = originalXFile.name.isNotEmpty ? originalXFile.name : "compressed_image.jpg";
+-
+-      final lowerFilePath = filePathForCompression.toLowerCase();
+-      if (lowerFilePath.endsWith(".heic") || lowerFilePath.endsWith(".heif")) {
+-        await showResult("HEIC/HEIF compression might not be optimal on web. No pre-conversion to JPG.");
+-        // FlutterImageCompress will attempt to handle the HEIC/HEIF directly if its web version can.
+-        // Ensure outPathName has a compatible extension if FlutterImageCompress doesn't change it.
+-        // e.g. if output is always JPG from the plugin on web, then .jpg is fine.
+-      } else if (!lowerFilePath.endsWith(".jpg") && !lowerFilePath.endsWith(".jpeg") && !lowerFilePath.endsWith(".png") && !lowerFilePath.endsWith(".webp")) {
+-        // For other non-standard types that are not HEIC (e.g. some BMP, TIFF if somehow picked)
+-        // and are not directly supported by FlutterImageCompress on web,
+-        // we might try to re-encode to JPG using image package.
+-        // However, image_picker on web usually restricts to web-friendly types.
+-        // This case might be rare. For now, assume FlutterImageCompress handles common web types.
+-        await showResult("Image format ${originalXFile.name} might not be optimally compressed. Trying anyway.");
+-      }
+-
+-      // path_provider's getTemporaryDirectory() for web gives a virtual path.
+-      final tempDir = await getTemporaryDirectory();
+-      // Ensure unique name for output in temp virtual dir
+-      final targetPath = '${tempDir.path}/${DateTime.now().millisecondsSinceEpoch}_${outPathName}';
+-
+-      final compressedXFile = await FlutterImageCompress.compressAndGetFile(
+-        filePathForCompression, // This is a blob URL
+-        targetPath, // This is a virtual path
+-        minWidth: imageData.pixelWidth,
+-        minHeight: imageData.pixelHeight,
+-        quality: globalQualitySlider.state ?? imageData.quality,
+-        keepExif: false, // EXIF handling on web is often problematic, safer to disable.
+-        // format: CompressFormat.jpeg, // Optionally force output format
+-      );
+-
+-      if (compressedXFile != null) {
+-        final originalSize = await originalXFile.length();
+-        final compressedSize = await compressedXFile.length();
+-        if (compressedSize < originalSize) {
+-          return compressedXFile;
+-        } else {
+-          // If not smaller, return a new XFile instance of the original to avoid issues with XFile identity
+-          // (though for web, originalXFile itself is fine as it's just a path/blob_url)
+-          return XFile(originalXFile.path);
+-        }
+-      } else {
+-        await showResult("Error compressing image!");
+-      }
+-    } catch (e) {
+-      await showResult("Error compressing image - ${e.toString()}");
+-    }
+-    return null;
+-  }
+-
+-  // Web specific save using dart:html
+-  // Future<void> saveLocalImage(XFile compressedImage) async {
+-  //   try {
+-  //     final bytes = await compressedImage.readAsBytes();
+-  //     final blob = html.Blob([bytes]);
+-  //     final url = html.Url.createObjectUrlFromBlob(blob);
+-  //     String fileName = compressedImage.name;
+-  //     if (fileName.isEmpty && compressedImage.path.isNotEmpty) {
+-  //       // path might be a virtual path like /temp/123224_myimage.jpg
+-  //       // or a blob URL if original was returned
+-  //       fileName = compressedImage.path.split('/').last;
+-  //     }
+-  //     if (fileName.isEmpty || fileName.startsWith("blob:")) { // Check if filename is blob url
+-  //       fileName = "downloaded_image.jpg"; // Fallback filename
+-  //     }
+-  //
+-  //     final anchor = html.AnchorElement(href: url)
+-  //       ..setAttribute("download", fileName)
+-  //       ..click();
+-  //     html.Url.revokeObjectUrl(url);
+-  //     await showResult("Image saved to Downloads.");
+-  //   } catch (e) {
+-  //     await showResult("Error occurred while saving - ${e.toString()}");
+-  //   }
+-  // }
+-
+-  Future<void> saveLocalImage(XFile compressedImage) async {
+-    try {
+-      // Save the file directly to the gallery
+-      final saved = await GallerySaver.saveImage(compressedImage.path);
+-      if (saved == true) {
+-        await showResult("Image saved to gallery.");
+-      } else {
+-        await showResult("Failed to save image.");
+-      }
+-    } catch (e) {
+-      await showResult("Error occurred while saving - ${e.toString()}");
+-    }
+-  }
+-
+-  Future<SummaryReport?> compressAllSelectedImages() async {
+-    if (isLoading.state.isLoading) return null;
+-    if (pickedImages.isEmpty) {
+-      await showResult("Select images first");
+-      return null;
+-    }
+-
+-    final totalLength = pickedImages.state.length;
+-    setIsLoading(LoadingData(isLoading: true, completedSteps: 0, totalSteps: totalLength, progressCounter: 0));
+-
+-    var sizeBeforeCompression = 0;
+-    var sizeAfterCompression = 0;
+-    List<XFile> filesToSave = [];
+-
+-    for (final (index, imageData) in pickedImages.state.indexed) {
+-      if (completer.isCanceled) break;
+-
+-      isLoading.state = isLoading.state.copyWith(completedSteps: index, progressCounter: (((index) / totalLength) * 100).round());
+-
+-      sizeBeforeCompression += await XFile(imageData.imageFile.path).length();
+-
+-      final compressedFile = await compressImage(imageData: imageData);
+-      if (compressedFile == null) {
+-        sizeBeforeCompression -= await XFile(imageData.imageFile.path).length(); // Adjust if compression failed
+-        continue;
+-      }
+-
+-      filesToSave.add(compressedFile); // Collect files to save
+-      sizeAfterCompression += await compressedFile.length();
+-    }
+-
+-    if (!completer.isCanceled) {
+-      for (final fileToSave in filesToSave) {
+-        await saveLocalImage(fileToSave); // Save each collected file
+-      }
+-    }
+-
+-    currentImage.state = null;
+-    currentImageIndex.state = 0;
+-    globalQualitySlider.state = null;
+-    pickedImages.state = [];
+-    await clearCacheDir(); // Web version
+-
+-    setIsLoading(LoadingData(progressCounter: 100, isLoading: false, completedSteps: totalLength, totalSteps: totalLength));
+-
+-    if (completer.isCanceled) {
+-      await showResult("Image compression cancelled.");
+-      return null;
+-    }
+-
+-    final savedBytes = sizeBeforeCompression - sizeAfterCompression;
+-    final savedPercent = (sizeBeforeCompression > 0 && savedBytes > 0) ? (savedBytes / sizeBeforeCompression).clamp(0, 1).toDouble() : 0.0;
+-
+-    return SummaryReport(
+-        originalSizeBytes: formatBytes(sizeBeforeCompression),
+-        compressedSizeBytes: formatBytes(sizeAfterCompression),
+-        savedBytes: formatBytes(savedBytes),
+-        savedPercent: savedPercent,
+-        path: "Downloads"); // Web path
+-  }
+-
+-  String formatBytes(int bytes, [int decimals = 2]) {
+-    if (bytes <= 0) return "0 B";
+-    const suffixes = ["B", "KB", "MB", "GB"];
+-    final i = (bytes == 0) ? 0 : (bytes.bitLength / 10).floor();
+-    final size = bytes / (1 << (10 * i));
+-    return '${size.toStringAsFixed(decimals)} ${suffixes[i]}';
+-  }
+-
+-  Future<void> clearCacheDir() async {
+-    debugPrint("clearCacheDir (web): Called. No-op for now.");
+-    // Potentially clear FlutterImageCompress specific temporary files if they are known and accessible.
+-    // final tempDir = await getTemporaryDirectory();
+-    // final entities = tempDir.listSync(recursive: true); // Careful with listSync on web's virtual fs
+-    // ... delete logic ...
+-  }
+-
+-  Future<void> selectImageButtonUseCase() async {
+-    if (!isLoading.state.isLoading) {
+-      await pickMultipleImages();
+-    }
+-  }
+-
+-  void cancelCompressingAllImages() {
+-    if (!completer.isCompleted && !completer.isCanceled) {
+-      completer.operation.cancel(); // Cancel the ongoing operation if any
+-    }
+-    completer = CancelableCompleter(); // Reset completer for next use
+-
+-    final totalLength = pickedImages.state.length; // or a cached value of total steps
+-    currentImage.state = null;
+-    currentImageIndex.state = 0;
+-    globalQualitySlider.state = null;
+-    pickedImages.state = [];
+-    setIsLoading(LoadingData(progressCounter: 100, isLoading: false, completedSteps: totalLength, totalSteps: totalLength));
+-    showResult("Image compression cancelled.");
+-  }
+-}
+diff --git a/lib/features/videos/data/codec_config.dart b/lib/features/videos/data/codec_config.dart
+deleted file mode 100644
+index 2ea0518..0000000
+--- a/lib/features/videos/data/codec_config.dart
++++ /dev/null
+@@ -1,3 +0,0 @@
+-// Moved to the domain layer. Kept so the web variants keep compiling;
+-// new code should import the domain entity directly.
+-export 'package:petit/features/videos/domain/entities/codec_config.dart';
+diff --git a/lib/features/videos/data/video_data.dart b/lib/features/videos/data/video_data.dart
+deleted file mode 100644
+index 1a9ee01..0000000
+--- a/lib/features/videos/data/video_data.dart
++++ /dev/null
+@@ -1,3 +0,0 @@
+-// Moved to the domain layer. Kept so the web variants keep compiling;
+-// new code should import the domain entity directly.
+-export 'package:petit/features/videos/domain/entities/video_data.dart';
+diff --git a/lib/features/videos/presentation/pages/videos_page_web.dart b/lib/features/videos/presentation/pages/videos_page_web.dart
+deleted file mode 100644
+index b02bf49..0000000
+--- a/lib/features/videos/presentation/pages/videos_page_web.dart
++++ /dev/null
+@@ -1,309 +0,0 @@
+-import 'package:flutter/material.dart';
+-import 'package:flutter_super/flutter_super.dart';
+-// Conditional import for VideosViewModel
+-import 'package:petit/features/videos/presentation/state/videos_viewmodel_web.dart';
+-import 'package:step_progress_indicator/step_progress_indicator.dart';
+-import 'package:video_player/video_player.dart';
+-import '../../../../common/data/summary_report.dart';
+-import '../../../../common/widgets/compression_summary_dialog.dart';
+-import '../../../../common/widgets/slider_box.dart';
+-
+-class VideosPageWeb extends StatefulWidget {
+-  const VideosPageWeb({super.key});
+-
+-  @override
+-  State<VideosPageWeb> createState() => _VideosPageWebState();
+-}
+-
+-class _VideosPageWebState extends State<VideosPageWeb> {
+-  @override
+-  void dispose() {
+-    // getVideosViewModelWeb.videoController.state?.dispose();
+-    super.dispose();
+-  }
+-
+-  void _showCompressionSummaryDialog({
+-    required BuildContext context,
+-    required SummaryReport summaryReport,
+-  }) {
+-    showDialog(
+-      context: context,
+-      barrierDismissible: false,
+-      builder: (context) =>
+-          CompressionSummaryDialog(summaryReport: summaryReport),
+-    );
+-  }
+-
+-  @override
+-  Widget build(BuildContext context) {
+-    const fabHeight = 72.0; // Adjust to actual height of your FAB + margin
+-
+-    return Scaffold(
+-      body: SuperBuilder(builder: (context) {
+-        if (getVideosViewModelWeb.result.state != null) {
+-          WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
+-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+-              content: Text("${getVideosViewModelWeb.result.state}"),
+-            ));
+-            getVideosViewModelWeb.showResult(null);
+-          });
+-        }
+-
+-        return Stack(
+-          alignment: Alignment.center,
+-          children: [
+-            if (getVideosViewModelWeb.videoController.state != null &&
+-                getVideosViewModelWeb.videoController.state!.value.isInitialized)
+-              Padding(
+-                padding: EdgeInsets.fromLTRB(10, 10, 10, 15),
+-                child: Column(
+-                  mainAxisAlignment: MainAxisAlignment.center,
+-                  children: [
+-                    Expanded(
+-                      child: ClipRRect(
+-                        borderRadius: BorderRadius.circular(12),
+-                        child: AspectRatio(
+-                          aspectRatio: getVideosViewModelWeb
+-                              .videoController.state!.value.aspectRatio,
+-                          child: VideoPlayer(
+-                              getVideosViewModelWeb.videoController.state!),
+-                        ),
+-                      ),
+-                    ),
+-
+-                    const SizedBox(height: 12),
+-
+-                    Column(
+-                      children: [
+-                        buildSliderBox(
+-                          context: context,
+-                          label: "Compression Level",
+-                          minValue: getVideosViewModelWeb.getLabelForCRFSlider(0),
+-                          maxValue: getVideosViewModelWeb.getLabelForCRFSlider(100),
+-                          tootTipMessage: "Adjusts the compression level.\n"
+-                              "•${getVideosViewModelWeb.getLabelForCRFSlider(100)} = smallest size, less clarity\n"
+-                              "•${getVideosViewModelWeb.getLabelForCRFSlider(0)} = smaller size, more clarity\n"
+-                              "•Recommended = ${getVideosViewModelWeb.getLabelForCRFSlider(80)}",
+-                          slider: Slider(
+-                            value:
+-                            getVideosViewModelWeb.cfrQualitySlider.state / 100,
+-                            min: 0,
+-                            max: 1,
+-                            divisions: 4,
+-                            label: "${getVideosViewModelWeb.getLabelForCRFSlider(
+-                                getVideosViewModelWeb.cfrQualitySlider.state)} Compression",
+-                            onChanged: (value) {
+-                              getVideosViewModelWeb
+-                                  .updateCfrQualitySlider(value);
+-                            },
+-                          ),
+-                        ),
+-                        const SizedBox(height: 12),
+-                        buildSliderBox(
+-                          context: context,
+-                          label: "Desired File Size",
+-                          minValue: getVideosViewModelWeb.ffmpegPresets.first.desc,
+-                          maxValue: getVideosViewModelWeb.ffmpegPresets.last.desc,
+-                          tootTipMessage: //"Choose a desired file size.\n"
+-                          "•${getVideosViewModelWeb.ffmpegPresets.first.desc} = For archival\n"
+-                              "•${getVideosViewModelWeb.ffmpegPresets[1].desc} = For social media\n"
+-                              "•${getVideosViewModelWeb.ffmpegPresets.last.desc} = For quick sharing",
+-                          slider: Slider(
+-                            value: getVideosViewModelWeb.selectedPresetIndex.state
+-                                .toDouble(),
+-                            min: 0,
+-                            max: (getVideosViewModelWeb.ffmpegPresets.length - 1)
+-                                .toDouble(),
+-                            divisions:
+-                            getVideosViewModelWeb.ffmpegPresets.length - 1,
+-                            label: getVideosViewModelWeb.ffmpegPresets[
+-                            getVideosViewModelWeb.selectedPresetIndex.state].desc,
+-                            onChanged: (value) {
+-                              getVideosViewModelWeb.setPresetIndex(value.toInt());
+-                            },
+-                          ),
+-                        ),
+-                      ],
+-                    ),
+-
+-                    // Space for FABs
+-                    const SizedBox(height: fabHeight),
+-                  ],
+-                ),
+-              )
+-            else
+-              const Text(
+-                "Add a video and start compressing",
+-                textAlign: TextAlign.center,
+-                style: TextStyle(
+-                  fontSize: 18,
+-                ),
+-              ),
+-            (getVideosViewModelWeb.isLoading.state ||
+-                getVideosViewModelWeb.isCompressing.state)
+-                ? Container(
+-              color: Colors.black.withValues(alpha: 0.85),
+-            )
+-                : Container(),
+-            (getVideosViewModelWeb.isLoading.state)
+-                ? const CircularProgressIndicator()
+-                : Container(),
+-            (getVideosViewModelWeb.isCompressing.state)
+-                ? Column(
+-              mainAxisAlignment: MainAxisAlignment.center,
+-              children: [
+-                SizedBox(
+-                  height: 40,
+-                ),
+-                CircularStepProgressIndicator(
+-                  totalSteps: 100,
+-                  currentStep:
+-                  getVideosViewModelWeb.percentageComplete.state,
+-                  stepSize: 10,
+-                  selectedColor: Theme.of(context).colorScheme.primary,
+-                  unselectedColor:
+-                  Theme.of(context).colorScheme.surfaceContainer,
+-                  padding: 0,
+-                  width: 200,
+-                  height: 200,
+-                  selectedStepSize: 30,
+-                  roundedCap: (_, __) => true,
+-                ),
+-                Text(
+-                  "Please keep app open\nwhile compressing",
+-                  textAlign: TextAlign.center,
+-                  style: TextStyle(
+-                      fontSize: 15,
+-                      fontWeight: FontWeight.w700,
+-                      color: Theme.of(context).colorScheme.primary),
+-                ),
+-              ],
+-            )
+-                : Container(),
+-            (getVideosViewModelWeb.isCompressing.state)
+-                ? Text(
+-              "${getVideosViewModelWeb.percentageComplete.state}%",
+-              textAlign: TextAlign.center,
+-              style: TextStyle(
+-                  fontSize: 50,
+-                  fontWeight: FontWeight.w700,
+-                  color: Theme.of(context).colorScheme.primary),
+-            )
+-                : Container(),
+-          ],
+-        );
+-      }),
+-      floatingActionButton: SuperBuilder(builder: (context) {
+-        if (getVideosViewModelWeb.videoFile.state == null) {
+-          return FloatingActionButton(
+-            onPressed: () async {
+-              await getVideosViewModelWeb.pickVideo();
+-            },
+-            tooltip: "Pick video",
+-            child: const Icon(Icons.video_library),
+-          );
+-        } else {
+-          if (getVideosViewModelWeb.isCompressing.state) {
+-            if (getVideosViewModelWeb.currentSession.state != null ) {
+-              return FloatingActionButton.extended(
+-                icon: const Icon(Icons.clear),
+-                tooltip: "Cancel compression ",
+-                onPressed: () async {
+-                  try {
+-                    getVideosViewModelWeb.cancelCompressingVideo();
+-                  } catch (e) {
+-                    debugPrint('Error during cancel: $e');
+-                  }
+-                },
+-                label: const Text('Cancel'),
+-              );
+-            } else {
+-              return Container();
+-            }
+-          } else {
+-            return SingleChildScrollView(
+-              scrollDirection: Axis.horizontal,
+-              child: Padding(
+-                padding: const EdgeInsets.all(8.0),
+-                child: Row(
+-                  mainAxisAlignment: MainAxisAlignment.end,
+-                  crossAxisAlignment: CrossAxisAlignment.end,
+-                  children: [
+-                    if (getVideosViewModelWeb.isFabOpen.state) ...[
+-                      SizedBox(width: 30),
+-                      getVideosViewModelWeb.videoController.state != null &&
+-                          getVideosViewModelWeb
+-                              .videoController.state!.value.isInitialized
+-                          ? FloatingActionButton(
+-                        onPressed: () {
+-                          setState(() {
+-                            getVideosViewModelWeb.videoController.state!
+-                                .value.isPlaying
+-                                ? getVideosViewModelWeb
+-                                .videoController.state!
+-                                .pause()
+-                                : getVideosViewModelWeb
+-                                .videoController.state!
+-                                .play();
+-                          });
+-                        },
+-                        child: Icon(
+-                          getVideosViewModelWeb
+-                              .videoController.state!.value.isPlaying
+-                              ? Icons.pause
+-                              : Icons.play_arrow,
+-                        ),
+-                      )
+-                          : Container(),
+-                      SizedBox(width: 10),
+-                      FloatingActionButton.extended(
+-                        icon: const Icon(Icons.delete_outline),
+-                        tooltip: "Remove video",
+-                        onPressed: () async {
+-                          getVideosViewModelWeb.removeVideo();
+-                        },
+-                        label: const Text('Remove video'),
+-                      ),
+-                      SizedBox(width: 10),
+-                      FloatingActionButton.extended(
+-                        icon: const Icon(Icons.compress_outlined),
+-                        tooltip: "Compress Video",
+-                        onPressed: () async {
+-                          await getVideosViewModelWeb.compressVideo(
+-                              onComplete: (summaryReport) {
+-                                if (mounted) {
+-                                  _showCompressionSummaryDialog(
+-                                      context: context,
+-                                      summaryReport: summaryReport);
+-                                }
+-                              });
+-                        },
+-                        label: const Text('Compress'),
+-                      ),
+-                    ],
+-                    const SizedBox(width: 10),
+-                    FloatingActionButton(
+-                      heroTag: "toggle_fab",
+-                      onPressed: () {
+-                        setState(() {
+-                          getVideosViewModelWeb.isFabOpen.state =
+-                          !getVideosViewModelWeb.isFabOpen.state;
+-                        });
+-                      },
+-                      tooltip: getVideosViewModelWeb.isFabOpen.state
+-                          ? "Close Actions"
+-                          : "Show Actions",
+-                      child: Icon(getVideosViewModelWeb.isFabOpen.state
+-                          ? Icons.close
+-                          : Icons.compress_outlined),
+-                    ),
+-                  ],
+-                ),
+-              ),
+-            );
+-          }
+-        }
+-      }),
+-    );
+-  }
+-}
+diff --git a/lib/features/videos/presentation/state/videos_viewmodel_web.dart b/lib/features/videos/presentation/state/videos_viewmodel_web.dart
+deleted file mode 100644
+index 1be8e23..0000000
+--- a/lib/features/videos/presentation/state/videos_viewmodel_web.dart
++++ /dev/null
+@@ -1,317 +0,0 @@
+-import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
+-import 'package:ffmpeg_kit_flutter_new/ffmpeg_session.dart';
+-import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
+-import 'package:ffmpeg_kit_flutter_new/return_code.dart';
+-import 'package:flutter/foundation.dart';
+-import 'package:flutter_super/flutter_super.dart';
+-import 'package:gallery_saver_plus/gallery_saver.dart';
+-import 'dart:io'; // Still needed for File type, XFile uses it.
+-// import 'dart:html' as html; // Web specific
+-import 'package:image_picker/image_picker.dart';
+-import 'package:path_provider/path_provider.dart';
+-import 'package:petit/common/data/summary_report.dart';
+-import 'package:petit/features/videos/data/slider_value.dart';
+-import 'package:petit/features/videos/data/video_data.dart';
+-import 'package:share_handler/share_handler.dart'; // Assuming this has web support or is handled
+-import 'package:video_player/video_player.dart';
+-import '../../data/codec_config.dart';
+-
+-// IMPORTANT: This getVideosViewModel will be shadowed by the one in videos_page.dart
+-// due to conditional import. Ensure the instance used is the web one when on web.
+-// It might be better if the page directly instantiates or Super.init() the correct version.
+-// For now, keeping the structure, but this is a potential refactor point if Super.init
+-// doesn't play well with conditional imports for the *same* class name.
+-// A common pattern is to have a base class and platform-specific implementations.
+-// Or, the page itself does Super.init(kIsWeb ? VideosViewModelWeb() : VideosViewModelMobile())
+-// if class names were different.
+-VideosViewModelWeb get getVideosViewModelWeb => Super.init(VideosViewModelWeb());
+-
+-
+-class VideosViewModelWeb {
+-  final result = RxT<String?>(null);
+-  final isLoading = RxBool(false);
+-  final videoFile = RxT<File?>(null); // image_picker on web returns XFile, XFile.path is blob url, File(blob_url) is used by video_player
+-  final videoController = RxT<VideoPlayerController?>(null);
+-  final isCompressing = RxBool(false);
+-  final cfrQualitySlider = RxInt(80);
+-  final percentageComplete = RxInt(0);
+-  final selectedPresetIndex = RxInt(1);
+-  final isFabOpen = RxT<bool>(true);
+-  final currentSession = RxT<FFmpegSession?>(null);
+-
+-  List<SliderValue> ffmpegPresets = [
+-    SliderValue(value: "fast", desc: "Best Quality"),
+-    SliderValue(value: "medium", desc: "Balanced File"),
+-    SliderValue(value: "slow", desc: "Smallest File"),
+-  ];
+-
+-  String getLabelForCRFSlider(int value) {
+-    if (value <= 20) return "Minimal";
+-    if (value <= 40) return "Very Light";
+-    if (value <= 60) return "Light";
+-    if (value <= 80) return "Moderate";
+-    return "Heavy";
+-  }
+-
+-  void setIsLoading(bool isLoading) {
+-    this.isLoading.state = isLoading;
+-  }
+-
+-  void setIsCompressing(bool isCompressing) {
+-    this.isCompressing.state = isCompressing;
+-  }
+-
+-  void setPercentageComplete(int value) {
+-    percentageComplete.state = value;
+-  }
+-
+-  void setPresetIndex(int index) {
+-    selectedPresetIndex.state = index;
+-  }
+-
+-  Future<void> showResult(String? result) async {
+-    this.result.state = result;
+-  }
+-
+-  void updateCfrQualitySlider(double value) {
+-    cfrQualitySlider.state = (value * 100).toInt();
+-  }
+-
+-  Future<void> pickVideo() async {
+-    if (isCompressing.state) return;
+-    try {
+-      setIsLoading(true);
+-      final pickedXFile = await ImagePicker().pickVideo(source: ImageSource.gallery);
+-
+-      if (pickedXFile != null) {
+-        // On web, XFile.path is a blob URL. VideoPlayerController.file can handle this.
+-        final file = File(pickedXFile.path);
+-        videoController.state = VideoPlayerController.file(file);
+-        await videoController.state?.initialize();
+-        videoFile.state = file; // Store the File object
+-        setIsLoading(false);
+-      } else {
+-        await showResult("No file picked!");
+-        setIsLoading(false);
+-      }
+-    } catch (e) {
+-      await showResult("An error occurred - ${e.toString()}");
+-      setIsLoading(false);
+-    }
+-  }
+-
+-  Future<SummaryReport?> compressVideo({
+-    required Function(SummaryReport summaryReport) onComplete,
+-  }) async {
+-    try {
+-      currentSession.state?.cancel();
+-      currentSession.state = null;
+-      if (videoFile.state == null) return null;
+-
+-      // videoFile.state.path is critical here. For web, it's a blob URL.
+-      // FFmpegKit (WASM) needs to support blob URLs as input.
+-      final originalFile = videoFile.state!;
+-      setIsCompressing(true);
+-      percentageComplete.state = 0;
+-
+-      // getVideoData also relies on originalFile.path
+-      final data = await getVideoData(originalFile);
+-      if (data == null ||
+-          data.frameRate == null ||
+-          data.pixelHeight == null ||
+-          data.pixelWidth == null ||
+-          data.videoCodec == null) {
+-        await showResult('Error retrieving video properties');
+-        setIsCompressing(false);
+-        return null;
+-      }
+-
+-      // path_provider's getTemporaryDirectory() on web provides a virtual filesystem path.
+-      // FFmpegKit (WASM) needs to be able to write to this.
+-      final outputDir = await getTemporaryDirectory();
+-      final outPath = '${outputDir.path}/compressed_${DateTime.now().millisecondsSinceEpoch}.mp4';
+-
+-      final codecConfig = getVcodecConfigFromCodec(data.videoCodec!);
+-      final crf = (codecConfig.minCrf + ((cfrQualitySlider.state / 100) * (codecConfig.maxCrf - codecConfig.minCrf))).round();
+-      final selectedPreset = ffmpegPresets[selectedPresetIndex.state].value;
+-
+-      final command = "-i ${originalFile.path} -vcodec ${codecConfig.vcodec} -crf $crf -preset $selectedPreset $outPath";
+-
+-      debugPrint("FFmpeg command for web: $command");
+-
+-      currentSession.state = await FFmpegKit.executeAsync(
+-        command,
+-            (session) async {
+-          final returnCode = await session.getReturnCode();
+-          if (ReturnCode.isSuccess(returnCode)) {
+-            final compressedFileFromPath = File(outPath); // This File object points to the virtual path
+-
+-            // To download, we need bytes. Read from the virtual path.
+-            // This assumes FFmpegKit wrote the file correctly and it can be read back.
+-            // final Uint8List compressedBytes = await compressedFileFromPath.readAsBytes();
+-
+-            // originalFile.length() will attempt to get length of blob URL, which might work.
+-            // For compressedFile, we need its actual length after compression.
+-            // This might require reading the file if File(outPath).length() doesn't work on virtual fs.
+-            final sizeBefore = await originalFile.length();
+-            var sizeAfter = await compressedFileFromPath.length(); // Potentially problematic on virtual fs
+-
+-            // For web, we don't compare sizes to return original, we always provide the compressed one for download.
+-            // Or, if FFmpeg fails to make it smaller, the user gets the larger file.
+-            // For simplicity, we assume compressedFile is what we want to provide.
+-
+-            final saved = sizeBefore - sizeAfter;
+-            final savedPercent = (saved > 0 && sizeBefore > 0) ? (saved / sizeBefore).clamp(0, 1).toDouble() : 0.0;
+-
+-            // Pass the File object (pointing to virtual path) to saveLocalVideo
+-            await saveLocalVideo(compressedFileFromPath, outPath.split('/').last);
+-            removeVideo();
+-            await clearCacheDir(); // Web version of clearCacheDir
+-
+-            setIsCompressing(false);
+-            setIsLoading(false);
+-
+-            final summary = SummaryReport(
+-              originalSizeBytes: formatBytes(sizeBefore),
+-              compressedSizeBytes: formatBytes(sizeAfter),
+-              savedBytes: formatBytes(saved),
+-              savedPercent: savedPercent,
+-              path: "Downloads", // Web path
+-            );
+-            onComplete(summary);
+-          } else {
+-            final logs = await session.getAllLogsAsString();
+-            debugPrint("FFmpeg failed. Logs: $logs");
+-            await showResult('Compression failed. RC: ${await session.getReturnCode()}');
+-            setIsCompressing(false);
+-            setIsLoading(false);
+-          }
+-        },
+-            (log) => debugPrint('FFmpeg log (web): ${log.getMessage()}'),
+-            (statistics) {
+-          final progress = statistics.getTime();
+-          if (videoController.state?.value.isInitialized ?? false) {
+-            final duration = videoController.state!.value.duration.inMilliseconds;
+-            if (duration > 0) {
+-              final percent = (progress / duration * 100).clamp(0, 100).toInt();
+-              percentageComplete.state = percent;
+-            }
+-          }
+-        },
+-      );
+-    } catch (e) {
+-      await showResult('Error compressing video: $e');
+-      setIsCompressing(false);
+-      setIsLoading(false);
+-    }
+-    return null;
+-  }
+-
+-  Future<VideoData?> getVideoData(File videoFile) async {
+-    // FFprobeKit.getMediaInformation needs to work with blob URL (videoFile.path) on web
+-    try {
+-      final session = await FFprobeKit.getMediaInformation(videoFile.path);
+-      final info = session.getMediaInformation();
+-      if (info != null) {
+-        final videoStreams = info.getStreams().where((s) => s.getType() == 'video');
+-        if (videoStreams.isEmpty) {
+-          showResult('No video stream found in the file.');
+-          return null;
+-        }
+-        final videoStream = videoStreams.first;
+-        String? frameRateStr = videoStream.getAverageFrameRate();
+-        List<String>? parts = frameRateStr?.split('/');
+-        int? frameRate;
+-        if (parts != null && parts.length == 2) {
+-          double numerator = double.tryParse(parts[0]) ?? 0;
+-          double denominator = double.tryParse(parts[1]) ?? 1;
+-          if (denominator != 0) {
+-            frameRate = (numerator / denominator).round();
+-          }
+-        }
+-        return VideoData(
+-            videoFile: videoFile,
+-            pixelWidth: videoStream.getWidth(),
+-            pixelHeight: videoStream.getHeight(),
+-            videoCodec: videoStream.getCodec(),
+-            frameRate: frameRate);
+-      } else {
+-        showResult('Could not retrieve media information.');
+-      }
+-    } catch (e) {
+-      showResult('Error retrieving media information: $e');
+-    }
+-    return null;
+-  }
+-
+-  // Web specific save using dart:html
+-  // Future<void> saveLocalVideo(File fileToSave, String downloadFileName) async {
+-  //   try {
+-  //     // Read bytes from the File object (which might be from a virtual path from path_provider)
+-  //     final Uint8List bytes = await fileToSave.readAsBytes();
+-  //     final blob = html.Blob([bytes]);
+-  //     final url = html.Url.createObjectUrlFromBlob(blob);
+-  //     final anchor = html.AnchorElement(href: url)
+-  //       ..setAttribute("download", downloadFileName)
+-  //       ..click();
+-  //     html.Url.revokeObjectUrl(url);
+-  //     await showResult("Video saved to Downloads.");
+-  //   } catch (e) {
+-  //     await showResult("Error occurred while saving - ${e.toString()}");
+-  //   }
+-  // }
+-
+-  Future<void> saveLocalVideo(File fileToSave, String downloadFileName) async {
+-    try {
+-      // Save the file directly to the gallery
+-      final saved = await GallerySaver.saveImage(fileToSave.path);
+-      if (saved == true) {
+-        await showResult("Image saved to gallery.");
+-      } else {
+-        await showResult("Failed to save image.");
+-      }
+-    } catch (e) {
+-      await showResult("Error occurred while saving - ${e.toString()}");
+-    }
+-  }
+-
+-  String formatBytes(int bytes, [int decimals = 2]) {
+-    if (bytes <= 0) return "0 B";
+-    const suffixes = ["B", "KB", "MB", "GB"];
+-    final i = (bytes == 0) ? 0 : (bytes.bitLength / 10).floor();
+-    final size = bytes / (1 << (10 * i));
+-    return '${size.toStringAsFixed(decimals)} ${suffixes[i]}';
+-  }
+-
+-  // Web specific clearCacheDir (likely a no-op or minimal)
+-  Future<void> clearCacheDir() async {
+-    debugPrint("clearCacheDir (web): Called. Typically a no-op or clears specific plugin caches if possible.");
+-    // If ffmpeg_kit or other plugins create specific temp files via path_provider on web,
+-    // and if those files are identifiable, they could be cleared here.
+-    // For now, it's a no-op.
+-    // Example: final tempDir = await getTemporaryDirectory(); then iterate and delete.
+-    // But be cautious with virtual file systems.
+-  }
+-
+-  void removeVideo() {
+-    videoController.state?.dispose();
+-    videoController.state = null;
+-    videoFile.state = null;
+-    isCompressing.state = false;
+-    isLoading.state = false;
+-    percentageComplete.state = 0;
+-  }
+-
+-  void cancelCompressingVideo() {
+-    if (currentSession.state != null) {
+-      currentSession.state!.cancel();
+-      currentSession.state = null; // Important to nullify after cancel
+-      setIsCompressing(false);
+-      setIsLoading(false);
+-      setPercentageComplete(0);
+-      showResult("Compression cancelled.");
+-    } else {
+-      debugPrint("⚠️ Tried to cancel but session was null");
+-    }
+-  }
+-}
+diff --git a/lib/main.dart b/lib/main.dart
+index 2fd046b..7b64b58 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -1,13 +1,10 @@
+ import 'dart:async';
+-import 'dart:io';
+-import 'package:flutter_web_plugins/url_strategy.dart';
+ import 'package:firebase_core/firebase_core.dart';
+ import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+ import 'package:firebase_analytics/firebase_analytics.dart';
+ import 'package:flutter/foundation.dart';
+ import 'package:flutter/material.dart';
+ import 'package:flutter_riverpod/flutter_riverpod.dart';
+-import 'package:flutter_super/flutter_super.dart';
+ import 'package:dynamic_color/dynamic_color.dart';
+ import 'package:petit/common/data/shared_media_details.dart';
+ import 'package:petit/core/utils/app_scroll_behavior.dart';
+@@ -18,13 +15,9 @@ import 'package:petit/service_locator.dart';
+ import 'package:upgrader/upgrader.dart';
+ import 'config/routes/app_routes.dart';
+ import 'config/theme/app_theme.dart';
+-import 'features/home/presentation/pages/home_screen_web.dart';
+ import 'firebase_options.dart';
+ 
+ Future<void> main() async {
+-  // This is crucial for correct web routing:
+-  setUrlStrategy(PathUrlStrategy());
+-
+   WidgetsFlutterBinding.ensureInitialized();
+ 
+   await _initFirebase();
+@@ -38,12 +31,7 @@ Future<void> main() async {
+     }
+   }
+ 
+-  // flutter_super is only still used by the frozen web variants.
+-  runApp(
+-    ProviderScope(
+-      child: kIsWeb ? const SuperApp(child: MyApp()) : const MyApp(),
+-    ),
+-  );
++  runApp(const ProviderScope(child: MyApp()));
+ }
+ 
+ /// Firebase is not configured for Linux, and Crashlytics has no Windows or
+@@ -252,19 +240,17 @@ class _MyAppState extends State<MyApp> {
+           navigatorObservers: [if (observer != null) observer!],
+           initialRoute: '/',
+           onGenerateRoute: AppRoutes.onGenerateRoutes,
+-          home: kIsWeb
+-              ? HomeScreenWeb()
+-              : Platform.isIOS
+-                  ? UpgradeAlert(
+-                      dialogStyle: UpgradeDialogStyle.material,
+-                      showIgnore: false,
+-                      showLater: true,
+-                      upgrader: Upgrader(
+-                        durationUntilAlertAgain: const Duration(days: 3),
+-                      ),
+-                      child: HomeScreen(),
+-                    )
+-                  : HomeScreen(),
++          home: PlatformInfo.isIOS
++              ? UpgradeAlert(
++                  dialogStyle: UpgradeDialogStyle.material,
++                  showIgnore: false,
++                  showLater: true,
++                  upgrader: Upgrader(
++                    durationUntilAlertAgain: const Duration(days: 3),
++                  ),
++                  child: HomeScreen(),
++                )
++              : HomeScreen(),
+         );
+       },
+     );
+diff --git a/pubspec.yaml b/pubspec.yaml
+index d4f8d40..3804f3b 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -12,9 +12,6 @@ dependencies:
+   flutter:
+     sdk: flutter
+ 
+-  flutter_web_plugins:
+-    sdk: flutter
+-
+ #  cupertino_icons: ^1.0.8
+ #
+ #  flutter_svg: ^2.0.11
+@@ -31,9 +28,6 @@ dependencies:
+   #State management (Riverpod: the ViewModels are Notifiers)
+   flutter_riverpod: ^3.3.2
+ 
+-  #State management of the frozen web variants only
+-  flutter_super: ^1.4.10
+-
+   #Image carousel slider
+   carousel_slider: ^5.1.1
+ 

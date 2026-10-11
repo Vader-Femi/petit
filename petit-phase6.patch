@@ -1,0 +1,291 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index cf1fe1e..1d5173a 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -73,7 +73,7 @@ jobs:
+         if: matrix.target == 'linux'
+         run: |
+           sudo apt-get update
+-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libjson-glib-dev
++          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libjson-glib-dev
+           flutter config --enable-linux-desktop
+ 
+       - run: flutter pub get
+diff --git a/.github/workflows/production-release.yml b/.github/workflows/production-release.yml
+index a223bf2..6e57dcb 100644
+--- a/.github/workflows/production-release.yml
++++ b/.github/workflows/production-release.yml
+@@ -63,6 +63,46 @@ jobs:
+           name: petit-windows-zip
+           path: petit-windows.zip
+ 
++  build-linux:
++    name: Build Linux App
++    runs-on: ubuntu-latest
++    # Best effort for now: if this job fails, the other assets are still
++    # published (see the `if` on create-release).
++    steps:
++      - uses: actions/checkout@v4
++      - name: Set up Flutter
++        uses: subosito/flutter-action@v2
++        with:
++          flutter-version: '3.41.2'
++          channel: 'stable'
++      # ffmpeg_kit_flutter_new needs libjson-glib; the rest is Flutter's Linux toolchain.
++      - name: Install Linux build dependencies
++        run: |
++          sudo apt-get update
++          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libjson-glib-dev
++      - run: flutter config --enable-linux-desktop
++      - run: flutter pub get
++      - run: dart run build_runner build --delete-conflicting-outputs
++      - run: flutter build linux --release
++
++      - name: Package tar.gz
++        run: |
++          cp -r build/linux/x64/release/bundle petit-linux
++          tar -czf petit-linux-x64.tar.gz petit-linux
++
++      - name: Package .deb
++        run: |
++          VERSION="$(grep '^version:' pubspec.yaml | awk '{print $2}')"
++          bash packaging/linux/build-deb.sh build/linux/x64/release/bundle "$VERSION" petit-linux-amd64.deb
++
++      - name: Upload Linux assets
++        uses: actions/upload-artifact@v4
++        with:
++          name: petit-linux-assets
++          path: |
++            petit-linux-x64.tar.gz
++            petit-linux-amd64.deb
++
+   build-macos-ios:
+     name: Build macOS & iOS Apps
+     runs-on: macos-latest
+@@ -109,7 +149,10 @@ jobs:
+ 
+   create-release:
+     name: Create GitHub Release
+-    needs: [build-android, build-windows, build-macos-ios]
++    needs: [build-android, build-windows, build-macos-ios, build-linux]
++    # Linux is best effort for now: publish even if only the Linux build failed.
++    # To make it required, add `&& needs.build-linux.result == 'success'`.
++    if: ${{ !cancelled() && needs.build-android.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos-ios.result == 'success' }}
+     runs-on: ubuntu-latest
+     steps:
+       - uses: actions/checkout@v4
+@@ -133,3 +176,5 @@ jobs:
+             release-assets/petit-macos.zip
+             release-assets/petit-macos.dmg
+             release-assets/petit-ios.zip
++            release-assets/petit-linux-x64.tar.gz
++            release-assets/petit-linux-amd64.deb
+diff --git a/docs/releasing.md b/docs/releasing.md
+new file mode 100644
+index 0000000..c700567
+--- /dev/null
++++ b/docs/releasing.md
+@@ -0,0 +1,65 @@
++# Releasing
++
++Pushing to the `production` branch runs `.github/workflows/production-release.yml`, which builds
++every platform and publishes one GitHub release.
++
++## What a release contains
++
++| Asset | Platform | Notes |
++|---|---|---|
++| `app-release.apk` | Android | |
++| `petit-windows.zip` | Windows | Unzip and run `petit.exe`. Not code signed. |
++| `petit-macos.zip`, `petit-macos.dmg` | macOS | Not signed or notarized. |
++| `petit-ios.zip` | iOS | Unsigned `.app`; it cannot be installed on a device as is. |
++| `petit-linux-x64.tar.gz` | Linux (x86_64) | Unpack and run `petit-linux/petit`. |
++| `petit-linux-amd64.deb` | Debian, Ubuntu and derivatives | Installs to `/opt/petit`, adds a launcher and a menu entry. |
++
++## Linux
++
++Install the package (this also pulls in GTK and json-glib):
++
++```
++sudo apt install ./petit-linux-amd64.deb
++```
++
++Or use the tarball, which needs GTK 3 and libjson-glib installed:
++
++```
++tar xzf petit-linux-x64.tar.gz
++./petit-linux/petit
++```
++
++Only x86_64 is built: the FFmpeg Kit plugin ships Linux libraries for x86_64.
++
++**The Linux job is best effort for now.** If it fails, the release is still published without the
++Linux assets (see the `if:` on `create-release`). Once a release has built it successfully, make it
++required by adding `&& needs.build-linux.result == 'success'` to that `if:`.
++
++Build the package locally:
++
++```
++flutter build linux --release
++bash packaging/linux/build-deb.sh build/linux/x64/release/bundle \
++  "$(grep '^version:' pubspec.yaml | awk '{print $2}')" petit-linux-amd64.deb
++```
++
++The Linux application id is `io.github.vader_femi.petit` (`linux/CMakeLists.txt`). The desktop entry is
++named after it (`packaging/linux/io.github.vader_femi.petit.desktop`) so desktop environments can match
++the running window to its icon. Change both together if you ever change the id.
++
++## Not signed yet
++
++Windows and macOS builds are unsigned, so users see warnings:
++
++- **Windows**: SmartScreen shows "unknown publisher". Fixing it needs a code signing certificate
++  (or a signing service); the signing step would go in `build-windows`, after `flutter build windows`.
++- **macOS**: Gatekeeper blocks apps that are not signed with a *Developer ID Application* certificate
++  and notarized. Until then users can right-click the app and choose Open. Signing and notarizing
++  need an Apple Developer account, the certificate and notarization credentials stored as GitHub
++  secrets, and steps in `build-macos-ios` after `flutter build macos`.
++
++## Licensing
++
++The FFmpeg Kit build used for compression is a GPL build (it includes x264 and x265), and HEVC has
++its own patent licensing. Decide how to handle that (license, source offer) before distributing the
++desktop builds widely. This is not legal advice.
+diff --git a/linux/CMakeLists.txt b/linux/CMakeLists.txt
+index e6b8702..662d5b6 100644
+--- a/linux/CMakeLists.txt
++++ b/linux/CMakeLists.txt
+@@ -7,7 +7,7 @@ project(runner LANGUAGES CXX)
+ set(BINARY_NAME "petit")
+ # The unique GTK application identifier for this application. See:
+ # https://wiki.gnome.org/HowDoI/ChooseApplicationID
+-set(APPLICATION_ID "com.example.petit")
++set(APPLICATION_ID "io.github.vader_femi.petit")
+ 
+ # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
+ # versions of CMake.
+diff --git a/linux/my_application.cc b/linux/my_application.cc
+index 914cb60..1bb73a6 100644
+--- a/linux/my_application.cc
++++ b/linux/my_application.cc
+@@ -40,11 +40,11 @@ static void my_application_activate(GApplication* application) {
+   if (use_header_bar) {
+     GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
+     gtk_widget_show(GTK_WIDGET(header_bar));
+-    gtk_header_bar_set_title(header_bar, "petit");
++    gtk_header_bar_set_title(header_bar, "Petit");
+     gtk_header_bar_set_show_close_button(header_bar, TRUE);
+     gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
+   } else {
+-    gtk_window_set_title(window, "petit");
++    gtk_window_set_title(window, "Petit");
+   }
+ 
+   gtk_window_set_default_size(window, 1280, 720);
+@@ -117,6 +117,10 @@ static void my_application_class_init(MyApplicationClass* klass) {
+ static void my_application_init(MyApplication* self) {}
+ 
+ MyApplication* my_application_new() {
++  // Set the program name to the application ID so desktop environments can
++  // match the running window to its .desktop file (and its icon).
++  g_set_prgname(APPLICATION_ID);
++
+   return MY_APPLICATION(g_object_new(my_application_get_type(),
+                                      "application-id", APPLICATION_ID,
+                                      "flags", G_APPLICATION_NON_UNIQUE,
+diff --git a/packaging/linux/build-deb.sh b/packaging/linux/build-deb.sh
+new file mode 100755
+index 0000000..92ca450
+--- /dev/null
++++ b/packaging/linux/build-deb.sh
+@@ -0,0 +1,73 @@
++#!/usr/bin/env bash
++# Builds a .deb from a Flutter Linux release bundle.
++#
++# Usage: packaging/linux/build-deb.sh <bundle-dir> <version> <output.deb>
++#   bundle-dir  build/linux/x64/release/bundle  (output of `flutter build linux --release`)
++#   version     the pubspec version, e.g. 1.0.25+25
++#   output.deb  file to create, e.g. petit-linux-amd64.deb
++#
++# The app is installed to /opt/petit with a launcher at /usr/bin/petit, a
++# desktop entry and an icon. Needs `dpkg-deb`; uses ImageMagick's `convert`
++# for the icon when it is available.
++set -euo pipefail
++
++APP_ID="io.github.vader_femi.petit"
++MAINTAINER="Vader-Femi <vader-femi@users.noreply.github.com>"
++
++BUNDLE_DIR="${1:?usage: build-deb.sh <bundle-dir> <version> <output.deb>}"
++VERSION="${2:?usage: build-deb.sh <bundle-dir> <version> <output.deb>}"
++OUTPUT="${3:?usage: build-deb.sh <bundle-dir> <version> <output.deb>}"
++
++HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++ROOT="$(cd "$HERE/../.." && pwd)"
++
++if [ ! -x "$BUNDLE_DIR/petit" ]; then
++  echo "error: $BUNDLE_DIR/petit not found. Is this a Flutter Linux release bundle?" >&2
++  exit 1
++fi
++
++STAGE="$(mktemp -d)"
++trap 'rm -rf "$STAGE"' EXIT
++PKG="$STAGE/pkg"
++
++install -d "$PKG/DEBIAN" \
++  "$PKG/opt/petit" \
++  "$PKG/usr/bin" \
++  "$PKG/usr/share/applications" \
++  "$PKG/usr/share/icons/hicolor/512x512/apps"
++
++# The app itself (executable bits are kept).
++cp -a "$BUNDLE_DIR/." "$PKG/opt/petit/"
++find "$PKG/opt/petit" -type d -exec chmod 0755 {} +
++ln -s /opt/petit/petit "$PKG/usr/bin/petit"
++
++# Desktop entry and icon.
++install -m 0644 "$HERE/$APP_ID.desktop" "$PKG/usr/share/applications/$APP_ID.desktop"
++ICON_SRC="$ROOT/assets/images/app_logo.png"
++ICON_DST="$PKG/usr/share/icons/hicolor/512x512/apps/$APP_ID.png"
++if command -v convert >/dev/null 2>&1; then
++  convert "$ICON_SRC" -resize 512x512 "$ICON_DST"
++else
++  cp "$ICON_SRC" "$ICON_DST"
++fi
++chmod 0644 "$ICON_DST"
++
++INSTALLED_SIZE_KB="$(du -sk "$PKG" | cut -f1)"
++
++cat > "$PKG/DEBIAN/control" <<CONTROL
++Package: petit
++Version: $VERSION
++Section: graphics
++Priority: optional
++Architecture: amd64
++Maintainer: $MAINTAINER
++Installed-Size: $INSTALLED_SIZE_KB
++Depends: libgtk-3-0 | libgtk-3-0t64, libjson-glib-1.0-0 | libjson-glib-1.0-0t64
++Homepage: https://github.com/Vader-Femi/petit
++Description: Petit, an image and video compressor
++ Compress JPG, PNG, WebP and HEIC images and common video formats
++ to save space and send them faster, without losing visible quality.
++CONTROL
++
++dpkg-deb --build --root-owner-group "$PKG" "$OUTPUT"
++echo "Built $OUTPUT"
+diff --git a/packaging/linux/io.github.vader_femi.petit.desktop b/packaging/linux/io.github.vader_femi.petit.desktop
+new file mode 100644
+index 0000000..1a39221
+--- /dev/null
++++ b/packaging/linux/io.github.vader_femi.petit.desktop
+@@ -0,0 +1,11 @@
++[Desktop Entry]
++Type=Application
++Name=Petit
++GenericName=Image and video compressor
++Comment=Compress images and videos without losing visible quality
++Exec=petit
++Icon=io.github.vader_femi.petit
++Terminal=false
++Categories=Graphics;Photography;
++Keywords=compress;image;video;photo;heic;jpeg;png;
++StartupWMClass=io.github.vader_femi.petit

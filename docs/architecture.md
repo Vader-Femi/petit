@@ -47,9 +47,7 @@ Rules
   there (see the `TODO(desktop)` comment).
 - Files created while compressing go into the work folder (`core/utils/work_dir.dart`),
   never next to the user's originals.
-- The `*_web.dart` files are a frozen, separate web implementation. The old
-  `features/*/data/{image_data,video_data,codec_config}.dart` files only re-export
-  the domain entities so those web files keep compiling.
+- Web is not a supported target (the web variants were removed).
 
 ## Adaptive UI and desktop input
 
@@ -69,3 +67,23 @@ Rules
 - Mouse dragging is enabled for scrollables (`core/utils/app_scroll_behavior.dart`) and the
   image carousel shows previous/next buttons on desktop.
 
+## State management (Riverpod)
+
+Each tab has a **ViewModel**, which is a Riverpod `Notifier` holding one immutable **state** class:
+
+| ViewModel (provider) | State | Role |
+|---|---|---|
+| `ImagesViewModel` (`imagesViewModelProvider`) | `ImagesState` | picked images, quality settings, progress, one-shot message |
+| `VideosViewModel` (`videosViewModelProvider`) | `VideosState` | video, preview, settings, progress, running job |
+| `HomeViewModel` (`homeViewModelProvider`) | `int` (selected tab) | tab switching, `isBusy` |
+
+- Pages are `ConsumerStatefulWidget`s: `ref.watch(...)` for the state, `ref.read(....notifier)` to call
+  actions. State is never edited in place; ViewModels assign a new state with `copyWith`.
+- One-shot messages (`result`) are shown with `ref.listen` and then cleared.
+- `core/di/providers.dart` exposes the get_it services (use cases, picker, workspace, preview
+  factory) as providers. Tests override them with fakes (`test/helpers/viewmodel_fakes.dart`), so
+  the ViewModels are tested without plugins or a device.
+- Keep real state inside the state class, not in Notifier fields: Riverpod 3 creates a new Notifier
+  if its provider ever rebuilds. The only Notifier field is the cancelable handle of a running image
+  job (the provider watches nothing, so it never rebuilds). The carousel controller has its own provider.
+- flutter_super is no longer a dependency.

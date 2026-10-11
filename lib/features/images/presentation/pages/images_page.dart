@@ -1,44 +1,31 @@
 import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_super/flutter_super.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:petit/core/utils/adaptive.dart';
 import 'package:petit/core/utils/platform_utils.dart';
 import 'package:petit/core/utils/shortcut_labels.dart';
+import 'package:petit/features/images/presentation/state/images_state.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
 import '../../../../common/widgets/compression_summary_dialog.dart';
 import '../../../../common/widgets/slider_box.dart';
 
-class ImagesPage extends StatefulWidget {
-  const ImagesPage({
-    super.key,
-    // this.sharedFiles
-  });
-
-  // final List<SharedMediaFile>? sharedFiles;
+class ImagesPage extends ConsumerStatefulWidget {
+  const ImagesPage({super.key});
 
   @override
-  State<ImagesPage> createState() => _ImagesPageState();
+  ConsumerState<ImagesPage> createState() => _ImagesPageState();
 }
 
-class _ImagesPageState extends State<ImagesPage> {
+class _ImagesPageState extends ConsumerState<ImagesPage> {
   // Adjust to actual height of your FAB + margin
   static const fabHeight = 72.0;
 
-  @override
-  void initState() {
-    super.initState();
-    getImagesViewModel.addSharedImages(
-        // widget.sharedFiles
-        );
-  }
-
   /// The image carousel, with previous/next buttons on desktop (dragging with
   /// a mouse is not obvious there).
-  Widget _buildCarousel() {
-    final viewModel = getImagesViewModel;
-    final count = viewModel.pickedImages.state.length;
-    final currentIndex = viewModel.currentImageIndex.state ?? 0;
+  Widget _buildCarousel(ImagesState state, ImagesViewModel viewModel) {
+    final count = state.pickedImages.length;
+    final currentIndex = state.currentImageIndex ?? 0;
     final showArrows = PlatformInfo.isDesktop && count > 1;
 
     // StackFit.expand keeps the carousel's constraints tight, as they were
@@ -47,7 +34,7 @@ class _ImagesPageState extends State<ImagesPage> {
       fit: StackFit.expand,
       children: [
         CarouselSlider(
-          items: viewModel.pickedImages.state.map((imageData) {
+          items: state.pickedImages.map((imageData) {
             return ClipRRect(
               borderRadius: BorderRadius.circular(12),
               child: Image.file(
@@ -78,7 +65,7 @@ class _ImagesPageState extends State<ImagesPage> {
               ),
             );
           }).toList(),
-          carouselController: viewModel.carouselController,
+          carouselController: ref.read(carouselControllerProvider),
           options: CarouselOptions(
               autoPlay: false,
               enlargeStrategy: CenterPageEnlargeStrategy.zoom,
@@ -112,7 +99,8 @@ class _ImagesPageState extends State<ImagesPage> {
             child: Center(
               child: IconButton.filledTonal(
                 tooltip: 'Next image (\u2192)',
-                onPressed: currentIndex < count - 1 ? viewModel.nextImage : null,
+                onPressed:
+                    currentIndex < count - 1 ? viewModel.nextImage : null,
                 icon: const Icon(Icons.chevron_right),
               ),
             ),
@@ -122,20 +110,26 @@ class _ImagesPageState extends State<ImagesPage> {
   }
 
   /// "2 of 5" and the quality slider.
-  List<Widget> _buildControls(BuildContext context) {
+  List<Widget> _buildControls(
+    BuildContext context,
+    ImagesState state,
+    ImagesViewModel viewModel,
+  ) {
+    final currentImage = state.currentImage;
+
     return [
       // Current image index
       Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
         child: Text(
-          "${(getImagesViewModel.currentImageIndex.state ?? -1) + 1} of ${getImagesViewModel.pickedImages.state.length}",
+          "${(state.currentImageIndex ?? -1) + 1} of ${state.pickedImages.length}",
           style: const TextStyle(fontSize: 16),
         ),
       ),
 
       const SizedBox(height: 10),
 
-      if (getImagesViewModel.currentImage.state != null)
+      if (currentImage != null)
         buildSliderBox(
           context: context,
           label: "Image Quality",
@@ -147,250 +141,248 @@ class _ImagesPageState extends State<ImagesPage> {
               "•Middle = same clarity, smaller size\n"
               "•Recommended = Between 20% - 98%",
           slider: Slider(
-            value: ((getImagesViewModel.globalQualitySlider.state ??
-                        getImagesViewModel.currentImage.state!.quality) /
-                    100)
+            value: ((state.globalQuality ?? currentImage.quality) / 100)
                 .clamp(0.0, 1.0),
             min: 0,
             max: 1,
             divisions: 99,
-            label:
-                "${(getImagesViewModel.globalQualitySlider.state ?? getImagesViewModel.currentImage.state!.quality).round()}%",
+            label: "${(state.globalQuality ?? currentImage.quality).round()}%",
             onChanged: (value) {
-              if (getImagesViewModel.globalQualitySlider.state != null) {
-                getImagesViewModel.updateGlobalQualitySlider(value);
+              if (state.globalQuality != null) {
+                viewModel.updateGlobalQualitySlider(value);
               } else {
-                getImagesViewModel.updateCurrentImageQuality(value);
+                viewModel.updateCurrentImageQuality(value);
               }
             },
           ),
-          showGlobalSwitch: getImagesViewModel.pickedImages.length > 1,
-          isGlobal: getImagesViewModel.globalQualitySlider.state != null,
-          onGlobalToggle: (value) {
-            getImagesViewModel.globalQualitySlider.state = value ? 50 : null;
-          },
+          showGlobalSwitch: state.pickedImages.length > 1,
+          isGlobal: state.globalQuality != null,
+          onGlobalToggle: viewModel.setGlobalQualityEnabled,
         ),
     ];
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: SuperBuilder(builder: (context) {
-        if (getImagesViewModel.result.state != null) {
-          WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text("${getImagesViewModel.result.state}"),
-            ));
-            getImagesViewModel.showResult(null);
-          });
-        }
+  Widget _buildBody(
+    BuildContext context,
+    ImagesState state,
+    ImagesViewModel viewModel,
+  ) {
+    final loading = state.loading;
 
-        return Stack(
-          alignment: Alignment.center,
-          children: [
-            getImagesViewModel.pickedImages.isEmpty
-                ? Text(
-                    PlatformInfo.isDesktop
-                        ? "Add images and start compressing\nor drop them anywhere in this window"
-                        : "Add images and start compressing",
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 18,
-                    ),
-                  )
-                : Padding(
-                    padding: const EdgeInsets.fromLTRB(10, 10, 10, 15),
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final controls = _buildControls(context);
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        state.pickedImages.isEmpty
+            ? Text(
+                PlatformInfo.isDesktop
+                    ? "Add images and start compressing\nor drop them anywhere in this window"
+                    : "Add images and start compressing",
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 18,
+                ),
+              )
+            : Padding(
+                padding: const EdgeInsets.fromLTRB(10, 10, 10, 15),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final controls = _buildControls(context, state, viewModel);
 
-                        // Wide: preview on the left, controls on the right.
-                        if (constraints.maxWidth >= kTwoPaneMinWidth) {
-                          return Row(
-                            children: [
-                              Expanded(child: _buildCarousel()),
-                              const SizedBox(width: 24),
-                              SizedBox(
-                                width: kControlsPaneWidth,
-                                child: Center(
-                                  child: SingleChildScrollView(
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        ...controls,
-                                        // Reserve space for FABs
-                                        const SizedBox(height: fabHeight),
-                                      ],
-                                    ),
-                                  ),
+                    // Wide: preview on the left, controls on the right.
+                    if (constraints.maxWidth >= kTwoPaneMinWidth) {
+                      return Row(
+                        children: [
+                          Expanded(child: _buildCarousel(state, viewModel)),
+                          const SizedBox(width: 24),
+                          SizedBox(
+                            width: kControlsPaneWidth,
+                            child: Center(
+                              child: SingleChildScrollView(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    ...controls,
+                                    // Reserve space for FABs
+                                    const SizedBox(height: fabHeight),
+                                  ],
                                 ),
                               ),
-                            ],
-                          );
-                        }
-
-                        // Narrow: stacked, as on a phone.
-                        return Column(
-                          children: [
-                            Expanded(child: _buildCarousel()),
-                            const SizedBox(height: 10),
-                            ...controls,
-                            // Reserve space for FABs
-                            const SizedBox(height: fabHeight),
-                          ],
-                        );
-                      },
-                    ),
-                  ),
-            getImagesViewModel.isLoading.state.isLoading
-                ? Container(
-                    color: Colors.black.withValues(alpha: 0.85),
-                  )
-                : Container(),
-            getImagesViewModel.isLoading.state.isLoading
-                ? getImagesViewModel.isLoading.state.totalSteps == null
-                    ? Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        mainAxisSize: MainAxisSize.max,
-                        children: [
-                          Text("Loading Please Wait"),
-                          SizedBox(height: 5),
-                          CircularProgressIndicator()
+                            ),
+                          ),
                         ],
-                      )
-                    : Container(
-                        width: 100,
-                        height: 100,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                            color:
-                                Theme.of(context).colorScheme.primaryContainer,
-                            borderRadius: BorderRadius.circular(50)),
-                        child: Text(
-                          '${getImagesViewModel.isLoading.state.progressCounter}%',
-                          style: TextStyle(
-                              fontSize: 30,
-                              fontWeight: FontWeight.w900,
-                              color: Theme.of(context).colorScheme.primary),
-                        ),
-                      )
-                : Container(),
-            (getImagesViewModel.isLoading.state.isLoading &&
-                    getImagesViewModel.isLoading.state.totalSteps != null)
+                      );
+                    }
+
+                    // Narrow: stacked, as on a phone.
+                    return Column(
+                      children: [
+                        Expanded(child: _buildCarousel(state, viewModel)),
+                        const SizedBox(height: 10),
+                        ...controls,
+                        // Reserve space for FABs
+                        const SizedBox(height: fabHeight),
+                      ],
+                    );
+                  },
+                ),
+              ),
+        loading.isLoading
+            ? Container(
+                color: Colors.black.withValues(alpha: 0.85),
+              )
+            : Container(),
+        loading.isLoading
+            ? loading.totalSteps == null
                 ? Column(
                     mainAxisAlignment: MainAxisAlignment.center,
+                    mainAxisSize: MainAxisSize.max,
                     children: [
-                      SizedBox(
-                        height: 40,
-                      ),
-                      CircularStepProgressIndicator(
-                        totalSteps:
-                            getImagesViewModel.isLoading.state.totalSteps ?? 1,
-                        stepSize: 20,
-                        selectedStepSize: 30,
-                        currentStep:
-                            getImagesViewModel.isLoading.state.completedSteps ??
-                                1,
-                        width: 180,
-                        height: 180,
-                        padding: 0.02,
-                        selectedColor: Theme.of(context).colorScheme.primary,
-                        unselectedColor:
-                            Theme.of(context).colorScheme.surfaceContainer,
-                      ),
-                      Text(
-                        "Please keep app open\nwhile compressing",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            color: Theme.of(context).colorScheme.primary),
-                      ),
+                      Text("Loading Please Wait"),
+                      SizedBox(height: 5),
+                      CircularProgressIndicator()
                     ],
                   )
-                : Container(),
-          ],
-        );
-      }),
-      floatingActionButton: SuperBuilder(
-        builder: (context) {
-          if (getImagesViewModel.pickedImages.isEmpty) {
-            return FloatingActionButton(
-              onPressed: () async =>
-                  getImagesViewModel.selectImageButtonUseCase(),
-              tooltip: withShortcut("Add Images", "O"),
-              child: const Icon(Icons.add_photo_alternate_outlined),
-            );
-          } else {
-            if (getImagesViewModel.isLoading.state.isLoading) {
-              return FloatingActionButton.extended(
-                icon: const Icon(Icons.clear),
-                tooltip: withShortcut("Cancel compression", "Esc",
-                    withModifier: false),
-                onPressed: () async => getImagesViewModel.requestCancel(),
-                label: const Text('Cancel'),
-              );
-            } else {
-              return SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      if (getImagesViewModel.isFabOpen.state) ...[
-                        FloatingActionButton.extended(
-                          icon: const Icon(Icons.compress_outlined),
-                          tooltip: withShortcut("Compress Images", "Enter"),
-                          onPressed: () async {
-                            getImagesViewModel.startCompression(
-                                onComplete: (summaryReport) {
-                              if (context.mounted) {
-                                showCompressionSummaryDialog(
-                                    context: context,
-                                    summaryReport: summaryReport);
-                              }
-                            });
-                          },
-                          label: const Text('Compress'),
-                        ),
-                        SizedBox(width: 10),
-                        FloatingActionButton.extended(
-                          icon: const Icon(Icons.delete_outline),
-                          tooltip: withShortcut("Remove images", "Del",
-                              withModifier: false),
-                          onPressed: () async {
-                            getImagesViewModel.cancelCompressingAllImages();
-                          },
-                          label: const Text('Clear'),
-                        ),
-                      ],
-                      const SizedBox(width: 10),
-                      FloatingActionButton(
-                        heroTag: "toggle_fab",
-                        onPressed: () {
-                          setState(() {
-                            getImagesViewModel.isFabOpen.state =
-                                !getImagesViewModel.isFabOpen.state;
-                          });
-                        },
-                        tooltip: getImagesViewModel.isFabOpen.state
-                            ? "Close Actions"
-                            : "Show Actions",
-                        child: Icon(getImagesViewModel.isFabOpen.state
-                            ? Icons.close
-                            : Icons.compress_outlined),
-                      ),
-                    ],
+                : Container(
+                    width: 100,
+                    height: 100,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(50)),
+                    child: Text(
+                      '${loading.progressCounter}%',
+                      style: TextStyle(
+                          fontSize: 30,
+                          fontWeight: FontWeight.w900,
+                          color: Theme.of(context).colorScheme.primary),
+                    ),
+                  )
+            : Container(),
+        (loading.isLoading && loading.totalSteps != null)
+            ? Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    height: 40,
                   ),
-                ),
-              );
-            }
-          }
-        },
+                  CircularStepProgressIndicator(
+                    totalSteps: loading.totalSteps ?? 1,
+                    stepSize: 20,
+                    selectedStepSize: 30,
+                    currentStep: loading.completedSteps ?? 1,
+                    width: 180,
+                    height: 180,
+                    padding: 0.02,
+                    selectedColor: Theme.of(context).colorScheme.primary,
+                    unselectedColor:
+                        Theme.of(context).colorScheme.surfaceContainer,
+                  ),
+                  Text(
+                    "Please keep app open\nwhile compressing",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: Theme.of(context).colorScheme.primary),
+                  ),
+                ],
+              )
+            : Container(),
+      ],
+    );
+  }
+
+  Widget _buildFab(
+    BuildContext context,
+    ImagesState state,
+    ImagesViewModel viewModel,
+  ) {
+    if (state.pickedImages.isEmpty) {
+      return FloatingActionButton(
+        onPressed: () async => viewModel.pickImages(),
+        tooltip: withShortcut("Add Images", "O"),
+        child: const Icon(Icons.add_photo_alternate_outlined),
+      );
+    }
+
+    if (state.loading.isLoading) {
+      return FloatingActionButton.extended(
+        icon: const Icon(Icons.clear),
+        tooltip: withShortcut("Cancel compression", "Esc", withModifier: false),
+        onPressed: () async => viewModel.requestCancel(),
+        label: const Text('Cancel'),
+      );
+    }
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Padding(
+        padding: const EdgeInsets.all(8.0),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            if (state.isFabOpen) ...[
+              FloatingActionButton.extended(
+                icon: const Icon(Icons.compress_outlined),
+                tooltip: withShortcut("Compress Images", "Enter"),
+                onPressed: () async {
+                  viewModel.startCompression(onComplete: (summaryReport) {
+                    if (mounted) {
+                      showCompressionSummaryDialog(
+                          context: context, summaryReport: summaryReport);
+                    }
+                  });
+                },
+                label: const Text('Compress'),
+              ),
+              SizedBox(width: 10),
+              FloatingActionButton.extended(
+                icon: const Icon(Icons.delete_outline),
+                tooltip:
+                    withShortcut("Remove images", "Del", withModifier: false),
+                onPressed: () async {
+                  viewModel.clearPickedImages();
+                },
+                label: const Text('Clear'),
+              ),
+            ],
+            const SizedBox(width: 10),
+            FloatingActionButton(
+              heroTag: "toggle_fab",
+              onPressed: viewModel.toggleFab,
+              tooltip: state.isFabOpen ? "Close Actions" : "Show Actions",
+              child: Icon(
+                  state.isFabOpen ? Icons.close : Icons.compress_outlined),
+            ),
+          ],
+        ),
       ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = ref.watch(imagesViewModelProvider);
+    final viewModel = ref.read(imagesViewModelProvider.notifier);
+
+    // Show one-shot messages as snackbars, then clear them.
+    ref.listen<String?>(
+      imagesViewModelProvider.select((s) => s.result),
+      (previous, message) {
+        if (message == null) return;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(message)));
+          viewModel.clearResult();
+        });
+      },
+    );
+
+    return Scaffold(
+      body: _buildBody(context, state, viewModel),
+      floatingActionButton: _buildFab(context, state, viewModel),
     );
   }
 }

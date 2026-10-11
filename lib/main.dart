@@ -1,12 +1,10 @@
 import 'dart:async';
-import 'dart:io';
-import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_super/flutter_super.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:petit/common/data/shared_media_details.dart';
 import 'package:petit/core/utils/app_scroll_behavior.dart';
@@ -17,13 +15,9 @@ import 'package:petit/service_locator.dart';
 import 'package:upgrader/upgrader.dart';
 import 'config/routes/app_routes.dart';
 import 'config/theme/app_theme.dart';
-import 'features/home/presentation/pages/home_screen_web.dart';
 import 'firebase_options.dart';
 
 Future<void> main() async {
-  // This is crucial for correct web routing:
-  setUrlStrategy(PathUrlStrategy());
-
   WidgetsFlutterBinding.ensureInitialized();
 
   await _initFirebase();
@@ -37,7 +31,7 @@ Future<void> main() async {
     }
   }
 
-  runApp(const SuperApp(child: MyApp()));
+  runApp(const ProviderScope(child: MyApp()));
 }
 
 /// Firebase is not configured for Linux, and Crashlytics has no Windows or
@@ -246,19 +240,17 @@ class _MyAppState extends State<MyApp> {
           navigatorObservers: [if (observer != null) observer!],
           initialRoute: '/',
           onGenerateRoute: AppRoutes.onGenerateRoutes,
-          home: kIsWeb
-              ? HomeScreenWeb()
-              : Platform.isIOS
-                  ? UpgradeAlert(
-                      dialogStyle: UpgradeDialogStyle.material,
-                      showIgnore: false,
-                      showLater: true,
-                      upgrader: Upgrader(
-                        durationUntilAlertAgain: const Duration(days: 3),
-                      ),
-                      child: HomeScreen(),
-                    )
-                  : HomeScreen(),
+          home: PlatformInfo.isIOS
+              ? UpgradeAlert(
+                  dialogStyle: UpgradeDialogStyle.material,
+                  showIgnore: false,
+                  showLater: true,
+                  upgrader: Upgrader(
+                    durationUntilAlertAgain: const Duration(days: 3),
+                  ),
+                  child: HomeScreen(),
+                )
+              : HomeScreen(),
         );
       },
     );

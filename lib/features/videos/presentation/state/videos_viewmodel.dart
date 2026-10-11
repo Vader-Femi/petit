@@ -2,109 +2,61 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_super/flutter_super.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:petit/common/data/summary_report.dart';
 import 'package:petit/common/domain/media_exception.dart';
-import 'package:petit/common/domain/services/media_picker.dart';
-import 'package:petit/common/domain/services/workspace.dart';
-import 'package:petit/features/videos/data/slider_value.dart';
+import 'package:petit/core/di/providers.dart';
+import 'package:petit/core/utils/format_bytes.dart';
 import 'package:petit/features/videos/domain/usecases/compress_video.dart';
-import 'package:petit/features/videos/presentation/preview/video_preview.dart';
-import 'package:petit/features/videos/presentation/preview/video_preview_factory.dart';
-import 'package:petit/service_locator.dart';
 import 'package:share_handler/share_handler.dart';
+import 'video_presets.dart';
+import 'videos_state.dart';
 
-VideosViewModel get getVideosViewModel => Super.init(VideosViewModel());
+final videosViewModelProvider =
+    NotifierProvider<VideosViewModel, VideosState>(VideosViewModel.new);
 
-/// UI state for the video tab. Probing, compressing and saving live in
-/// [CompressVideoUseCase]; this class only holds state and reacts to it.
-class VideosViewModel {
-  final result = RxT<String?>(null);
-  final isLoading = RxBool(false);
-  final videoFile = RxT<File?>(null);
-  final videoPreview = RxT<VideoPreview?>(null);
-  final isCompressing = RxBool(false);
-  final cfrQualitySlider = RxInt(80);
-  final percentageComplete = RxInt(0);
-  final selectedPresetIndex = RxInt(1);
-  final isFabOpen = RxT<bool>(true);
-  final currentTask = RxT<VideoCompressionJob?>(null);
-
-  // Resolved lazily: `getVideosViewModel` constructs a new instance on every
-  // access, so nothing may be looked up in the constructor.
-  late final MediaPicker _picker = sl<MediaPicker>();
-  late final Workspace _workspace = sl<Workspace>();
-  late final CompressVideoUseCase _compressVideo = sl<CompressVideoUseCase>();
+/// ViewModel of the Videos tab. Probing, compressing and saving live in
+/// `CompressVideoUseCase`; this class only holds state and reacts to it.
+class VideosViewModel extends Notifier<VideosState> {
+  @override
+  VideosState build() => const VideosState();
 
   /// True while a video is being loaded or compressed.
-  bool get isBusy => isLoading.state || isCompressing.state;
+  bool get isBusy => state.isBusy;
 
-  List<SliderValue> ffmpegPresets = [
-    // SliderValue(value: "ultrafast", desc: "ultrafast"),
-    // SliderValue(value: "superfast", desc: "superfast"),
-    // SliderValue(value: "veryfast", desc: "veryfast"),
-    // SliderValue(value: "faster", desc: "faster"),
-    SliderValue(value: "fast", desc: "Best Quality"),
-    SliderValue(value: "medium", desc: "Balanced File"), // 🟢 good default
-    SliderValue(value: "slow", desc: "Smallest File"),
-    // SliderValue(value: "slower", desc: "slower"),
-    // SliderValue(value: "veryslow", desc: "veryslow"),
-  ];
-
-  String getLabelForCRFSlider(int value) {
-    if (value <= 20) return "Minimal";
-    if (value <= 40) return "Very Light";
-    if (value <= 60) return "Light";
-    if (value <= 80) return "Moderate";
-    return "Heavy";
+  void showResult(String? message) {
+    state = state.copyWith(result: message);
   }
 
-  void setIsLoading(bool isLoading) {
-    this.isLoading.state = isLoading;
-  }
+  void clearResult() => showResult(null);
 
-  void setIsCompressing(bool isCompressing) {
-    this.isCompressing.state = isCompressing;
-  }
-
-  void setPercentageComplete(int value) {
-    percentageComplete.state = value;
+  void toggleFab() {
+    state = state.copyWith(isFabOpen: !state.isFabOpen);
   }
 
   void setPresetIndex(int index) {
-    selectedPresetIndex.state = index;
-  }
-
-  Future<void> showResult(String? result) async {
-    this.result.state = result;
+    state = state.copyWith(presetIndex: index);
   }
 
   void updateCfrQualitySlider(double value) {
-    cfrQualitySlider.state = (value * 100).toInt();
+    state = state.copyWith(crfQuality: (value * 100).toInt());
   }
 
   Future<void> pickVideo() async {
-    if (isCompressing.state) return;
+    if (state.isCompressing) return;
     try {
-      setIsLoading(true);
+      state = state.copyWith(isLoading: true);
 
-      final path = await _picker.pickVideo();
+      final path = await ref.read(mediaPickerProvider).pickVideo();
 
       if (path != null) {
-        final file = File(path);
-        final preview = createVideoPreview(file);
-        videoPreview.state = preview;
-        await preview.initialize();
-        videoFile.state = file;
-
-        setIsLoading(false);
+        await _loadVideo(path);
       } else {
-        await showResult("No file picked!");
-        setIsLoading(false);
+        state = state.copyWith(result: "No file picked!", isLoading: false);
       }
     } catch (e) {
-      await showResult("An error occurred - ${e.toString()}");
-      setIsLoading(false);
+      state = state.copyWith(
+          result: "An error occurred - ${e.toString()}", isLoading: false);
     }
   }
 
@@ -117,71 +69,76 @@ class VideosViewModel {
   /// Loads the video at [path] (shared into the app, or dropped onto the
   /// window), replacing the current one.
   Future<void> addVideoPath(String path) async {
-    if (isCompressing.state) return;
+    if (state.isCompressing) return;
     try {
-      setIsLoading(true);
-
-      final file = File(path);
-      final preview = createVideoPreview(file);
-      videoPreview.state = preview;
-      await preview.initialize();
-      videoFile.state = file;
-
-      setIsLoading(false);
+      state = state.copyWith(isLoading: true);
+      await _loadVideo(path);
     } catch (e) {
-      await showResult("An error occurred - ${e.toString()}");
-      setIsLoading(false);
+      state = state.copyWith(
+          result: "An error occurred - ${e.toString()}", isLoading: false);
     }
   }
 
-  /// Starts compressing the selected video. Returns immediately; the summary
-  /// is delivered through [onComplete] when compression finishes.
-  Future<SummaryReport?> compressVideo({
-    required Function(SummaryReport summaryReport) onComplete,
+  Future<void> _loadVideo(String path) async {
+    final file = File(path);
+    final preview = ref.read(videoPreviewFactoryProvider)(file);
+
+    // The preview is shown only once it reports isInitialized.
+    state = state.copyWith(preview: preview);
+    await preview.initialize();
+
+    state = state.copyWith(videoFile: file, isLoading: false);
+  }
+
+  /// Starts compressing the selected video. Returns once the job has started;
+  /// the summary is delivered through [onComplete] when it finishes.
+  Future<void> compressVideo({
+    required void Function(SummaryReport summaryReport) onComplete,
   }) async {
     try {
-      currentTask.state?.cancel();
-      currentTask.state = null;
-      if (videoFile.state == null) return null;
-      final originalFile = videoFile.state!;
-      setIsCompressing(true);
-      percentageComplete.state = 0;
+      state.currentJob?.cancel();
+      state = state.copyWith(currentJob: null);
 
-      final job = await _compressVideo(
+      final originalFile = state.videoFile;
+      if (originalFile == null) return;
+
+      state = state.copyWith(isCompressing: true, percentComplete: 0);
+
+      final job = await ref.read(compressVideoUseCaseProvider)(
         input: originalFile,
-        qualityPercent: cfrQualitySlider.state,
-        preset: ffmpegPresets[selectedPresetIndex.state].value,
-        totalDurationMs: videoPreview.state?.duration.inMilliseconds,
-        onProgress: (percent) => percentageComplete.state = percent,
+        qualityPercent: state.crfQuality,
+        preset: kFfmpegPresets[state.presetIndex].value,
+        totalDurationMs: state.preview?.duration.inMilliseconds,
+        onProgress: (percent) =>
+            state = state.copyWith(percentComplete: percent),
         onError: showResult,
       );
 
-      currentTask.state = job;
+      state = state.copyWith(currentJob: job);
       unawaited(_awaitOutcome(job, onComplete));
     } on MediaException catch (e) {
-      await showResult(e.message);
-      setIsCompressing(false);
+      state = state.copyWith(result: e.message, isCompressing: false);
     } catch (e) {
-      await showResult('Error compressing video: $e');
-      setIsCompressing(false);
-      setIsLoading(false);
+      state = state.copyWith(
+        result: 'Error compressing video: $e',
+        isCompressing: false,
+        isLoading: false,
+      );
     }
-    return null; // the summary is delivered through onComplete
   }
 
   Future<void> _awaitOutcome(
     VideoCompressionJob job,
-    Function(SummaryReport summaryReport) onComplete,
+    void Function(SummaryReport summaryReport) onComplete,
   ) async {
     try {
       final outcome = await job.outcome;
 
-      if (identical(currentTask.state, job)) currentTask.state = null;
+      _forgetJob(job);
       removeVideo();
-      await _workspace.clear();
+      await ref.read(workspaceProvider).clear();
 
-      setIsCompressing(false);
-      setIsLoading(false);
+      state = state.copyWith(isCompressing: false, isLoading: false);
 
       onComplete(SummaryReport(
         originalSizeBytes: formatBytes(outcome.originalBytes),
@@ -191,44 +148,44 @@ class VideosViewModel {
         path: outcome.destinationLabel,
       ));
     } on MediaException catch (e) {
-      if (identical(currentTask.state, job)) currentTask.state = null;
-      await showResult(e.message);
-      setIsCompressing(false);
-      setIsLoading(false);
+      _forgetJob(job);
+      state = state.copyWith(
+          result: e.message, isCompressing: false, isLoading: false);
     } catch (e) {
-      if (identical(currentTask.state, job)) currentTask.state = null;
-      await showResult('Error compressing video: $e');
-      setIsCompressing(false);
-      setIsLoading(false);
+      _forgetJob(job);
+      state = state.copyWith(
+          result: 'Error compressing video: $e',
+          isCompressing: false,
+          isLoading: false);
     }
   }
 
-  String formatBytes(int bytes, [int decimals = 2]) {
-    if (bytes <= 0) return "0 B";
-    const suffixes = ["B", "KB", "MB", "GB"];
-    final i = (bytes == 0) ? 0 : (bytes.bitLength / 10).floor();
-    final size = bytes / (1 << (10 * i));
-    return '${size.toStringAsFixed(decimals)} ${suffixes[i]}';
+  void _forgetJob(VideoCompressionJob job) {
+    if (identical(state.currentJob, job)) {
+      state = state.copyWith(currentJob: null);
+    }
   }
 
+  /// Drops the selected video and resets the compression state.
   void removeVideo() {
-    videoPreview.state?.dispose();
-    videoPreview.state = null;
-    videoFile.state = null;
-    isCompressing.state = false;
-    isLoading.state = false;
-    percentageComplete.state = 0;
+    state.preview?.dispose();
+    state = state.copyWith(
+      preview: null,
+      videoFile: null,
+      isCompressing: false,
+      isLoading: false,
+      percentComplete: 0,
+    );
   }
 
   void cancelCompressingVideo() {
-    final task = currentTask.state;
-    if (task != null) {
-      unawaited(task.cancel());
-      currentTask.state = null;
-      setIsCompressing(false);
-      setIsLoading(false);
+    final job = state.currentJob;
+    if (job != null) {
+      unawaited(job.cancel());
+      state = state.copyWith(
+          currentJob: null, isCompressing: false, isLoading: false);
     } else {
-      debugPrint("⚠️ Tried to cancel but there was no running task");
+      debugPrint("Tried to cancel but there was no running task");
     }
   }
 }

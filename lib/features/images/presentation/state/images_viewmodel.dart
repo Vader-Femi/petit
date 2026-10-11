@@ -2,79 +2,83 @@ import 'package:async/async.dart';
 import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/animation.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_super/flutter_super.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:petit/common/data/summary_report.dart';
 import 'package:petit/common/domain/media_exception.dart';
-import 'package:petit/common/domain/services/media_picker.dart';
-import 'package:petit/common/domain/services/workspace.dart';
+import 'package:petit/core/di/providers.dart';
+import 'package:petit/core/utils/format_bytes.dart';
 import 'package:petit/features/images/domain/entities/image_data.dart';
 import 'package:petit/features/images/domain/usecases/compress_images.dart';
-import 'package:petit/features/images/domain/usecases/read_images.dart';
-import 'package:petit/service_locator.dart';
 import 'package:share_handler/share_handler.dart';
-import '../../data/loading_data.dart';
-import '../../../../common/data/summary_report.dart';
+import 'images_state.dart';
+import 'loading_data.dart';
 
-ImagesViewModel get getImagesViewModel => Super.init(ImagesViewModel());
+final imagesViewModelProvider =
+    NotifierProvider<ImagesViewModel, ImagesState>(ImagesViewModel.new);
 
-/// UI state for the image tab. Picking, reading, compressing and saving live
+/// Lives in its own provider so keyboard shortcuts and the page share one
+/// controller without storing it in the ViewModel.
+final carouselControllerProvider =
+    Provider<CarouselSliderController>((ref) => CarouselSliderController());
+
+/// ViewModel of the Images tab. Picking, reading, compressing and saving live
 /// in the domain use cases; this class only holds state and reacts to them.
-class ImagesViewModel {
-  final result = RxT<String?>(null);
-  final isLoading = RxT<LoadingData>(LoadingData(isLoading: false));
-  final pickedImages = RxList<ImageData>([]);
-  final currentImage = RxT<ImageData?>(null);
-  final currentImageIndex = RxT<int?>(null);
-  final globalQualitySlider = RxT<int?>(null);
-  final isFabOpen = RxT<bool>(true);
-
+class ImagesViewModel extends Notifier<ImagesState> {
+  /// Handle of the running batch, replaced for every job. It is never
+  /// rebuilt by Riverpod because [build] watches nothing.
   CancelableCompleter<void> completer = CancelableCompleter();
 
-  /// Owned here (not by the page) so keyboard shortcuts can move the carousel.
-  final carouselController = CarouselSliderController();
+  @override
+  ImagesState build() => const ImagesState();
 
   /// True while images are being read or compressed.
-  bool get isBusy => isLoading.state.isLoading;
+  bool get isBusy => state.isBusy;
 
-  // Resolved lazily: `getImagesViewModel` constructs a new instance on every
-  // access, so nothing may be looked up in the constructor.
-  late final MediaPicker _picker = sl<MediaPicker>();
-  late final Workspace _workspace = sl<Workspace>();
-  late final ReadImagesUseCase _readImages = sl<ReadImagesUseCase>();
-  late final CompressImagesUseCase _compressImages =
-      sl<CompressImagesUseCase>();
-
-  void setIsLoading(LoadingData loadingData) {
-    isLoading.state = loadingData;
+  void setLoading(LoadingData loading) {
+    state = state.copyWith(loading: loading);
   }
 
-  Future<void> showResult(String? result) async {
-    this.result.state = result;
+  void showResult(String? message) {
+    state = state.copyWith(result: message);
   }
 
-  Future<void> updateCurrentImageAndIndex(int index) async {
-    final image = pickedImages.state.elementAt(index);
-    currentImage.state = image;
-    currentImageIndex.state = index;
+  void clearResult() => showResult(null);
+
+  void toggleFab() {
+    state = state.copyWith(isFabOpen: !state.isFabOpen);
+  }
+
+  void updateCurrentImageAndIndex(int index) {
+    final images = state.pickedImages;
+    if (index < 0 || index >= images.length) return;
+    state = state.copyWith(currentImage: images[index], currentImageIndex: index);
   }
 
   void updateCurrentImageQuality(double value) {
-    if (currentImage.state != null) {
-      final currentImageIndex =
-          pickedImages.state.indexOf(currentImage.state!, 0);
+    final current = state.currentImage;
+    if (current == null) return;
 
-      final newImageData =
-          currentImage.state!.copyWith(quality: (value * 100).toInt());
-      pickedImages.state[currentImageIndex] = newImageData;
-      currentImage.state = newImageData;
+    final index = state.pickedImages.indexOf(current);
+    if (index < 0) return;
 
-      if (globalQualitySlider.state != null) {
-        globalQualitySlider.state = null;
-      }
-    }
+    final updated = current.copyWith(quality: (value * 100).toInt());
+    final images = List<ImageData>.of(state.pickedImages)..[index] = updated;
+
+    // Editing one image's quality turns the shared quality off.
+    state = state.copyWith(
+      pickedImages: images,
+      currentImage: updated,
+      globalQuality: null,
+    );
   }
 
   void updateGlobalQualitySlider(double value) {
-    globalQualitySlider.state = (value * 100).toInt();
+    state = state.copyWith(globalQuality: (value * 100).toInt());
+  }
+
+  /// Switches "same quality for all images" on (at 50) or off.
+  void setGlobalQualityEnabled(bool enabled) {
+    state = state.copyWith(globalQuality: enabled ? 50 : null);
   }
 
   Future<void> addSharedImages([List<SharedAttachment>? sharedFiles]) async {
@@ -87,127 +91,131 @@ class ImagesViewModel {
   /// the app, or dropped onto the window).
   Future<void> addImagePaths(List<String> paths) async {
     if (paths.isEmpty) return;
-    if (isLoading.state.isLoading) return;
+    if (state.isBusy) return;
 
     try {
-      setIsLoading(
-        LoadingData(
-            isLoading: true,
-            completedSteps: null,
-            totalSteps: null,
-            progressCounter: null),
+      setLoading(const LoadingData(isLoading: true));
+
+      state = state.copyWith(
+        pickedImages: const [],
+        currentImage: null,
+        globalQuality: null,
       );
 
-      pickedImages.state = [];
-      currentImage.state = null;
-      globalQualitySlider.state = null;
+      final picked = await ref.read(readImagesUseCaseProvider)(paths);
 
-      final picked = await _readImages(paths);
-
-      pickedImages.state = picked;
-      currentImage.state = picked[0];
-      currentImageIndex.state = 0;
-      setIsLoading(LoadingData(isLoading: false));
+      state = state.copyWith(
+        pickedImages: picked,
+        currentImage: picked[0],
+        currentImageIndex: 0,
+        loading: const LoadingData(isLoading: false),
+      );
     } catch (e) {
-      await showResult("An error ocurred - ${e.toString()}");
-      setIsLoading(LoadingData(isLoading: false));
+      state = state.copyWith(
+        result: "An error ocurred - ${e.toString()}",
+        loading: const LoadingData(isLoading: false),
+      );
     }
   }
 
-  Future<void> pickMultipleImages() async {
-    try {
-      setIsLoading(
-        LoadingData(
-            isLoading: true,
-            completedSteps: null,
-            totalSteps: null,
-            progressCounter: null),
-      );
+  Future<void> pickImages() async {
+    if (state.isBusy) return;
 
-      final paths = await _picker.pickImages();
+    try {
+      setLoading(const LoadingData(isLoading: true));
+
+      final paths = await ref.read(mediaPickerProvider).pickImages();
 
       if (paths.isNotEmpty) {
-        pickedImages.state = [];
-        currentImage.state = null;
-        globalQualitySlider.state = null;
+        state = state.copyWith(
+          pickedImages: const [],
+          currentImage: null,
+          globalQuality: null,
+        );
 
-        final picked = await _readImages(paths);
+        final picked = await ref.read(readImagesUseCaseProvider)(paths);
 
-        pickedImages.state = picked;
-        currentImage.state = picked[0];
-        currentImageIndex.state = 0;
-        setIsLoading(LoadingData(isLoading: false));
+        state = state.copyWith(
+          pickedImages: picked,
+          currentImage: picked[0],
+          currentImageIndex: 0,
+          loading: const LoadingData(isLoading: false),
+        );
       } else {
-        await showResult("No file picked!");
-        setIsLoading(LoadingData(isLoading: false));
-        return;
+        state = state.copyWith(
+          result: "No file picked!",
+          loading: const LoadingData(isLoading: false),
+        );
       }
     } catch (e) {
-      await showResult("An error ocurred - ${e.toString()}");
-      setIsLoading(LoadingData(isLoading: false));
+      state = state.copyWith(
+        result: "An error ocurred - ${e.toString()}",
+        loading: const LoadingData(isLoading: false),
+      );
     }
   }
 
   Future<SummaryReport?> compressAllSelectedImages() async {
-    if (!isLoading.state.isLoading) {
-      if (pickedImages.isEmpty) {
-        await showResult("Select images first");
-        return null;
-      }
+    if (state.isBusy) return null;
 
-      final totalLength = pickedImages.state.length;
-
-      final ImageBatchResult batch;
-      try {
-        batch = await _compressImages(
-          images: List.of(pickedImages.state),
-          globalQuality: globalQualitySlider.state,
-          isCancelled: () => completer.isCanceled == true,
-          onProgress: (progress) => setIsLoading(
-            LoadingData(
-                isLoading: true,
-                completedSteps: progress.completedSteps,
-                totalSteps: progress.totalSteps,
-                progressCounter: progress.percent),
-          ),
-          onError: showResult,
-        );
-      } on MediaException catch (e) {
-        // e.g. the user closed the folder dialog on desktop.
-        await showResult(e.message);
-        return null;
-      }
-
-      currentImage.state = null;
-      currentImageIndex.state = 0;
-      globalQualitySlider.state = null;
-
-      await _workspace.clear();
-
-      pickedImages.state = [];
-
-      setIsLoading(
-        LoadingData(
-            progressCounter: 100,
-            isLoading: false,
-            completedSteps: totalLength,
-            totalSteps: totalLength),
-      );
-
-      return SummaryReport(
-          originalSizeBytes: formatBytes(batch.originalBytes),
-          compressedSizeBytes: formatBytes(batch.compressedBytes),
-          savedBytes: formatBytes(batch.savedBytes),
-          savedPercent: batch.savedFraction,
-          path: batch.destinationLabel);
+    if (state.pickedImages.isEmpty) {
+      showResult("Select images first");
+      return null;
     }
-    return null;
+
+    final totalLength = state.pickedImages.length;
+
+    final ImageBatchResult batch;
+    try {
+      batch = await ref.read(compressImagesUseCaseProvider)(
+        images: List.of(state.pickedImages),
+        globalQuality: state.globalQuality,
+        isCancelled: () => completer.isCanceled,
+        onProgress: (progress) => setLoading(
+          LoadingData(
+              isLoading: true,
+              completedSteps: progress.completedSteps,
+              totalSteps: progress.totalSteps,
+              progressCounter: progress.percent),
+        ),
+        onError: showResult,
+      );
+    } on MediaException catch (e) {
+      // e.g. the user closed the folder dialog on desktop.
+      showResult(e.message);
+      return null;
+    }
+
+    state = state.copyWith(
+      currentImage: null,
+      currentImageIndex: 0,
+      globalQuality: null,
+    );
+
+    await ref.read(workspaceProvider).clear();
+
+    state = state.copyWith(
+      pickedImages: const [],
+      loading: LoadingData(
+          progressCounter: 100,
+          isLoading: false,
+          completedSteps: totalLength,
+          totalSteps: totalLength),
+    );
+
+    return SummaryReport(
+        originalSizeBytes: formatBytes(batch.originalBytes),
+        compressedSizeBytes: formatBytes(batch.compressedBytes),
+        savedBytes: formatBytes(batch.savedBytes),
+        savedPercent: batch.savedFraction,
+        path: batch.destinationLabel);
   }
 
   /// Starts compressing every picked image. [onComplete] receives the summary
   /// unless the job was cancelled or could not start.
-  void startCompression({required void Function(SummaryReport summary) onComplete}) {
-    completer = CancelableCompleter(onCancel: cancelCompressingAllImages);
+  void startCompression(
+      {required void Function(SummaryReport summary) onComplete}) {
+    completer = CancelableCompleter(onCancel: clearPickedImages);
 
     completer.complete(compressAllSelectedImages().then((summaryReport) {
       if (summaryReport != null) onComplete(summaryReport);
@@ -226,52 +234,41 @@ class ImagesViewModel {
     }
   }
 
-  Future<void> previousImage() => _moveCarousel(forward: false);
+  /// Drops the selection (the "Clear" button, tab switches, and a cancelled job).
+  void clearPickedImages() {
+    final totalLength = state.pickedImages.length;
 
-  Future<void> nextImage() => _moveCarousel(forward: true);
-
-  Future<void> _moveCarousel({required bool forward}) async {
-    if (pickedImages.state.length < 2) return;
-    const duration = Duration(milliseconds: 250);
-    try {
-      if (forward) {
-        await carouselController.nextPage(duration: duration, curve: Curves.easeOut);
-      } else {
-        await carouselController.previousPage(duration: duration, curve: Curves.easeOut);
-      }
-    } catch (e) {
-      debugPrint('Could not move the carousel: $e');
-    }
-  }
-
-  String formatBytes(int bytes, [int decimals = 2]) {
-    if (bytes <= 0) return "0 B";
-    const suffixes = ["B", "KB", "MB", "GB"];
-    final i = (bytes == 0) ? 0 : (bytes.bitLength / 10).floor();
-    final size = bytes / (1 << (10 * i));
-    return '${size.toStringAsFixed(decimals)} ${suffixes[i]}';
-  }
-
-  Future<void> selectImageButtonUseCase() async {
-    if (!isLoading.state.isLoading) {
-      await pickMultipleImages();
-    }
-  }
-
-  void cancelCompressingAllImages() {
-    final totalLength = pickedImages.state.length;
-
-    currentImage.state = null;
-    currentImageIndex.state = 0;
-    globalQualitySlider.state = null;
-    pickedImages.state = [];
-
-    setIsLoading(
-      LoadingData(
+    state = state.copyWith(
+      pickedImages: const [],
+      currentImage: null,
+      currentImageIndex: 0,
+      globalQuality: null,
+      loading: LoadingData(
           progressCounter: 100,
           isLoading: false,
           completedSteps: totalLength,
           totalSteps: totalLength),
     );
+  }
+
+  Future<void> previousImage() => _moveCarousel(forward: false);
+
+  Future<void> nextImage() => _moveCarousel(forward: true);
+
+  Future<void> _moveCarousel({required bool forward}) async {
+    if (state.pickedImages.length < 2) return;
+
+    final controller = ref.read(carouselControllerProvider);
+    const duration = Duration(milliseconds: 250);
+    try {
+      if (forward) {
+        await controller.nextPage(duration: duration, curve: Curves.easeOut);
+      } else {
+        await controller.previousPage(
+            duration: duration, curve: Curves.easeOut);
+      }
+    } catch (e) {
+      debugPrint('Could not move the carousel: $e');
+    }
   }
 }

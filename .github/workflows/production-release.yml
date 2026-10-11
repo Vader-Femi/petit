@@ -63,6 +63,46 @@ jobs:
           name: petit-windows-zip
           path: petit-windows.zip
 
+  build-linux:
+    name: Build Linux App
+    runs-on: ubuntu-latest
+    # Best effort for now: if this job fails, the other assets are still
+    # published (see the `if` on create-release).
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.2'
+          channel: 'stable'
+      # ffmpeg_kit_flutter_new needs libjson-glib; the rest is Flutter's Linux toolchain.
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libjson-glib-dev
+      - run: flutter config --enable-linux-desktop
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+      - run: flutter build linux --release
+
+      - name: Package tar.gz
+        run: |
+          cp -r build/linux/x64/release/bundle petit-linux
+          tar -czf petit-linux-x64.tar.gz petit-linux
+
+      - name: Package .deb
+        run: |
+          VERSION="$(grep '^version:' pubspec.yaml | awk '{print $2}')"
+          bash packaging/linux/build-deb.sh build/linux/x64/release/bundle "$VERSION" petit-linux-amd64.deb
+
+      - name: Upload Linux assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: petit-linux-assets
+          path: |
+            petit-linux-x64.tar.gz
+            petit-linux-amd64.deb
+
   build-macos-ios:
     name: Build macOS & iOS Apps
     runs-on: macos-latest
@@ -109,7 +149,10 @@ jobs:
 
   create-release:
     name: Create GitHub Release
-    needs: [build-android, build-windows, build-macos-ios]
+    needs: [build-android, build-windows, build-macos-ios, build-linux]
+    # Linux is best effort for now: publish even if only the Linux build failed.
+    # To make it required, add `&& needs.build-linux.result == 'success'`.
+    if: ${{ !cancelled() && needs.build-android.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos-ios.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -133,3 +176,5 @@ jobs:
             release-assets/petit-macos.zip
             release-assets/petit-macos.dmg
             release-assets/petit-ios.zip
+            release-assets/petit-linux-x64.tar.gz
+            release-assets/petit-linux-amd64.deb

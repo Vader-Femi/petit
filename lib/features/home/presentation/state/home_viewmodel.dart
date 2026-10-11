@@ -1,40 +1,30 @@
-import 'package:flutter_super/flutter_super.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
 
-import '../../../videos/presentation/state/videos_viewmodel.dart';
+final homeViewModelProvider =
+    NotifierProvider<HomeViewModel, int>(HomeViewModel.new);
 
-HomeViewModel get getHomeViewModel => Super.init(HomeViewModel());
-
-class HomeViewModel {
-  final result = RxT<String?>(null);
-  final isLoading = RxBool(false);
-  final currentTabIndex = RxInt(0);
-
+/// ViewModel of the home screen. Its state is the selected tab (0 = images,
+/// 1 = videos).
+class HomeViewModel extends Notifier<int> {
+  @override
+  int build() => 0;
 
   /// True while either tab is loading or compressing. Switching tabs or adding
   /// files then would clear the other tab's work, so callers must not.
-  bool get isBusy => getImagesViewModel.isBusy || getVideosViewModel.isBusy;
+  bool get isBusy =>
+      ref.read(imagesViewModelProvider).isBusy ||
+      ref.read(videosViewModelProvider).isBusy;
 
-  void setIsLoading(bool isLoading) {
-    this.isLoading.state = isLoading;
-  }
-
-  void changeTab(int newTab) {
-    currentTabIndex.state = newTab;
-  }
-
-  Future<void> showResult(String? result) async {
-    this.result.state = result;
-  }
-
+  /// Selects a tab. Leaving a tab discards its content.
   Future<void> updateCurrentTabIndex(int index) async {
     if (index == 0) {
-      getVideosViewModel.removeVideo();
+      ref.read(videosViewModelProvider.notifier).removeVideo();
     }
     if (index == 1) {
-      getImagesViewModel.pickedImages.state = [];
+      ref.read(imagesViewModelProvider.notifier).clearPickedImages();
     }
-    currentTabIndex.state = index;
+    state = index;
   }
-
 }

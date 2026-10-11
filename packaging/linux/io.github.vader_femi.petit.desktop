@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Petit
+GenericName=Image and video compressor
+Comment=Compress images and videos without losing visible quality
+Exec=petit
+Icon=io.github.vader_femi.petit
+Terminal=false
+Categories=Graphics;Photography;
+Keywords=compress;image;video;photo;heic;jpeg;png;
+StartupWMClass=io.github.vader_femi.petit

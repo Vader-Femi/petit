@@ -12,9 +12,6 @@ dependencies:
   flutter:
     sdk: flutter
 
-  flutter_web_plugins:
-    sdk: flutter
-
 #  cupertino_icons: ^1.0.8
 #
 #  flutter_svg: ^2.0.11
@@ -28,8 +25,8 @@ dependencies:
   #Service locator
   get_it: ^9.2.0
 
-  #State management
-  flutter_super: ^1.4.10
+  #State management (Riverpod: the ViewModels are Notifiers)
+  flutter_riverpod: ^3.3.2
 
   #Image carousel slider
   carousel_slider: ^5.1.1
