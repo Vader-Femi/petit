@@ -182,6 +182,18 @@ void main() {
       expect(s.loading.progressCounter, 100);
     });
 
+    test('the summary carries the folder to open, when there is one', () async {
+      h.picker.images = [h.file('a.jpg', 100).path];
+      h.saver.folder = '/saved/here';
+      final c = h.container();
+      final vm = c.read(imagesViewModelProvider.notifier);
+      await vm.pickImages();
+
+      final report = await vm.compressAllSelectedImages();
+
+      expect(report!.folderPath, '/saved/here');
+    });
+
     test('startCompression delivers the summary to onComplete', () async {
       h.picker.images = [h.file('a.jpg', 100).path];
       final c = h.container();

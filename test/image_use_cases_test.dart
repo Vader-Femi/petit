@@ -54,6 +54,9 @@ class FakeSaver implements MediaSaver {
   Future<void> saveVideo(String path) async => saved.add(path);
 
   @override
+  String? get destinationFolder => '/out/folder';
+
+  @override
   String get imageDestinationLabel => 'Photos';
 
   @override
@@ -115,6 +118,7 @@ void main() {
       expect(result.savedBytes, 120);
       expect(result.savedFraction, closeTo(0.6, 1e-9));
       expect(result.destinationLabel, 'Photos');
+      expect(result.destinationFolder, '/out/folder');
     });
 
     test('a single image starts at 50 percent', () async {

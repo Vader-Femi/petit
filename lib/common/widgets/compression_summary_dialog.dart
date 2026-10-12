@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:petit/common/data/summary_report.dart';
+import 'package:petit/core/utils/platform_utils.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../features/images/presentation/widget/summary_row.dart';
 
 /// Shows the result of a compression job. Shared by the pages and the
@@ -72,6 +74,18 @@ class CompressionSummaryDialog extends StatelessWidget {
         ],
       ),
       actions: [
+        // Desktop: show the saved files in Finder / Explorer / the file manager.
+        if (PlatformInfo.isDesktop && summaryReport.folderPath != null)
+          TextButton(
+            onPressed: () => launchUrl(Uri.directory(summaryReport.folderPath!)),
+            child: Text(
+              'Open folder',
+              style: TextStyle(
+                color: theme.primary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: Text(

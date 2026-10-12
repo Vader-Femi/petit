@@ -1,20 +1,26 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/common/domain/services/media_saver.dart';
 import 'package:petit/features/videos/domain/entities/codec_config.dart';
 import 'package:petit/features/videos/domain/entities/video_data.dart';
 import 'package:petit/features/videos/domain/services/video_compressor.dart';
+import 'package:petit/features/videos/domain/video_bitrate.dart';
 
 class VideoCompressionOutcome {
   final int originalBytes;
   final int compressedBytes;
   final String destinationLabel;
 
+  /// Folder the user can open, or null (see [MediaSaver.destinationFolder]).
+  final String? destinationFolder;
+
   const VideoCompressionOutcome({
     required this.originalBytes,
     required this.compressedBytes,
     required this.destinationLabel,
+    this.destinationFolder,
   });
 
   int get savedBytes => originalBytes - compressedBytes;
@@ -46,6 +52,11 @@ class CompressVideoUseCase {
 
   /// Probes [input], picks encoder settings from its codec, and starts
   /// compressing. [qualityPercent] is the 0..100 slider value.
+  ///
+  /// [targetBytes] aims for a file of about that size instead of a quality
+  /// level (needs the video's length). [maxShortSide] scales the video down so
+  /// its shorter side has that many pixels; it is ignored when the video is
+  /// not larger than that, because videos are never enlarged.
   /// [totalDurationMs] is used for progress; when missing, the probed
   /// duration is used instead.
   Future<VideoCompressionJob> call({
@@ -53,6 +64,8 @@ class CompressVideoUseCase {
     required int qualityPercent,
     required String preset,
     int? totalDurationMs,
+    int? maxShortSide,
+    int? targetBytes,
     required void Function(int percent) onProgress,
     required void Function(String message) onError,
   }) async {
@@ -78,11 +91,28 @@ class CompressVideoUseCase {
             ((qualityPercent / 100) * (config.maxCrf - config.minCrf)))
         .round();
 
+    int? videoBitrateKbps;
+    if (targetBytes != null) {
+      final durationMs = data.durationMs;
+      if (durationMs == null || durationMs <= 0) {
+        throw const MediaException(
+            "Could not work out the video's length, so a target size is not possible. Use quality instead.");
+      }
+      videoBitrateKbps =
+          bitrateForTargetSize(targetBytes: targetBytes, durationMs: durationMs);
+    }
+
+    final shortSide = math.min(data.pixelWidth!, data.pixelHeight!);
+    final scaleTo =
+        (maxShortSide != null && shortSide > maxShortSide) ? maxShortSide : null;
+
     final task = await _compressor.start(
       input: input,
       videoCodec: config.vcodec,
       crf: crf,
       preset: preset,
+      videoBitrateKbps: videoBitrateKbps,
+      maxShortSide: scaleTo,
       totalDurationMs: _usableDuration(totalDurationMs) ??
           _usableDuration(data.durationMs) ??
           1,
@@ -124,6 +154,7 @@ class CompressVideoUseCase {
       originalBytes: sizeBefore,
       compressedBytes: sizeAfter,
       destinationLabel: _saver.videoDestinationLabel,
+      destinationFolder: _saver.destinationFolder,
     );
   }
 }

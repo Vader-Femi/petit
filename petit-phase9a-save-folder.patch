@@ -1,0 +1,964 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 9ab2e1c..b3deb27 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -40,6 +40,8 @@ jobs:
+           test/videos_viewmodel_test.dart
+           test/home_viewmodel_test.dart
+           test/macos_image_converter_test.dart
++          test/folder_media_saver_test.dart
++          test/output_folder_viewmodel_test.dart
+ 
+   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
+   # it runs on demand and for pull requests into the production branch.
+diff --git a/docs/architecture.md b/docs/architecture.md
+index 3ebffc1..3ace1a9 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -24,7 +24,7 @@ Platform implementations (chosen in `service_locator.dart`)
+ | Interface | Android / iOS | Windows / macOS / Linux |
+ |---|---|---|
+ | `MediaPicker` | `ImagePickerMediaPicker` (image_picker) | `FileSelectorMediaPicker` (OS file dialog) |
+-| `MediaSaver` | `GalleryMediaSaver` (gallery) | `FolderMediaSaver` (folder chosen per job) |
++| `MediaSaver` | `GalleryMediaSaver` (gallery) | `FolderMediaSaver` (the remembered "Save to" folder, else a dialog per job) |
+ | `ImageCompressor` | `FlutterImageCompressor` (+ HEIC) | `DesktopImageCompressor` (`image` package in an isolate; HEIC via macOS ImageIO on macOS, FFmpeg best effort elsewhere) |
+ | `VideoCompressor` | `FfmpegVideoCompressor` | same (FFmpeg Kit supports all five platforms) |
+ | `VideoThumbnailer` | not used | `FfmpegVideoThumbnailer` (Windows, Linux preview) |
+@@ -87,3 +87,10 @@ Each tab has a **ViewModel**, which is a Riverpod `Notifier` holding one immutab
+   if its provider ever rebuilds. The only Notifier field is the cancelable handle of a running image
+   job (the provider watches nothing, so it never rebuilds). The carousel controller has its own provider.
+ - flutter_super is no longer a dependency.
++
++## Save-to folder (desktop)
++
++The "Save to" tile (`common/widgets/save_to_tile.dart`) on both pages shows where results go and lets
++the user change it. The choice is stored by `OutputFolderPreference` (shared_preferences) and read by
++`FolderMediaSaver`, which uses it without asking if the folder can still be written to. With nothing
++remembered, a dialog opens at the start of each job. After a job the summary offers "Open folder".
+diff --git a/docs/macos.md b/docs/macos.md
+index f82b372..93171d9 100644
+--- a/docs/macos.md
++++ b/docs/macos.md
+@@ -36,6 +36,13 @@ It writes the seven PNGs in `macos/Runner/Assets.xcassets/AppIcon.appiconset/`.
+ disabled for macOS on purpose, so running it will not overwrite them. Re-run the script if the logo
+ changes.
+ 
++### Remembered "Save to" folder
++
++The folder chosen in the "Save to" tile is remembered, but the macOS sandbox only keeps access to a
++folder chosen in a dialog while the app is running. After a restart the saved folder may not be writable
++any more; the app then opens the dialog once and remembers the new choice. (Storing security-scoped
++bookmarks would remove that extra step.)
++
+ ### HEIC photos
+ 
+ HEIC is what iPhones and Macs save by default. Flutter and the bundled FFmpeg cannot read it, so on
+diff --git a/lib/common/data/services/file_selector_folder_picker.dart b/lib/common/data/services/file_selector_folder_picker.dart
+new file mode 100644
+index 0000000..c4678c0
+--- /dev/null
++++ b/lib/common/data/services/file_selector_folder_picker.dart
+@@ -0,0 +1,12 @@
++import 'package:file_selector/file_selector.dart';
++import 'package:petit/common/domain/services/folder_picker.dart';
++
++class FileSelectorFolderPicker implements FolderPicker {
++  @override
++  Future<String?> pickFolder({String? initialDirectory}) {
++    return getDirectoryPath(
++      initialDirectory: initialDirectory,
++      confirmButtonText: 'Save here',
++    );
++  }
++}
+diff --git a/lib/common/data/services/folder_media_saver.dart b/lib/common/data/services/folder_media_saver.dart
+index 7da3257..df1136e 100644
+--- a/lib/common/data/services/folder_media_saver.dart
++++ b/lib/common/data/services/folder_media_saver.dart
+@@ -1,29 +1,62 @@
+ import 'dart:io';
+ 
+-import 'package:file_selector/file_selector.dart';
+ import 'package:path/path.dart' as p;
+ import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/common/domain/services/folder_picker.dart';
+ import 'package:petit/common/domain/services/media_saver.dart';
++import 'package:petit/common/domain/services/output_folder_preference.dart';
+ import 'package:petit/core/utils/unique_path.dart';
+ 
+-/// Desktop saver: copies results into a folder the user picks at the start of
+-/// each job. Asking each time also works inside the macOS sandbox, which only
+-/// grants access to folders chosen in a dialog.
++/// Desktop saver: copies results into a folder.
++///
++/// If the user has chosen a folder (the "Save to" setting) and it can still be
++/// written to, it is used without asking. Otherwise a folder dialog opens at
++/// the start of the job. A remembered folder can stop working, for example
++/// inside the macOS sandbox after a restart, which only keeps access to
++/// folders chosen in a dialog during the current run; then the dialog opens
++/// again and the new choice is remembered.
+ class FolderMediaSaver implements MediaSaver {
++  FolderMediaSaver(this._picker, this._preference);
++
++  final FolderPicker _picker;
++  final OutputFolderPreference _preference;
++
+   String? _lastFolder;
+   Directory? _folder;
+ 
+   @override
+   Future<void> prepare() async {
+-    final path = await getDirectoryPath(
+-      initialDirectory: _lastFolder,
+-      confirmButtonText: 'Save here',
+-    );
+-    if (path == null) {
++    final saved = await _preference.read();
++
++    if (saved != null && await _canWriteTo(saved)) {
++      _folder = Directory(saved);
++      return;
++    }
++
++    final chosen = await _picker.pickFolder(initialDirectory: saved ?? _lastFolder);
++    if (chosen == null) {
+       throw const MediaException('No output folder selected.');
+     }
+-    _lastFolder = path;
+-    _folder = Directory(path);
++
++    _lastFolder = chosen;
++    _folder = Directory(chosen);
++
++    // The remembered folder was unusable: remember the new one instead.
++    if (saved != null) {
++      await _preference.write(chosen);
++    }
++  }
++
++  Future<bool> _canWriteTo(String path) async {
++    try {
++      await Directory(path).create(recursive: true);
++      final probe = File(p.join(path, '.petit_write_test'));
++      await probe.writeAsString('');
++      await probe.delete();
++      return true;
++    } on FileSystemException {
++      return false;
++    }
+   }
+ 
+   @override
+@@ -42,6 +75,9 @@ class FolderMediaSaver implements MediaSaver {
+     await File(sourcePath).copy(target);
+   }
+ 
++  @override
++  String? get destinationFolder => _folder?.path;
++
+   @override
+   String get imageDestinationLabel => _folder?.path ?? 'the folder you choose';
+ 
+diff --git a/lib/common/data/services/gallery_media_saver.dart b/lib/common/data/services/gallery_media_saver.dart
+index 1c722f2..0ac28ca 100644
+--- a/lib/common/data/services/gallery_media_saver.dart
++++ b/lib/common/data/services/gallery_media_saver.dart
+@@ -20,6 +20,9 @@ class GalleryMediaSaver implements MediaSaver {
+     await GallerySaver.saveVideo(path, albumName: _album);
+   }
+ 
++  @override
++  String? get destinationFolder => null;
++
+   @override
+   String get imageDestinationLabel =>
+       PlatformInfo.isAndroid ? "Pictures/Petit" : "Photos";
+diff --git a/lib/common/data/services/shared_prefs_output_folder_preference.dart b/lib/common/data/services/shared_prefs_output_folder_preference.dart
+new file mode 100644
+index 0000000..6df2460
+--- /dev/null
++++ b/lib/common/data/services/shared_prefs_output_folder_preference.dart
+@@ -0,0 +1,22 @@
++import 'package:petit/common/domain/services/output_folder_preference.dart';
++import 'package:shared_preferences/shared_preferences.dart';
++
++class SharedPrefsOutputFolderPreference implements OutputFolderPreference {
++  SharedPrefsOutputFolderPreference(this._prefs);
++
++  static const _key = 'output_folder';
++
++  final SharedPreferencesAsync _prefs;
++
++  @override
++  Future<String?> read() => _prefs.getString(_key);
++
++  @override
++  Future<void> write(String? path) async {
++    if (path == null) {
++      await _prefs.remove(_key);
++    } else {
++      await _prefs.setString(_key, path);
++    }
++  }
++}
+diff --git a/lib/common/data/summary_report.dart b/lib/common/data/summary_report.dart
+index 5fadbc2..3dbe368 100644
+--- a/lib/common/data/summary_report.dart
++++ b/lib/common/data/summary_report.dart
+@@ -5,11 +5,15 @@ class SummaryReport {
+   final double savedPercent;
+   final String path;
+ 
++  /// A folder the user can open from the summary, when there is one (desktop).
++  final String? folderPath;
++
+   const SummaryReport({
+     required this.originalSizeBytes,
+     required this.compressedSizeBytes,
+     required this.savedBytes,
+     required this.savedPercent,
+     required this.path,
++    this.folderPath,
+   });
+ }
+diff --git a/lib/common/domain/services/folder_picker.dart b/lib/common/domain/services/folder_picker.dart
+new file mode 100644
+index 0000000..cb94940
+--- /dev/null
++++ b/lib/common/domain/services/folder_picker.dart
+@@ -0,0 +1,5 @@
++/// Lets the user choose a folder (a native dialog on desktop).
++abstract interface class FolderPicker {
++  /// The chosen folder, or null if the user cancelled.
++  Future<String?> pickFolder({String? initialDirectory});
++}
+diff --git a/lib/common/domain/services/media_saver.dart b/lib/common/domain/services/media_saver.dart
+index d39556e..90689ef 100644
+--- a/lib/common/domain/services/media_saver.dart
++++ b/lib/common/domain/services/media_saver.dart
+@@ -10,6 +10,10 @@ abstract interface class MediaSaver {
+ 
+   Future<void> saveVideo(String path);
+ 
++  /// The folder results were saved to, when there is one the user can open
++  /// (desktop). Null for the gallery on mobile. Valid after [prepare].
++  String? get destinationFolder;
++
+   /// Human readable location shown in the summary dialog.
+   String get imageDestinationLabel;
+ 
+diff --git a/lib/common/domain/services/output_folder_preference.dart b/lib/common/domain/services/output_folder_preference.dart
+new file mode 100644
+index 0000000..f6e08b2
+--- /dev/null
++++ b/lib/common/domain/services/output_folder_preference.dart
+@@ -0,0 +1,8 @@
++/// Remembers the folder results are saved to, across app launches.
++abstract interface class OutputFolderPreference {
++  /// The saved folder, or null when the user wants to be asked each time.
++  Future<String?> read();
++
++  /// Saves [path]; null goes back to asking each time.
++  Future<void> write(String? path);
++}
+diff --git a/lib/common/state/output_folder_viewmodel.dart b/lib/common/state/output_folder_viewmodel.dart
+new file mode 100644
+index 0000000..c9faf92
+--- /dev/null
++++ b/lib/common/state/output_folder_viewmodel.dart
+@@ -0,0 +1,30 @@
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:petit/core/di/providers.dart';
++
++final outputFolderViewModelProvider =
++    AsyncNotifierProvider<OutputFolderViewModel, String?>(
++        OutputFolderViewModel.new);
++
++/// The "Save to" setting. Its state is the remembered folder, or null when
++/// the user wants to be asked at the start of every job.
++class OutputFolderViewModel extends AsyncNotifier<String?> {
++  @override
++  Future<String?> build() => ref.read(outputFolderPreferenceProvider).read();
++
++  /// Opens the folder dialog and remembers the choice. Cancelling changes nothing.
++  Future<void> choose() async {
++    final chosen = await ref
++        .read(folderPickerProvider)
++        .pickFolder(initialDirectory: state.value);
++    if (chosen == null) return;
++
++    await ref.read(outputFolderPreferenceProvider).write(chosen);
++    state = AsyncData(chosen);
++  }
++
++  /// Forgets the folder: the app asks at the start of every job again.
++  Future<void> askEachTime() async {
++    await ref.read(outputFolderPreferenceProvider).write(null);
++    state = const AsyncData(null);
++  }
++}
+diff --git a/lib/common/widgets/compression_summary_dialog.dart b/lib/common/widgets/compression_summary_dialog.dart
+index c0c0736..8293071 100644
+--- a/lib/common/widgets/compression_summary_dialog.dart
++++ b/lib/common/widgets/compression_summary_dialog.dart
+@@ -1,5 +1,7 @@
+ import 'package:flutter/material.dart';
+ import 'package:petit/common/data/summary_report.dart';
++import 'package:petit/core/utils/platform_utils.dart';
++import 'package:url_launcher/url_launcher.dart';
+ import '../../features/images/presentation/widget/summary_row.dart';
+ 
+ /// Shows the result of a compression job. Shared by the pages and the
+@@ -72,6 +74,18 @@ class CompressionSummaryDialog extends StatelessWidget {
+         ],
+       ),
+       actions: [
++        // Desktop: show the saved files in Finder / Explorer / the file manager.
++        if (PlatformInfo.isDesktop && summaryReport.folderPath != null)
++          TextButton(
++            onPressed: () => launchUrl(Uri.directory(summaryReport.folderPath!)),
++            child: Text(
++              'Open folder',
++              style: TextStyle(
++                color: theme.primary,
++                fontWeight: FontWeight.w600,
++              ),
++            ),
++          ),
+         TextButton(
+           onPressed: () => Navigator.pop(context),
+           child: Text(
+diff --git a/lib/common/widgets/save_to_tile.dart b/lib/common/widgets/save_to_tile.dart
+new file mode 100644
+index 0000000..c35c16b
+--- /dev/null
++++ b/lib/common/widgets/save_to_tile.dart
+@@ -0,0 +1,69 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:path/path.dart' as p;
++import 'package:petit/common/state/output_folder_viewmodel.dart';
++import 'package:petit/core/utils/platform_utils.dart';
++
++/// "Save to: Pictures/Petit  [Change]" on desktop, where results go into a
++/// folder. Shows nothing on mobile, where results go to the gallery.
++class SaveToTile extends ConsumerWidget {
++  const SaveToTile({super.key});
++
++  @override
++  Widget build(BuildContext context, WidgetRef ref) {
++    if (!PlatformInfo.isDesktop) return const SizedBox.shrink();
++
++    final folder = ref.watch(outputFolderViewModelProvider);
++    final viewModel = ref.read(outputFolderViewModelProvider.notifier);
++    final theme = Theme.of(context);
++
++    return folder.when(
++      loading: () => const SizedBox.shrink(),
++      error: (_, __) => const SizedBox.shrink(),
++      data: (path) => Padding(
++        padding: const EdgeInsets.only(top: 12),
++        child: Container(
++          padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
++          decoration: BoxDecoration(
++            color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
++            borderRadius: BorderRadius.circular(12),
++          ),
++          child: Row(
++            children: [
++              Icon(Icons.folder_outlined, color: theme.colorScheme.primary),
++              const SizedBox(width: 10),
++              Expanded(
++                child: Tooltip(
++                  message: path ?? 'A folder dialog opens before each job',
++                  child: Column(
++                    crossAxisAlignment: CrossAxisAlignment.start,
++                    mainAxisSize: MainAxisSize.min,
++                    children: [
++                      Text('Save to', style: theme.textTheme.labelSmall),
++                      Text(
++                        path == null ? 'Ask each time' : p.basename(path),
++                        maxLines: 1,
++                        overflow: TextOverflow.ellipsis,
++                        style: const TextStyle(fontWeight: FontWeight.w600),
++                      ),
++                    ],
++                  ),
++                ),
++              ),
++              TextButton(
++                onPressed: viewModel.choose,
++                child: const Text('Change'),
++              ),
++              if (path != null)
++                IconButton(
++                  tooltip: 'Ask each time',
++                  icon: const Icon(Icons.close, size: 18),
++                  onPressed: viewModel.askEachTime,
++                ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++}
+diff --git a/lib/core/di/providers.dart b/lib/core/di/providers.dart
+index 8aea883..24645c2 100644
+--- a/lib/core/di/providers.dart
++++ b/lib/core/di/providers.dart
+@@ -1,7 +1,9 @@
+ import 'dart:io';
+ 
+ import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:petit/common/domain/services/folder_picker.dart';
+ import 'package:petit/common/domain/services/media_picker.dart';
++import 'package:petit/common/domain/services/output_folder_preference.dart';
+ import 'package:petit/common/domain/services/workspace.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
+ import 'package:petit/features/images/domain/usecases/read_images.dart';
+@@ -18,6 +20,12 @@ final mediaPickerProvider = Provider<MediaPicker>((ref) => sl<MediaPicker>());
+ 
+ final workspaceProvider = Provider<Workspace>((ref) => sl<Workspace>());
+ 
++final folderPickerProvider =
++    Provider<FolderPicker>((ref) => sl<FolderPicker>());
++
++final outputFolderPreferenceProvider = Provider<OutputFolderPreference>(
++    (ref) => sl<OutputFolderPreference>());
++
+ final readImagesUseCaseProvider =
+     Provider<ReadImagesUseCase>((ref) => sl<ReadImagesUseCase>());
+ 
+diff --git a/lib/features/images/domain/usecases/compress_images.dart b/lib/features/images/domain/usecases/compress_images.dart
+index c5b40bb..8402b52 100644
+--- a/lib/features/images/domain/usecases/compress_images.dart
++++ b/lib/features/images/domain/usecases/compress_images.dart
+@@ -22,10 +22,14 @@ class ImageBatchResult {
+   final int compressedBytes;
+   final String destinationLabel;
+ 
++  /// Folder the user can open, or null (see [MediaSaver.destinationFolder]).
++  final String? destinationFolder;
++
+   const ImageBatchResult({
+     required this.originalBytes,
+     required this.compressedBytes,
+     required this.destinationLabel,
++    this.destinationFolder,
+   });
+ 
+   int get savedBytes => originalBytes - compressedBytes;
+@@ -116,6 +120,7 @@ class CompressImagesUseCase {
+       originalBytes: sizeBefore,
+       compressedBytes: sizeAfter,
+       destinationLabel: _saver.imageDestinationLabel,
++      destinationFolder: _saver.destinationFolder,
+     );
+   }
+ }
+diff --git a/lib/features/images/presentation/pages/images_page.dart b/lib/features/images/presentation/pages/images_page.dart
+index c4757a9..558795f 100644
+--- a/lib/features/images/presentation/pages/images_page.dart
++++ b/lib/features/images/presentation/pages/images_page.dart
+@@ -8,6 +8,7 @@ import 'package:petit/features/images/presentation/state/images_state.dart';
+ import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+ import 'package:step_progress_indicator/step_progress_indicator.dart';
+ import '../../../../common/widgets/compression_summary_dialog.dart';
++import '../../../../common/widgets/save_to_tile.dart';
+ import '../../../../common/widgets/slider_box.dart';
+ 
+ class ImagesPage extends ConsumerStatefulWidget {
+@@ -159,6 +160,9 @@ class _ImagesPageState extends ConsumerState<ImagesPage> {
+           isGlobal: state.globalQuality != null,
+           onGlobalToggle: viewModel.setGlobalQualityEnabled,
+         ),
++
++      // Desktop only: where the results are saved.
++      const SaveToTile(),
+     ];
+   }
+ 
+diff --git a/lib/features/images/presentation/state/images_viewmodel.dart b/lib/features/images/presentation/state/images_viewmodel.dart
+index 3ee4c30..3e601c3 100644
+--- a/lib/features/images/presentation/state/images_viewmodel.dart
++++ b/lib/features/images/presentation/state/images_viewmodel.dart
+@@ -208,7 +208,8 @@ class ImagesViewModel extends Notifier<ImagesState> {
+         compressedSizeBytes: formatBytes(batch.compressedBytes),
+         savedBytes: formatBytes(batch.savedBytes),
+         savedPercent: batch.savedFraction,
+-        path: batch.destinationLabel);
++        path: batch.destinationLabel,
++        folderPath: batch.destinationFolder);
+   }
+ 
+   /// Starts compressing every picked image. [onComplete] receives the summary
+diff --git a/lib/features/videos/data/services/ffmpeg_video_compressor.dart b/lib/features/videos/data/services/ffmpeg_video_compressor.dart
+index e453734..350a5b7 100644
+--- a/lib/features/videos/data/services/ffmpeg_video_compressor.dart
++++ b/lib/features/videos/data/services/ffmpeg_video_compressor.dart
+@@ -67,8 +67,9 @@ class FfmpegVideoCompressor implements VideoCompressor {
+     required void Function(int percent) onProgress,
+   }) async {
+     final jobDir = await createJobDir();
++    // The job folder is unique, so the name can simply follow the original's.
+     final outPath = p.join(
+-        jobDir.path, 'compressed_${DateTime.now().millisecondsSinceEpoch}.mp4');
++        jobDir.path, '${p.basenameWithoutExtension(input.path)}_compressed.mp4');
+ 
+     // Passed as a list (not one string) so paths with spaces work on every OS.
+     final arguments = <String>[
+diff --git a/lib/features/videos/domain/usecases/compress_video.dart b/lib/features/videos/domain/usecases/compress_video.dart
+index c9d76fb..dc36764 100644
+--- a/lib/features/videos/domain/usecases/compress_video.dart
++++ b/lib/features/videos/domain/usecases/compress_video.dart
+@@ -11,10 +11,14 @@ class VideoCompressionOutcome {
+   final int compressedBytes;
+   final String destinationLabel;
+ 
++  /// Folder the user can open, or null (see [MediaSaver.destinationFolder]).
++  final String? destinationFolder;
++
+   const VideoCompressionOutcome({
+     required this.originalBytes,
+     required this.compressedBytes,
+     required this.destinationLabel,
++    this.destinationFolder,
+   });
+ 
+   int get savedBytes => originalBytes - compressedBytes;
+@@ -124,6 +128,7 @@ class CompressVideoUseCase {
+       originalBytes: sizeBefore,
+       compressedBytes: sizeAfter,
+       destinationLabel: _saver.videoDestinationLabel,
++      destinationFolder: _saver.destinationFolder,
+     );
+   }
+ }
+diff --git a/lib/features/videos/presentation/pages/videos_page.dart b/lib/features/videos/presentation/pages/videos_page.dart
+index abaae5c..56c3f50 100644
+--- a/lib/features/videos/presentation/pages/videos_page.dart
++++ b/lib/features/videos/presentation/pages/videos_page.dart
+@@ -8,6 +8,7 @@ import 'package:petit/features/videos/presentation/state/videos_state.dart';
+ import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
+ import 'package:step_progress_indicator/step_progress_indicator.dart';
+ import '../../../../common/widgets/compression_summary_dialog.dart';
++import '../../../../common/widgets/save_to_tile.dart';
+ import '../../../../common/widgets/slider_box.dart';
+ 
+ class VideosPage extends ConsumerStatefulWidget {
+@@ -67,6 +68,9 @@ class _VideosPageState extends ConsumerState<VideosPage> {
+             onChanged: (value) => viewModel.setPresetIndex(value.toInt()),
+           ),
+         ),
++
++        // Desktop only: where the result is saved.
++        const SaveToTile(),
+       ],
+     );
+   }
+diff --git a/lib/features/videos/presentation/state/videos_viewmodel.dart b/lib/features/videos/presentation/state/videos_viewmodel.dart
+index d302304..e86e5fd 100644
+--- a/lib/features/videos/presentation/state/videos_viewmodel.dart
++++ b/lib/features/videos/presentation/state/videos_viewmodel.dart
+@@ -146,6 +146,7 @@ class VideosViewModel extends Notifier<VideosState> {
+         savedBytes: formatBytes(outcome.savedBytes),
+         savedPercent: outcome.savedFraction,
+         path: outcome.destinationLabel,
++        folderPath: outcome.destinationFolder,
+       ));
+     } on MediaException catch (e) {
+       _forgetJob(job);
+diff --git a/lib/service_locator.dart b/lib/service_locator.dart
+index 66d89de..4eafb10 100644
+--- a/lib/service_locator.dart
++++ b/lib/service_locator.dart
+@@ -1,11 +1,15 @@
+ import 'package:get_it/get_it.dart';
++import 'package:petit/common/data/services/file_selector_folder_picker.dart';
+ import 'package:petit/common/data/services/file_selector_media_picker.dart';
+ import 'package:petit/common/data/services/folder_media_saver.dart';
+ import 'package:petit/common/data/services/gallery_media_saver.dart';
+ import 'package:petit/common/data/services/image_picker_media_picker.dart';
++import 'package:petit/common/data/services/shared_prefs_output_folder_preference.dart';
+ import 'package:petit/common/data/services/temp_workspace.dart';
++import 'package:petit/common/domain/services/folder_picker.dart';
+ import 'package:petit/common/domain/services/media_picker.dart';
+ import 'package:petit/common/domain/services/media_saver.dart';
++import 'package:petit/common/domain/services/output_folder_preference.dart';
+ import 'package:petit/common/domain/services/workspace.dart';
+ import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:petit/features/images/data/services/desktop_image_compressor.dart';
+@@ -39,7 +43,8 @@ void _registerMediaDependencies() {
+     // Windows, macOS, Linux: OS file dialogs, a folder to save into, and an
+     // image compressor that does not rely on mobile-only plugins.
+     sl.registerLazySingleton<MediaPicker>(() => FileSelectorMediaPicker());
+-    sl.registerLazySingleton<MediaSaver>(() => FolderMediaSaver());
++    sl.registerLazySingleton<MediaSaver>(() =>
++        FolderMediaSaver(sl<FolderPicker>(), sl<OutputFolderPreference>()));
+     sl.registerLazySingleton<ImageCompressor>(() => DesktopImageCompressor());
+   } else {
+     // Android and iOS (and the frozen web build, which never resolves these).
+@@ -48,6 +53,11 @@ void _registerMediaDependencies() {
+     sl.registerLazySingleton<ImageCompressor>(() => FlutterImageCompressor());
+   }
+ 
++  // The "Save to" setting (only shown on desktop).
++  sl.registerLazySingleton<FolderPicker>(() => FileSelectorFolderPicker());
++  sl.registerLazySingleton<OutputFolderPreference>(
++      () => SharedPrefsOutputFolderPreference(sl<SharedPreferencesAsync>()));
++
+   // Shared: FFmpeg Kit supports Android, iOS, macOS, Windows and Linux.
+   sl.registerLazySingleton<Workspace>(() => TempWorkspace());
+   sl.registerLazySingleton<VideoCompressor>(() => FfmpegVideoCompressor());
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 3804f3b..3121040 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -52,6 +52,9 @@ dependencies:
+   #Native file/folder dialogs on desktop
+   file_selector: ^1.0.3
+ 
++  #Open the output folder in Finder / Explorer after compressing (desktop)
++  url_launcher: ^6.3.1
++
+   #Drag and drop files onto the window (desktop)
+   desktop_drop: ^0.8.1
+ 
+diff --git a/test/folder_media_saver_test.dart b/test/folder_media_saver_test.dart
+new file mode 100644
+index 0000000..3e2c2e2
+--- /dev/null
++++ b/test/folder_media_saver_test.dart
+@@ -0,0 +1,112 @@
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:path/path.dart' as p;
++import 'package:petit/common/data/services/folder_media_saver.dart';
++import 'package:petit/common/domain/media_exception.dart';
++
++import 'helpers/folder_fakes.dart';
++
++void main() {
++  late Directory dir;
++
++  setUp(() => dir = Directory.systemTemp.createTempSync('petit_saver_'));
++  tearDown(() => dir.deleteSync(recursive: true));
++
++  File source(String name) =>
++      File(p.join(dir.path, 'src_$name'))..writeAsStringSync('data');
++
++  Directory folder(String name) =>
++      Directory(p.join(dir.path, name))..createSync();
++
++  test('asks where to save when nothing is remembered', () async {
++    final out = folder('out');
++    final picker = FakeFolderPicker(out.path);
++    final preference = FakePreference();
++    final saver = FolderMediaSaver(picker, preference);
++
++    await saver.prepare();
++    await saver.saveImage(source('a.jpg').path);
++
++    expect(picker.calls, 1);
++    expect(File(p.join(out.path, 'src_a.jpg')).existsSync(), isTrue);
++    expect(saver.destinationFolder, out.path);
++    expect(saver.imageDestinationLabel, out.path);
++    expect(preference.value, isNull, reason: 'a one-off choice is not remembered');
++  });
++
++  test('uses a remembered folder without asking', () async {
++    final out = folder('remembered');
++    final picker = FakeFolderPicker();
++    final saver = FolderMediaSaver(picker, FakePreference(out.path));
++
++    await saver.prepare();
++    await saver.saveVideo(source('clip.mp4').path);
++
++    expect(picker.calls, 0);
++    expect(File(p.join(out.path, 'src_clip.mp4')).existsSync(), isTrue);
++  });
++
++  test('creates the remembered folder if it was deleted', () async {
++    final gone = p.join(dir.path, 'deleted', 'later');
++    final saver = FolderMediaSaver(FakeFolderPicker(), FakePreference(gone));
++
++    await saver.prepare();
++
++    expect(Directory(gone).existsSync(), isTrue);
++    expect(saver.destinationFolder, gone);
++  });
++
++  test('a remembered folder that cannot be used is replaced by a new choice',
++      () async {
++    // A path under a regular file can never be created.
++    final blocker = File(p.join(dir.path, 'blocker'))..writeAsStringSync('x');
++    final unusable = p.join(blocker.path, 'sub');
++    final out = folder('new_choice');
++    final picker = FakeFolderPicker(out.path);
++    final preference = FakePreference(unusable);
++    final saver = FolderMediaSaver(picker, preference);
++
++    await saver.prepare();
++
++    expect(picker.calls, 1);
++    expect(picker.lastInitialDirectory, unusable);
++    expect(saver.destinationFolder, out.path);
++    expect(preference.value, out.path);
++  });
++
++  test('declining the dialog stops the job and keeps what was remembered',
++      () async {
++    final blocker = File(p.join(dir.path, 'blocker'))..writeAsStringSync('x');
++    final unusable = p.join(blocker.path, 'sub');
++    final preference = FakePreference(unusable);
++    final saver = FolderMediaSaver(FakeFolderPicker(null), preference);
++
++    await expectLater(
++      saver.prepare(),
++      throwsA(isA<MediaException>()
++          .having((e) => e.message, 'message', 'No output folder selected.')),
++    );
++    expect(preference.value, unusable);
++  });
++
++  test('never overwrites an existing file', () async {
++    final out = folder('out');
++    File(p.join(out.path, 'src_a.jpg')).writeAsStringSync('existing');
++    final saver = FolderMediaSaver(FakeFolderPicker(), FakePreference(out.path));
++
++    await saver.prepare();
++    await saver.saveImage(source('a.jpg').path);
++
++    expect(File(p.join(out.path, 'src_a.jpg')).readAsStringSync(), 'existing');
++    expect(File(p.join(out.path, 'src_a (1).jpg')).readAsStringSync(), 'data');
++  });
++
++  test('has no folder before prepare, and refuses to save', () async {
++    final saver = FolderMediaSaver(FakeFolderPicker(), FakePreference());
++
++    expect(saver.destinationFolder, isNull);
++    await expectLater(
++        saver.saveImage(source('a.jpg').path), throwsA(isA<MediaException>()));
++  });
++}
+diff --git a/test/helpers/folder_fakes.dart b/test/helpers/folder_fakes.dart
+new file mode 100644
+index 0000000..e4cbd04
+--- /dev/null
++++ b/test/helpers/folder_fakes.dart
+@@ -0,0 +1,29 @@
++import 'package:petit/common/domain/services/folder_picker.dart';
++import 'package:petit/common/domain/services/output_folder_preference.dart';
++
++class FakeFolderPicker implements FolderPicker {
++  FakeFolderPicker([this.result]);
++
++  String? result;
++  int calls = 0;
++  String? lastInitialDirectory;
++
++  @override
++  Future<String?> pickFolder({String? initialDirectory}) async {
++    calls++;
++    lastInitialDirectory = initialDirectory;
++    return result;
++  }
++}
++
++class FakePreference implements OutputFolderPreference {
++  FakePreference([this.value]);
++
++  String? value;
++
++  @override
++  Future<String?> read() async => value;
++
++  @override
++  Future<void> write(String? path) async => value = path;
++}
+diff --git a/test/helpers/viewmodel_fakes.dart b/test/helpers/viewmodel_fakes.dart
+index 0fe4cd0..a2277d0 100644
+--- a/test/helpers/viewmodel_fakes.dart
++++ b/test/helpers/viewmodel_fakes.dart
+@@ -48,6 +48,9 @@ class FakeWorkspace implements Workspace {
+ 
+ class FakeSaver implements MediaSaver {
+   bool declineToPrepare = false;
++
++  /// The folder reported to the summary (null, like the gallery on mobile).
++  String? folder;
+   final saved = <String>[];
+ 
+   @override
+@@ -63,6 +66,9 @@ class FakeSaver implements MediaSaver {
+   @override
+   Future<void> saveVideo(String path) async => saved.add(path);
+ 
++  @override
++  String? get destinationFolder => folder;
++
+   @override
+   String get imageDestinationLabel => 'Photos';
+ 
+diff --git a/test/image_use_cases_test.dart b/test/image_use_cases_test.dart
+index 492ce2f..ef382ea 100644
+--- a/test/image_use_cases_test.dart
++++ b/test/image_use_cases_test.dart
+@@ -53,6 +53,9 @@ class FakeSaver implements MediaSaver {
+   @override
+   Future<void> saveVideo(String path) async => saved.add(path);
+ 
++  @override
++  String? get destinationFolder => '/out/folder';
++
+   @override
+   String get imageDestinationLabel => 'Photos';
+ 
+@@ -115,6 +118,7 @@ void main() {
+       expect(result.savedBytes, 120);
+       expect(result.savedFraction, closeTo(0.6, 1e-9));
+       expect(result.destinationLabel, 'Photos');
++      expect(result.destinationFolder, '/out/folder');
+     });
+ 
+     test('a single image starts at 50 percent', () async {
+diff --git a/test/images_viewmodel_test.dart b/test/images_viewmodel_test.dart
+index 5ee0136..14e24c6 100644
+--- a/test/images_viewmodel_test.dart
++++ b/test/images_viewmodel_test.dart
+@@ -182,6 +182,18 @@ void main() {
+       expect(s.loading.progressCounter, 100);
+     });
+ 
++    test('the summary carries the folder to open, when there is one', () async {
++      h.picker.images = [h.file('a.jpg', 100).path];
++      h.saver.folder = '/saved/here';
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++      await vm.pickImages();
++
++      final report = await vm.compressAllSelectedImages();
++
++      expect(report!.folderPath, '/saved/here');
++    });
++
+     test('startCompression delivers the summary to onComplete', () async {
+       h.picker.images = [h.file('a.jpg', 100).path];
+       final c = h.container();
+diff --git a/test/output_folder_viewmodel_test.dart b/test/output_folder_viewmodel_test.dart
+new file mode 100644
+index 0000000..75addf9
+--- /dev/null
++++ b/test/output_folder_viewmodel_test.dart
+@@ -0,0 +1,64 @@
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/common/state/output_folder_viewmodel.dart';
++import 'package:petit/core/di/providers.dart';
++
++import 'helpers/folder_fakes.dart';
++
++void main() {
++  ProviderContainer makeContainer(FakeFolderPicker picker, FakePreference preference) {
++    return ProviderContainer.test(overrides: [
++      folderPickerProvider.overrideWithValue(picker),
++      outputFolderPreferenceProvider.overrideWithValue(preference),
++    ]);
++  }
++
++  test('starts with the remembered folder', () async {
++    final c = makeContainer(FakeFolderPicker(), FakePreference('/photos/petit'));
++
++    expect(await c.read(outputFolderViewModelProvider.future), '/photos/petit');
++  });
++
++  test('starts as "ask each time" when nothing is remembered', () async {
++    final c = makeContainer(FakeFolderPicker(), FakePreference());
++
++    expect(await c.read(outputFolderViewModelProvider.future), isNull);
++  });
++
++  test('choosing a folder remembers it and shows it', () async {
++    final preference = FakePreference();
++    final picker = FakeFolderPicker('/chosen');
++    final c = makeContainer(picker, preference);
++    await c.read(outputFolderViewModelProvider.future);
++
++    await c.read(outputFolderViewModelProvider.notifier).choose();
++
++    expect(c.read(outputFolderViewModelProvider).value, '/chosen');
++    expect(preference.value, '/chosen');
++  });
++
++  test('the dialog starts in the current folder, and cancelling changes nothing',
++      () async {
++    final preference = FakePreference('/current');
++    final picker = FakeFolderPicker(null); // the user cancels
++    final c = makeContainer(picker, preference);
++    await c.read(outputFolderViewModelProvider.future);
++
++    await c.read(outputFolderViewModelProvider.notifier).choose();
++
++    expect(picker.lastInitialDirectory, '/current');
++    expect(c.read(outputFolderViewModelProvider).value, '/current');
++    expect(preference.value, '/current');
++  });
++
++  test('"ask each time" forgets the folder', () async {
++    final preference = FakePreference('/current');
++    final c = makeContainer(FakeFolderPicker(), preference);
++    await c.read(outputFolderViewModelProvider.future);
++
++    await c.read(outputFolderViewModelProvider.notifier).askEachTime();
++
++    expect(c.read(outputFolderViewModelProvider).value, isNull);
++    expect(preference.value, isNull);
++  });
++}
+diff --git a/test/video_use_case_test.dart b/test/video_use_case_test.dart
+index b3b021e..675a954 100644
+--- a/test/video_use_case_test.dart
++++ b/test/video_use_case_test.dart
+@@ -78,6 +78,9 @@ class FakeSaver implements MediaSaver {
+   @override
+   Future<void> saveVideo(String path) async => saved.add(path);
+ 
++  @override
++  String? get destinationFolder => '/out/folder';
++
+   @override
+   String get imageDestinationLabel => 'Photos';
+ 
+@@ -144,6 +147,7 @@ void main() {
+       expect(outcome.compressedBytes, 400);
+       expect(outcome.savedFraction, closeTo(0.6, 1e-9));
+       expect(outcome.destinationLabel, 'Movies/Petit');
++      expect(outcome.destinationFolder, '/out/folder');
+     });
+ 
+     test('keeps the original when compression does not shrink it', () async {
+diff --git a/test/videos_viewmodel_test.dart b/test/videos_viewmodel_test.dart
+index cc0f1b4..32574a8 100644
+--- a/test/videos_viewmodel_test.dart
++++ b/test/videos_viewmodel_test.dart
+@@ -139,6 +139,18 @@ void main() {
+       expect(h.previews.single.disposed, isTrue);
+     });
+ 
++    test('the summary carries the folder to open, when there is one', () async {
++      h.saver.folder = '/saved/here';
++      final (c, vm) = await start();
++      final done = Completer<SummaryReport>();
++
++      await vm.compressVideo(onComplete: done.complete);
++      h.videoCompressor.lastTask!.completer.complete(h.file('out.mp4', 400));
++
++      expect((await done.future).folderPath, '/saved/here');
++      expect(c.read(videosViewModelProvider).videoFile, isNull);
++    });
++
+     test('a failed compression reports it and resets', () async {
+       final (c, vm) = await start();
+ 

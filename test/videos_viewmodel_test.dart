@@ -6,6 +6,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:petit/common/data/summary_report.dart';
 import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/core/utils/format_bytes.dart';
+import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+import 'package:petit/features/videos/domain/video_bitrate.dart';
+import 'package:petit/features/videos/presentation/state/videos_state.dart';
 import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
 
 import 'helpers/viewmodel_fakes.dart';
@@ -84,6 +87,117 @@ void main() {
     });
   });
 
+  group('video information', () {
+    // A sparse file: big on paper, instant to create.
+    File sparseFile(String name, int bytes) {
+      final file = File('${dir.path}/$name');
+      final handle = file.openSync(mode: FileMode.write);
+      handle.setPositionSync(bytes - 1);
+      handle.writeByteSync(0);
+      handle.closeSync();
+      return file;
+    }
+
+    test('the video is probed and its size read when it is picked', () async {
+      h.picker.video = h.file('in.mp4', 1000).path;
+      final c = h.container();
+
+      await c.read(videosViewModelProvider.notifier).pickVideo();
+
+      final s = c.read(videosViewModelProvider);
+      expect(s.videoInfo?.pixelHeight, 1080);
+      expect(s.videoBytes, 1000);
+      expect(s.sourceShortSide, 1080);
+    });
+
+    test('removing the video forgets what was read from it', () async {
+      h.picker.video = h.file('in.mp4', 1000).path;
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+      await vm.pickVideo();
+
+      vm.removeVideo();
+
+      final s = c.read(videosViewModelProvider);
+      expect(s.videoInfo, isNull);
+      expect(s.videoBytes, isNull);
+    });
+
+    test('a resolution that would not shrink the video is not offered', () async {
+      h.picker.video = h.file('in.mp4', 1000).path;
+      final c = h.container();
+      await c.read(videosViewModelProvider.notifier).pickVideo();
+
+      final s = c.read(videosViewModelProvider);
+      expect(s.canUseResolution(VideoResolution.original), isTrue);
+      expect(s.canUseResolution(VideoResolution.p720), isTrue);
+      expect(s.canUseResolution(VideoResolution.p1080), isFalse); // 1080 is its size
+    });
+
+    test('a choice that no longer fits the next video is moved to one that does',
+        () async {
+      h.picker.video = sparseFile('big.mp4', 60000000).path; // 60 MB
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+      vm.setResolution(VideoResolution.p1080); // the video is 1080p: no shrink
+      vm.setTargetSizeMb(100); // bigger than the file
+
+      await vm.pickVideo();
+
+      final s = c.read(videosViewModelProvider);
+      expect(s.resolution, VideoResolution.original);
+      expect(s.targetSizeMb, 50, reason: 'the largest size below 60 MB');
+      expect(s.canTargetMb(50), isTrue);
+      expect(s.canTargetMb(100), isFalse);
+    });
+
+    test('choices that fit are kept', () async {
+      h.picker.video = sparseFile('big.mp4', 60000000).path;
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+      vm.setResolution(VideoResolution.p720);
+      vm.setTargetSizeMb(10);
+
+      await vm.pickVideo();
+
+      final s = c.read(videosViewModelProvider);
+      expect(s.resolution, VideoResolution.p720);
+      expect(s.targetSizeMb, 10);
+    });
+  });
+
+  group('options reach the compressor', () {
+    test('quality mode with a resolution', () async {
+      h.picker.video = h.file('in.mp4', 1000).path;
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+      await vm.pickVideo();
+      vm.setResolution(VideoResolution.p720);
+
+      await vm.compressVideo(onComplete: (_) {});
+
+      expect(h.videoCompressor.usedMaxShortSide, 720);
+      expect(h.videoCompressor.usedBitrateKbps, isNull);
+    });
+
+    test('target size mode asks for a bitrate that fits the length', () async {
+      h.picker.video = h.file('in.mp4', 1000).path;
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+      await vm.pickVideo();
+      vm.setMode(VideoMode.targetSize);
+      vm.setTargetSizeMb(10);
+
+      await vm.compressVideo(onComplete: (_) {});
+
+      // The fake video lasts 5 seconds.
+      expect(
+        h.videoCompressor.usedBitrateKbps,
+        bitrateForTargetSize(targetBytes: 10000000, durationMs: 5000),
+      );
+    });
+  });
+
   group('settings', () {
     test('sliders update the state', () {
       final c = h.container();
@@ -94,10 +208,16 @@ void main() {
 
       vm.updateCfrQualitySlider(0.4);
       vm.setPresetIndex(2);
+      vm.setMode(VideoMode.targetSize);
+      vm.setResolution(VideoResolution.p480);
+      vm.setTargetSizeMb(50);
 
       final s = c.read(videosViewModelProvider);
       expect(s.crfQuality, 40);
       expect(s.presetIndex, 2);
+      expect(s.mode, VideoMode.targetSize);
+      expect(s.resolution, VideoResolution.p480);
+      expect(s.targetSizeMb, 50);
     });
   });
 
@@ -137,6 +257,18 @@ void main() {
       expect(s.currentJob, isNull);
       expect(h.workspace.clears, 1);
       expect(h.previews.single.disposed, isTrue);
+    });
+
+    test('the summary carries the folder to open, when there is one', () async {
+      h.saver.folder = '/saved/here';
+      final (c, vm) = await start();
+      final done = Completer<SummaryReport>();
+
+      await vm.compressVideo(onComplete: done.complete);
+      h.videoCompressor.lastTask!.completer.complete(h.file('out.mp4', 400));
+
+      expect((await done.future).folderPath, '/saved/here');
+      expect(c.read(videosViewModelProvider).videoFile, isNull);
     });
 
     test('a failed compression reports it and resets', () async {

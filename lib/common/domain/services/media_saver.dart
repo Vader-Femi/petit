@@ -10,6 +10,10 @@ abstract interface class MediaSaver {
 
   Future<void> saveVideo(String path);
 
+  /// The folder results were saved to, when there is one the user can open
+  /// (desktop). Null for the gallery on mobile. Valid after [prepare].
+  String? get destinationFolder;
+
   /// Human readable location shown in the summary dialog.
   String get imageDestinationLabel;
 

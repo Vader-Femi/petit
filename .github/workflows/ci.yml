@@ -40,6 +40,10 @@ jobs:
           test/videos_viewmodel_test.dart
           test/home_viewmodel_test.dart
           test/macos_image_converter_test.dart
+          test/folder_media_saver_test.dart
+          test/output_folder_viewmodel_test.dart
+          test/video_bitrate_test.dart
+          test/ffmpeg_arguments_test.dart
 
   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
   # it runs on demand and for pull requests into the production branch.

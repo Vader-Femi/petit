@@ -24,7 +24,7 @@ Platform implementations (chosen in `service_locator.dart`)
 | Interface | Android / iOS | Windows / macOS / Linux |
 |---|---|---|
 | `MediaPicker` | `ImagePickerMediaPicker` (image_picker) | `FileSelectorMediaPicker` (OS file dialog) |
-| `MediaSaver` | `GalleryMediaSaver` (gallery) | `FolderMediaSaver` (folder chosen per job) |
+| `MediaSaver` | `GalleryMediaSaver` (gallery) | `FolderMediaSaver` (the remembered "Save to" folder, else a dialog per job) |
 | `ImageCompressor` | `FlutterImageCompressor` (+ HEIC) | `DesktopImageCompressor` (`image` package in an isolate; HEIC via macOS ImageIO on macOS, FFmpeg best effort elsewhere) |
 | `VideoCompressor` | `FfmpegVideoCompressor` | same (FFmpeg Kit supports all five platforms) |
 | `VideoThumbnailer` | not used | `FfmpegVideoThumbnailer` (Windows, Linux preview) |
@@ -87,3 +87,26 @@ Each tab has a **ViewModel**, which is a Riverpod `Notifier` holding one immutab
   if its provider ever rebuilds. The only Notifier field is the cancelable handle of a running image
   job (the provider watches nothing, so it never rebuilds). The carousel controller has its own provider.
 - flutter_super is no longer a dependency.
+
+## Save-to folder (desktop)
+
+The "Save to" tile (`common/widgets/save_to_tile.dart`) on both pages shows where results go and lets
+the user change it. The choice is stored by `OutputFolderPreference` (shared_preferences) and read by
+`FolderMediaSaver`, which uses it without asking if the folder can still be written to. With nothing
+remembered, a dialog opens at the start of each job. After a job the summary offers "Open folder".
+
+## Video options
+
+The Videos tab's options live in `VideoOptionsPanel` and `VideosState`:
+
+- **Quality or Target size.** Quality is a CRF level. Target size aims for a file of about 5, 10, 25, 50
+  or 100 MB (1 MB = 1,000,000 bytes) by turning the size and the video's length into a bitrate
+  (`domain/video_bitrate.dart`). In tests the result came out 8 to 12 percent under the target, so it is
+  an "about". Sizes at or above the video's own size are disabled.
+- **Resolution.** Original, 1080p, 720p or 480p, where the number is the *shorter* side, so portrait
+  phone videos are handled too. Videos are never enlarged, and only smaller choices are offered.
+- **Encoding speed** is the FFmpeg preset. It changes how long encoding takes and how efficient it is,
+  not the file size.
+
+`data/services/ffmpeg_arguments.dart` builds the FFmpeg command line as a pure function; its tests check
+the exact arguments, which were verified with a real FFmpeg 6.1.

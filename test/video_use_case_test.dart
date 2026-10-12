@@ -32,6 +32,8 @@ class FakeVideoCompressor implements VideoCompressor {
   int? usedCrf;
   String? usedPreset;
   int? usedDurationMs;
+  int? usedBitrateKbps;
+  int? usedMaxShortSide;
 
   @override
   Future<VideoData> probe(File video) async {
@@ -47,7 +49,11 @@ class FakeVideoCompressor implements VideoCompressor {
     required String preset,
     required int totalDurationMs,
     required void Function(int percent) onProgress,
+    int? videoBitrateKbps,
+    int? maxShortSide,
   }) async {
+    usedBitrateKbps = videoBitrateKbps;
+    usedMaxShortSide = maxShortSide;
     usedCodec = videoCodec;
     usedCrf = crf;
     usedPreset = preset;
@@ -77,6 +83,9 @@ class FakeSaver implements MediaSaver {
 
   @override
   Future<void> saveVideo(String path) async => saved.add(path);
+
+  @override
+  String? get destinationFolder => '/out/folder';
 
   @override
   String get imageDestinationLabel => 'Photos';
@@ -144,6 +153,7 @@ void main() {
       expect(outcome.compressedBytes, 400);
       expect(outcome.savedFraction, closeTo(0.6, 1e-9));
       expect(outcome.destinationLabel, 'Movies/Petit');
+      expect(outcome.destinationFolder, '/out/folder');
     });
 
     test('keeps the original when compression does not shrink it', () async {
@@ -252,6 +262,57 @@ void main() {
 
       expect(saver.prepareCalls, 1);
       expect(compressor.usedCodec, isNull);
+    });
+
+    group('resolution and target size', () {
+      Future<FakeVideoCompressor> run({
+        int? maxShortSide,
+        int? targetBytes,
+        int? durationMs = 10000,
+      }) async {
+        final input = fileOfSize('in_${maxShortSide}_$targetBytes.mp4', 100);
+        final compressor =
+            FakeVideoCompressor(data: dataFor(input, durationMs: durationMs));
+        await CompressVideoUseCase(compressor, FakeSaver())(
+          input: input,
+          qualityPercent: 80,
+          preset: 'medium',
+          maxShortSide: maxShortSide,
+          targetBytes: targetBytes,
+          onProgress: (_) {},
+          onError: (_) {},
+        );
+        return compressor;
+      }
+
+      test('a smaller resolution is passed on (the video is 1920x1080)', () async {
+        expect((await run(maxShortSide: 720)).usedMaxShortSide, 720);
+        expect((await run(maxShortSide: 480)).usedMaxShortSide, 480);
+      });
+
+      test('a resolution that would not shrink the video is dropped', () async {
+        expect((await run(maxShortSide: 1080)).usedMaxShortSide, isNull);
+        expect((await run(maxShortSide: 2160)).usedMaxShortSide, isNull);
+        expect((await run()).usedMaxShortSide, isNull);
+      });
+
+      test('a target size becomes a bitrate from the video length', () async {
+        final compressor = await run(targetBytes: 1000000);
+
+        expect(compressor.usedBitrateKbps, 632); // 10 s, see video_bitrate_test
+      });
+
+      test('quality mode passes no bitrate', () async {
+        expect((await run()).usedBitrateKbps, isNull);
+      });
+
+      test('a target size needs the length of the video', () async {
+        await expectLater(
+          run(targetBytes: 1000000, durationMs: null),
+          throwsA(isA<MediaException>().having(
+              (e) => e.message, 'message', startsWith('Could not work out'))),
+        );
+      });
     });
 
     test('cancel is forwarded to the task', () async {

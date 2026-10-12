@@ -36,6 +36,13 @@ It writes the seven PNGs in `macos/Runner/Assets.xcassets/AppIcon.appiconset/`. 
 disabled for macOS on purpose, so running it will not overwrite them. Re-run the script if the logo
 changes.
 
+### Remembered "Save to" folder
+
+The folder chosen in the "Save to" tile is remembered, but the macOS sandbox only keeps access to a
+folder chosen in a dialog while the app is running. After a restart the saved folder may not be writable
+any more; the app then opens the dialog once and remembers the new choice. (Storing security-scoped
+bookmarks would remove that extra step.)
+
 ### HEIC photos
 
 HEIC is what iPhones and Macs save by default. Flutter and the bundled FFmpeg cannot read it, so on

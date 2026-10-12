@@ -1,0 +1,1243 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index b3deb27..1c06d25 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -42,6 +42,8 @@ jobs:
+           test/macos_image_converter_test.dart
+           test/folder_media_saver_test.dart
+           test/output_folder_viewmodel_test.dart
++          test/video_bitrate_test.dart
++          test/ffmpeg_arguments_test.dart
+ 
+   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
+   # it runs on demand and for pull requests into the production branch.
+diff --git a/docs/architecture.md b/docs/architecture.md
+index 3ace1a9..bb2113b 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -94,3 +94,19 @@ The "Save to" tile (`common/widgets/save_to_tile.dart`) on both pages shows wher
+ the user change it. The choice is stored by `OutputFolderPreference` (shared_preferences) and read by
+ `FolderMediaSaver`, which uses it without asking if the folder can still be written to. With nothing
+ remembered, a dialog opens at the start of each job. After a job the summary offers "Open folder".
++
++## Video options
++
++The Videos tab's options live in `VideoOptionsPanel` and `VideosState`:
++
++- **Quality or Target size.** Quality is a CRF level. Target size aims for a file of about 5, 10, 25, 50
++  or 100 MB (1 MB = 1,000,000 bytes) by turning the size and the video's length into a bitrate
++  (`domain/video_bitrate.dart`). In tests the result came out 8 to 12 percent under the target, so it is
++  an "about". Sizes at or above the video's own size are disabled.
++- **Resolution.** Original, 1080p, 720p or 480p, where the number is the *shorter* side, so portrait
++  phone videos are handled too. Videos are never enlarged, and only smaller choices are offered.
++- **Encoding speed** is the FFmpeg preset. It changes how long encoding takes and how efficient it is,
++  not the file size.
++
++`data/services/ffmpeg_arguments.dart` builds the FFmpeg command line as a pure function; its tests check
++the exact arguments, which were verified with a real FFmpeg 6.1.
+diff --git a/lib/core/di/providers.dart b/lib/core/di/providers.dart
+index 24645c2..32fe4ee 100644
+--- a/lib/core/di/providers.dart
++++ b/lib/core/di/providers.dart
+@@ -7,6 +7,7 @@ import 'package:petit/common/domain/services/output_folder_preference.dart';
+ import 'package:petit/common/domain/services/workspace.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
+ import 'package:petit/features/images/domain/usecases/read_images.dart';
++import 'package:petit/features/videos/domain/services/video_compressor.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+ import 'package:petit/features/videos/presentation/preview/video_preview.dart';
+ import 'package:petit/features/videos/presentation/preview/video_preview_factory.dart';
+@@ -32,6 +33,9 @@ final readImagesUseCaseProvider =
+ final compressImagesUseCaseProvider =
+     Provider<CompressImagesUseCase>((ref) => sl<CompressImagesUseCase>());
+ 
++final videoCompressorProvider =
++    Provider<VideoCompressor>((ref) => sl<VideoCompressor>());
++
+ final compressVideoUseCaseProvider =
+     Provider<CompressVideoUseCase>((ref) => sl<CompressVideoUseCase>());
+ 
+diff --git a/lib/features/videos/data/services/ffmpeg_arguments.dart b/lib/features/videos/data/services/ffmpeg_arguments.dart
+new file mode 100644
+index 0000000..4b8ab51
+--- /dev/null
++++ b/lib/features/videos/data/services/ffmpeg_arguments.dart
+@@ -0,0 +1,45 @@
++// Pure Dart (no plugins), so the command lines can be unit tested.
++
++/// FFmpeg filter that scales a video so its *shorter* side is [shortSide]
++/// pixels, keeping the aspect ratio and even dimensions. It decides landscape
++/// or portrait from the frame itself, so phone videos that are stored rotated
++/// come out right. Commas are escaped for FFmpeg's filter syntax.
++String ffmpegScaleFilter(int shortSide) =>
++    'scale=w=if(gt(iw\\,ih)\\,-2\\,$shortSide):h=if(gt(iw\\,ih)\\,$shortSide\\,-2)';
++
++/// The FFmpeg command line (without the program name) for one compression.
++///
++/// A list, not one string, so paths with spaces work on every OS. Rate control
++/// is either constant quality ([crf]) or, when [videoBitrateKbps] is given, a
++/// target bitrate with a cap and a buffer so the size stays predictable.
++List<String> buildVideoArguments({
++  required String inputPath,
++  required String outputPath,
++  required String videoCodec,
++  required int crf,
++  required String preset,
++  int? videoBitrateKbps,
++  int? maxShortSide,
++}) {
++  return [
++    '-i',
++    inputPath,
++    '-vcodec',
++    videoCodec,
++    if (videoBitrateKbps != null) ...[
++      '-b:v',
++      '${videoBitrateKbps}k',
++      '-maxrate',
++      '${(videoBitrateKbps * 1.5).round()}k',
++      '-bufsize',
++      '${videoBitrateKbps * 2}k',
++    ] else ...[
++      '-crf',
++      '$crf',
++    ],
++    '-preset',
++    preset,
++    if (maxShortSide != null) ...['-vf', ffmpegScaleFilter(maxShortSide)],
++    outputPath,
++  ];
++}
+diff --git a/lib/features/videos/data/services/ffmpeg_video_compressor.dart b/lib/features/videos/data/services/ffmpeg_video_compressor.dart
+index 350a5b7..ed82d80 100644
+--- a/lib/features/videos/data/services/ffmpeg_video_compressor.dart
++++ b/lib/features/videos/data/services/ffmpeg_video_compressor.dart
+@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart';
+ import 'package:path/path.dart' as p;
+ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/core/utils/work_dir.dart';
++import 'package:petit/features/videos/data/services/ffmpeg_arguments.dart';
+ import 'package:petit/features/videos/domain/entities/video_data.dart';
+ import 'package:petit/features/videos/domain/services/video_compressor.dart';
+ 
+@@ -65,24 +66,23 @@ class FfmpegVideoCompressor implements VideoCompressor {
+     required String preset,
+     required int totalDurationMs,
+     required void Function(int percent) onProgress,
++    int? videoBitrateKbps,
++    int? maxShortSide,
+   }) async {
+     final jobDir = await createJobDir();
+     // The job folder is unique, so the name can simply follow the original's.
+     final outPath = p.join(
+         jobDir.path, '${p.basenameWithoutExtension(input.path)}_compressed.mp4');
+ 
+-    // Passed as a list (not one string) so paths with spaces work on every OS.
+-    final arguments = <String>[
+-      '-i',
+-      input.path,
+-      '-vcodec',
+-      videoCodec,
+-      '-crf',
+-      '$crf',
+-      '-preset',
+-      preset,
+-      outPath,
+-    ];
++    final arguments = buildVideoArguments(
++      inputPath: input.path,
++      outputPath: outPath,
++      videoCodec: videoCodec,
++      crf: crf,
++      preset: preset,
++      videoBitrateKbps: videoBitrateKbps,
++      maxShortSide: maxShortSide,
++    );
+ 
+     final completer = Completer<File>();
+ 
+diff --git a/lib/features/videos/domain/entities/video_resolution.dart b/lib/features/videos/domain/entities/video_resolution.dart
+new file mode 100644
+index 0000000..576b8a5
+--- /dev/null
++++ b/lib/features/videos/domain/entities/video_resolution.dart
+@@ -0,0 +1,14 @@
++/// Output size choices. The number is the length of the video's *shorter* side,
++/// so 720p means 1280x720 for a landscape video and 720x1280 for a portrait one.
++enum VideoResolution {
++  original(null, 'Original'),
++  p1080(1080, '1080p'),
++  p720(720, '720p'),
++  p480(480, '480p');
++
++  const VideoResolution(this.shortSide, this.label);
++
++  /// Pixels of the shorter side, or null to keep the video's own size.
++  final int? shortSide;
++  final String label;
++}
+diff --git a/lib/features/videos/domain/services/video_compressor.dart b/lib/features/videos/domain/services/video_compressor.dart
+index 209c6d8..5412a2a 100644
+--- a/lib/features/videos/domain/services/video_compressor.dart
++++ b/lib/features/videos/domain/services/video_compressor.dart
+@@ -16,6 +16,11 @@ abstract interface class VideoCompressor {
+   Future<VideoData> probe(File video);
+ 
+   /// Starts compressing [input]. [onProgress] receives 0..100.
++  ///
++  /// With [videoBitrateKbps] the encoder aims for that bitrate (a target file
++  /// size) and [crf] is ignored. With [maxShortSide] the video is scaled so its
++  /// shorter side has that many pixels; callers pass it only when it is smaller
++  /// than the video, because the video is never enlarged.
+   Future<VideoCompressionTask> start({
+     required File input,
+     required String videoCodec,
+@@ -23,5 +28,7 @@ abstract interface class VideoCompressor {
+     required String preset,
+     required int totalDurationMs,
+     required void Function(int percent) onProgress,
++    int? videoBitrateKbps,
++    int? maxShortSide,
+   });
+ }
+diff --git a/lib/features/videos/domain/usecases/compress_video.dart b/lib/features/videos/domain/usecases/compress_video.dart
+index dc36764..5f79a89 100644
+--- a/lib/features/videos/domain/usecases/compress_video.dart
++++ b/lib/features/videos/domain/usecases/compress_video.dart
+@@ -1,10 +1,12 @@
+ import 'dart:io';
++import 'dart:math' as math;
+ 
+ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/common/domain/services/media_saver.dart';
+ import 'package:petit/features/videos/domain/entities/codec_config.dart';
+ import 'package:petit/features/videos/domain/entities/video_data.dart';
+ import 'package:petit/features/videos/domain/services/video_compressor.dart';
++import 'package:petit/features/videos/domain/video_bitrate.dart';
+ 
+ class VideoCompressionOutcome {
+   final int originalBytes;
+@@ -50,6 +52,11 @@ class CompressVideoUseCase {
+ 
+   /// Probes [input], picks encoder settings from its codec, and starts
+   /// compressing. [qualityPercent] is the 0..100 slider value.
++  ///
++  /// [targetBytes] aims for a file of about that size instead of a quality
++  /// level (needs the video's length). [maxShortSide] scales the video down so
++  /// its shorter side has that many pixels; it is ignored when the video is
++  /// not larger than that, because videos are never enlarged.
+   /// [totalDurationMs] is used for progress; when missing, the probed
+   /// duration is used instead.
+   Future<VideoCompressionJob> call({
+@@ -57,6 +64,8 @@ class CompressVideoUseCase {
+     required int qualityPercent,
+     required String preset,
+     int? totalDurationMs,
++    int? maxShortSide,
++    int? targetBytes,
+     required void Function(int percent) onProgress,
+     required void Function(String message) onError,
+   }) async {
+@@ -82,11 +91,28 @@ class CompressVideoUseCase {
+             ((qualityPercent / 100) * (config.maxCrf - config.minCrf)))
+         .round();
+ 
++    int? videoBitrateKbps;
++    if (targetBytes != null) {
++      final durationMs = data.durationMs;
++      if (durationMs == null || durationMs <= 0) {
++        throw const MediaException(
++            "Could not work out the video's length, so a target size is not possible. Use quality instead.");
++      }
++      videoBitrateKbps =
++          bitrateForTargetSize(targetBytes: targetBytes, durationMs: durationMs);
++    }
++
++    final shortSide = math.min(data.pixelWidth!, data.pixelHeight!);
++    final scaleTo =
++        (maxShortSide != null && shortSide > maxShortSide) ? maxShortSide : null;
++
+     final task = await _compressor.start(
+       input: input,
+       videoCodec: config.vcodec,
+       crf: crf,
+       preset: preset,
++      videoBitrateKbps: videoBitrateKbps,
++      maxShortSide: scaleTo,
+       totalDurationMs: _usableDuration(totalDurationMs) ??
+           _usableDuration(data.durationMs) ??
+           1,
+diff --git a/lib/features/videos/domain/video_bitrate.dart b/lib/features/videos/domain/video_bitrate.dart
+new file mode 100644
+index 0000000..21d28d0
+--- /dev/null
++++ b/lib/features/videos/domain/video_bitrate.dart
+@@ -0,0 +1,22 @@
++import 'dart:math' as math;
++
++/// Audio is re-encoded at about this rate (FFmpeg's default for AAC).
++const int kAssumedAudioKbps = 128;
++
++/// Never aim below this video bitrate; the picture would fall apart.
++const int kMinVideoKbps = 100;
++
++/// The video bitrate (in kbit/s) that should give a file of about
++/// [targetBytes] for a clip lasting [durationMs].
++///
++/// 5% of the target is left for the container's own overhead. In tests with
++/// x264 and x265 this landed 8 to 12 percent under the target, so the result
++/// is a safe "about", not an exact size.
++int bitrateForTargetSize({
++  required int targetBytes,
++  required int durationMs,
++  int audioKbps = kAssumedAudioKbps,
++}) {
++  final totalKbps = targetBytes * 8 * 0.95 / (durationMs / 1000) / 1000;
++  return math.max(kMinVideoKbps, (totalKbps - audioKbps).round());
++}
+diff --git a/lib/features/videos/presentation/pages/videos_page.dart b/lib/features/videos/presentation/pages/videos_page.dart
+index 56c3f50..265fa25 100644
+--- a/lib/features/videos/presentation/pages/videos_page.dart
++++ b/lib/features/videos/presentation/pages/videos_page.dart
+@@ -3,13 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:petit/core/utils/adaptive.dart';
+ import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:petit/core/utils/shortcut_labels.dart';
+-import 'package:petit/features/videos/presentation/state/video_presets.dart';
+ import 'package:petit/features/videos/presentation/state/videos_state.dart';
+ import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
++import 'package:petit/features/videos/presentation/widget/video_options_panel.dart';
+ import 'package:step_progress_indicator/step_progress_indicator.dart';
+ import '../../../../common/widgets/compression_summary_dialog.dart';
+-import '../../../../common/widgets/save_to_tile.dart';
+-import '../../../../common/widgets/slider_box.dart';
+ 
+ class VideosPage extends ConsumerStatefulWidget {
+   const VideosPage({super.key});
+@@ -22,59 +20,6 @@ class _VideosPageState extends ConsumerState<VideosPage> {
+   // Adjust to actual height of your FAB + margin
+   static const fabHeight = 72.0;
+ 
+-  /// The two quality sliders.
+-  Widget _buildSliders(
+-    BuildContext context,
+-    VideosState state,
+-    VideosViewModel viewModel,
+-  ) {
+-    return Column(
+-      mainAxisSize: MainAxisSize.min,
+-      children: [
+-        buildSliderBox(
+-          context: context,
+-          label: "Compression Level",
+-          minValue: labelForCrfSlider(0),
+-          maxValue: labelForCrfSlider(100),
+-          tootTipMessage: "Adjusts the compression level.\n"
+-              "•${labelForCrfSlider(100)} = smallest size, less clarity\n"
+-              "•${labelForCrfSlider(0)} = smaller size, more clarity\n"
+-              "•Recommended = ${labelForCrfSlider(80)}",
+-          slider: Slider(
+-            value: state.crfQuality / 100,
+-            min: 0,
+-            max: 1,
+-            divisions: 4,
+-            label: "${labelForCrfSlider(state.crfQuality)} Compression",
+-            onChanged: viewModel.updateCfrQualitySlider,
+-          ),
+-        ),
+-        const SizedBox(height: 12),
+-        buildSliderBox(
+-          context: context,
+-          label: "Desired File Size",
+-          minValue: kFfmpegPresets.first.desc,
+-          maxValue: kFfmpegPresets.last.desc,
+-          tootTipMessage: //"Choose a desired file size.\n"
+-              "•${kFfmpegPresets.first.desc} = For archival\n"
+-              "•${kFfmpegPresets[1].desc} = For social media\n"
+-              "•${kFfmpegPresets.last.desc} = For quick sharing",
+-          slider: Slider(
+-            value: state.presetIndex.toDouble(),
+-            min: 0,
+-            max: (kFfmpegPresets.length - 1).toDouble(),
+-            divisions: kFfmpegPresets.length - 1,
+-            label: kFfmpegPresets[state.presetIndex].desc,
+-            onChanged: (value) => viewModel.setPresetIndex(value.toInt()),
+-          ),
+-        ),
+-
+-        // Desktop only: where the result is saved.
+-        const SaveToTile(),
+-      ],
+-    );
+-  }
+-
+   Widget _buildBody(
+     BuildContext context,
+     VideosState state,
+@@ -111,7 +56,7 @@ class _VideosPageState extends ConsumerState<VideosPage> {
+                             child: Column(
+                               mainAxisSize: MainAxisSize.min,
+                               children: [
+-                                _buildSliders(context, state, viewModel),
++                                const VideoOptionsPanel(),
+                                 // Space for FABs
+                                 const SizedBox(height: fabHeight),
+                               ],
+@@ -123,19 +68,22 @@ class _VideosPageState extends ConsumerState<VideosPage> {
+                   );
+                 }
+ 
+-                // Narrow: stacked, as on a phone.
+-                return Column(
+-                  mainAxisAlignment: MainAxisAlignment.center,
+-                  children: [
+-                    Expanded(child: previewBox),
+-
+-                    const SizedBox(height: 12),
+-
+-                    _buildSliders(context, state, viewModel),
+-
+-                    // Space for FABs
+-                    const SizedBox(height: fabHeight),
+-                  ],
++                // Narrow: stacked, as on a phone. There are many options, so
++                // the whole column scrolls instead of squeezing the preview.
++                return SingleChildScrollView(
++                  child: Column(
++                    children: [
++                      ConstrainedBox(
++                        constraints: BoxConstraints(
++                            maxHeight: constraints.maxHeight * 0.45),
++                        child: previewBox,
++                      ),
++                      const SizedBox(height: 12),
++                      const VideoOptionsPanel(),
++                      // Space for FABs
++                      const SizedBox(height: fabHeight),
++                    ],
++                  ),
+                 );
+               },
+             ),
+diff --git a/lib/features/videos/presentation/state/video_presets.dart b/lib/features/videos/presentation/state/video_presets.dart
+index 4efc365..ded3dfb 100644
+--- a/lib/features/videos/presentation/state/video_presets.dart
++++ b/lib/features/videos/presentation/state/video_presets.dart
+@@ -1,14 +1,16 @@
+ import 'package:petit/features/videos/data/slider_value.dart';
+ 
+-/// FFmpeg presets offered by the "Desired File Size" slider.
++/// FFmpeg presets offered by the "Encoding speed" slider. A slower preset
++/// gets the same quality into a smaller file but takes longer; it does not set
++/// the file size.
+ final List<SliderValue> kFfmpegPresets = [
+   // SliderValue(value: "ultrafast", desc: "ultrafast"),
+   // SliderValue(value: "superfast", desc: "superfast"),
+   // SliderValue(value: "veryfast", desc: "veryfast"),
+   // SliderValue(value: "faster", desc: "faster"),
+-  SliderValue(value: "fast", desc: "Best Quality"),
+-  SliderValue(value: "medium", desc: "Balanced File"), // good default
+-  SliderValue(value: "slow", desc: "Smallest File"),
++  SliderValue(value: "fast", desc: "Faster"),
++  SliderValue(value: "medium", desc: "Balanced"), // good default
++  SliderValue(value: "slow", desc: "Smaller file"),
+   // SliderValue(value: "slower", desc: "slower"),
+   // SliderValue(value: "veryslow", desc: "veryslow"),
+ ];
+diff --git a/lib/features/videos/presentation/state/videos_state.dart b/lib/features/videos/presentation/state/videos_state.dart
+index 579f03c..681992e 100644
+--- a/lib/features/videos/presentation/state/videos_state.dart
++++ b/lib/features/videos/presentation/state/videos_state.dart
+@@ -1,10 +1,24 @@
+ import 'dart:io';
+ 
++import 'package:petit/features/videos/domain/entities/video_data.dart';
++import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+ import 'package:petit/features/videos/presentation/preview/video_preview.dart';
+ 
+ const Object _unset = Object();
+ 
++/// How the amount of compression is chosen.
++enum VideoMode {
++  /// A quality level (the "Compression Level" slider).
++  quality,
++
++  /// A file size to aim for.
++  targetSize,
++}
++
++/// Target sizes offered, in megabytes (1 MB = 1,000,000 bytes).
++const List<int> kTargetSizeOptionsMb = [5, 10, 25, 50, 100];
++
+ /// Everything the Videos tab shows. Immutable: change it with [copyWith].
+ class VideosState {
+   const VideosState({
+@@ -18,6 +32,11 @@ class VideosState {
+     this.presetIndex = 1,
+     this.isFabOpen = true,
+     this.currentJob,
++    this.mode = VideoMode.quality,
++    this.resolution = VideoResolution.original,
++    this.targetSizeMb = 25,
++    this.videoInfo,
++    this.videoBytes,
+   });
+ 
+   /// One-shot message for a snackbar; the page clears it once shown.
+@@ -38,6 +57,39 @@ class VideosState {
+   /// The running compression, if any.
+   final VideoCompressionJob? currentJob;
+ 
++  final VideoMode mode;
++  final VideoResolution resolution;
++
++  /// Size to aim for in [VideoMode.targetSize], in megabytes.
++  final int targetSizeMb;
++
++  /// Properties of the selected video (null if they could not be read).
++  final VideoData? videoInfo;
++
++  /// Size of the selected video file.
++  final int? videoBytes;
++
++  /// The shorter side of the selected video in pixels, if known.
++  int? get sourceShortSide {
++    final width = videoInfo?.pixelWidth;
++    final height = videoInfo?.pixelHeight;
++    if (width == null || height == null) return null;
++    return width < height ? width : height;
++  }
++
++  /// Whether [resolution] would make the video smaller. Original always can.
++  bool canUseResolution(VideoResolution resolution) {
++    final side = resolution.shortSide;
++    final source = sourceShortSide;
++    return side == null || source == null || side < source;
++  }
++
++  /// Whether a target of [mb] megabytes is smaller than the video itself.
++  bool canTargetMb(int mb) {
++    final bytes = videoBytes;
++    return bytes == null || mb * 1000000 < bytes;
++  }
++
+   /// True while a video is being loaded or compressed.
+   bool get isBusy => isLoading || isCompressing;
+ 
+@@ -53,6 +105,11 @@ class VideosState {
+     int? presetIndex,
+     bool? isFabOpen,
+     Object? currentJob = _unset,
++    VideoMode? mode,
++    VideoResolution? resolution,
++    int? targetSizeMb,
++    Object? videoInfo = _unset,
++    Object? videoBytes = _unset,
+   }) {
+     return VideosState(
+       result: identical(result, _unset) ? this.result : result as String?,
+@@ -69,6 +126,13 @@ class VideosState {
+       currentJob: identical(currentJob, _unset)
+           ? this.currentJob
+           : currentJob as VideoCompressionJob?,
++      mode: mode ?? this.mode,
++      resolution: resolution ?? this.resolution,
++      targetSizeMb: targetSizeMb ?? this.targetSizeMb,
++      videoInfo:
++          identical(videoInfo, _unset) ? this.videoInfo : videoInfo as VideoData?,
++      videoBytes:
++          identical(videoBytes, _unset) ? this.videoBytes : videoBytes as int?,
+     );
+   }
+ }
+diff --git a/lib/features/videos/presentation/state/videos_viewmodel.dart b/lib/features/videos/presentation/state/videos_viewmodel.dart
+index e86e5fd..fd5cb14 100644
+--- a/lib/features/videos/presentation/state/videos_viewmodel.dart
++++ b/lib/features/videos/presentation/state/videos_viewmodel.dart
+@@ -8,6 +8,8 @@ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/core/di/providers.dart';
+ import 'package:petit/core/utils/format_bytes.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
++import 'package:petit/features/videos/domain/entities/video_data.dart';
++import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+ import 'package:share_handler/share_handler.dart';
+ import 'video_presets.dart';
+ import 'videos_state.dart';
+@@ -38,6 +40,18 @@ class VideosViewModel extends Notifier<VideosState> {
+     state = state.copyWith(presetIndex: index);
+   }
+ 
++  void setMode(VideoMode mode) {
++    state = state.copyWith(mode: mode);
++  }
++
++  void setResolution(VideoResolution resolution) {
++    state = state.copyWith(resolution: resolution);
++  }
++
++  void setTargetSizeMb(int mb) {
++    state = state.copyWith(targetSizeMb: mb);
++  }
++
+   void updateCfrQualitySlider(double value) {
+     state = state.copyWith(crfQuality: (value * 100).toInt());
+   }
+@@ -87,7 +101,40 @@ class VideosViewModel extends Notifier<VideosState> {
+     state = state.copyWith(preview: preview);
+     await preview.initialize();
+ 
+-    state = state.copyWith(videoFile: file, isLoading: false);
++    // What the options offer depends on the video, so read its properties now.
++    // Failing to read them only means the options cannot be narrowed down.
++    VideoData? info;
++    try {
++      info = await ref.read(videoCompressorProvider).probe(file);
++    } catch (_) {
++      info = null;
++    }
++    final bytes = await file.length();
++
++    state = state.copyWith(
++      videoFile: file,
++      videoInfo: info,
++      videoBytes: bytes,
++      isLoading: false,
++    );
++    _fitOptionsToVideo();
++  }
++
++  /// Moves a selection that makes no sense for this video (a bigger resolution
++  /// or a target above the file's own size) to the nearest one that does.
++  void _fitOptionsToVideo() {
++    var resolution = state.resolution;
++    if (!state.canUseResolution(resolution)) {
++      resolution = VideoResolution.original;
++    }
++
++    var targetMb = state.targetSizeMb;
++    if (!state.canTargetMb(targetMb)) {
++      final smaller = kTargetSizeOptionsMb.where(state.canTargetMb);
++      if (smaller.isNotEmpty) targetMb = smaller.last;
++    }
++
++    state = state.copyWith(resolution: resolution, targetSizeMb: targetMb);
+   }
+ 
+   /// Starts compressing the selected video. Returns once the job has started;
+@@ -109,6 +156,10 @@ class VideosViewModel extends Notifier<VideosState> {
+         qualityPercent: state.crfQuality,
+         preset: kFfmpegPresets[state.presetIndex].value,
+         totalDurationMs: state.preview?.duration.inMilliseconds,
++        maxShortSide: state.resolution.shortSide,
++        targetBytes: state.mode == VideoMode.targetSize
++            ? state.targetSizeMb * 1000000
++            : null,
+         onProgress: (percent) =>
+             state = state.copyWith(percentComplete: percent),
+         onError: showResult,
+@@ -173,6 +224,8 @@ class VideosViewModel extends Notifier<VideosState> {
+     state = state.copyWith(
+       preview: null,
+       videoFile: null,
++      videoInfo: null,
++      videoBytes: null,
+       isCompressing: false,
+       isLoading: false,
+       percentComplete: 0,
+diff --git a/lib/features/videos/presentation/widget/video_options_panel.dart b/lib/features/videos/presentation/widget/video_options_panel.dart
+new file mode 100644
+index 0000000..24a170b
+--- /dev/null
++++ b/lib/features/videos/presentation/widget/video_options_panel.dart
+@@ -0,0 +1,211 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:petit/common/widgets/save_to_tile.dart';
++import 'package:petit/common/widgets/slider_box.dart';
++import 'package:petit/core/utils/format_bytes.dart';
++import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++import 'package:petit/features/videos/presentation/state/video_presets.dart';
++import 'package:petit/features/videos/presentation/state/videos_state.dart';
++import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
++
++/// Everything that decides how a video is compressed: quality or target size,
++/// resolution, encoding speed, and (desktop) where the result is saved.
++class VideoOptionsPanel extends ConsumerWidget {
++  const VideoOptionsPanel({super.key});
++
++  @override
++  Widget build(BuildContext context, WidgetRef ref) {
++    final state = ref.watch(videosViewModelProvider);
++    final viewModel = ref.read(videosViewModelProvider.notifier);
++
++    return Column(
++      mainAxisSize: MainAxisSize.min,
++      children: [
++        SizedBox(
++          width: double.infinity,
++          child: SegmentedButton<VideoMode>(
++            segments: const [
++              ButtonSegment(
++                value: VideoMode.quality,
++                label: Text('Quality'),
++                icon: Icon(Icons.tune),
++              ),
++              ButtonSegment(
++                value: VideoMode.targetSize,
++                label: Text('Target size'),
++                icon: Icon(Icons.straighten),
++              ),
++            ],
++            selected: {state.mode},
++            onSelectionChanged: (selection) => viewModel.setMode(selection.first),
++          ),
++        ),
++        const SizedBox(height: 12),
++        if (state.mode == VideoMode.quality)
++          _qualityBox(context, state, viewModel)
++        else
++          _targetSizeBox(context, state, viewModel),
++        const SizedBox(height: 12),
++        _resolutionBox(context, state, viewModel),
++        const SizedBox(height: 12),
++        _speedBox(context, state, viewModel),
++        const SaveToTile(),
++      ],
++    );
++  }
++
++  Widget _qualityBox(
++      BuildContext context, VideosState state, VideosViewModel viewModel) {
++    return buildSliderBox(
++      context: context,
++      label: "Compression Level",
++      minValue: labelForCrfSlider(0),
++      maxValue: labelForCrfSlider(100),
++      tootTipMessage: "Adjusts the compression level.\n"
++          "•${labelForCrfSlider(100)} = smallest size, less clarity\n"
++          "•${labelForCrfSlider(0)} = smaller size, more clarity\n"
++          "•Recommended = ${labelForCrfSlider(80)}",
++      slider: Slider(
++        value: state.crfQuality / 100,
++        min: 0,
++        max: 1,
++        divisions: 4,
++        label: "${labelForCrfSlider(state.crfQuality)} Compression",
++        onChanged: viewModel.updateCfrQualitySlider,
++      ),
++    );
++  }
++
++  Widget _targetSizeBox(
++      BuildContext context, VideosState state, VideosViewModel viewModel) {
++    final bytes = state.videoBytes;
++    final lengthUnknown =
++        state.videoInfo != null && (state.videoInfo!.durationMs ?? 0) <= 0;
++
++    final String note;
++    if (lengthUnknown) {
++      note = "This video's length could not be read, so a target size is not "
++          "possible. Use Quality instead.";
++    } else if (bytes != null) {
++      note = "The video is ${formatBytes(bytes)}. The result will be about "
++          "the chosen size, usually a little smaller.";
++    } else {
++      note = "The result will be about the chosen size, usually a little smaller.";
++    }
++
++    return _OptionBox(
++      title: 'Target size',
++      note: note,
++      child: Wrap(
++        spacing: 8,
++        runSpacing: 4,
++        children: [
++          for (final mb in kTargetSizeOptionsMb)
++            ChoiceChip(
++              label: Text('$mb MB'),
++              selected: state.targetSizeMb == mb,
++              // Sizes at or above the video's own size would not shrink it.
++              onSelected: state.canTargetMb(mb)
++                  ? (_) => viewModel.setTargetSizeMb(mb)
++                  : null,
++            ),
++        ],
++      ),
++    );
++  }
++
++  Widget _resolutionBox(
++      BuildContext context, VideosState state, VideosViewModel viewModel) {
++    final source = state.sourceShortSide;
++
++    return _OptionBox(
++      title: 'Resolution',
++      note: source == null
++          ? 'Videos are only made smaller, never enlarged.'
++          : "Only smaller sizes are offered; this video's shorter side is "
++              "$source px.",
++      child: Wrap(
++        spacing: 8,
++        runSpacing: 4,
++        children: [
++          for (final resolution in VideoResolution.values)
++            ChoiceChip(
++              label: Text(resolution.label),
++              selected: state.resolution == resolution,
++              onSelected: state.canUseResolution(resolution)
++                  ? (_) => viewModel.setResolution(resolution)
++                  : null,
++            ),
++        ],
++      ),
++    );
++  }
++
++  Widget _speedBox(
++      BuildContext context, VideosState state, VideosViewModel viewModel) {
++    return buildSliderBox(
++      context: context,
++      label: "Encoding speed",
++      minValue: kFfmpegPresets.first.desc,
++      maxValue: kFfmpegPresets.last.desc,
++      tootTipMessage: "How hard the encoder works.\n"
++          "•${kFfmpegPresets.first.desc} = finishes sooner, file a bit bigger\n"
++          "•${kFfmpegPresets.last.desc} = takes longer, same quality in a smaller file\n"
++          "It does not set the file size: use Quality or Target size for that.",
++      slider: Slider(
++        value: state.presetIndex.toDouble(),
++        min: 0,
++        max: (kFfmpegPresets.length - 1).toDouble(),
++        divisions: kFfmpegPresets.length - 1,
++        label: kFfmpegPresets[state.presetIndex].desc,
++        onChanged: (value) => viewModel.setPresetIndex(value.toInt()),
++      ),
++    );
++  }
++}
++
++/// A titled box with the same look as the slider boxes.
++class _OptionBox extends StatelessWidget {
++  const _OptionBox({required this.title, required this.child, this.note});
++
++  final String title;
++  final Widget child;
++  final String? note;
++
++  @override
++  Widget build(BuildContext context) {
++    final scheme = Theme.of(context).colorScheme;
++
++    return Container(
++      width: double.infinity,
++      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
++      decoration: BoxDecoration(
++        color: scheme.surfaceContainer,
++        borderRadius: BorderRadius.circular(16),
++        boxShadow: [
++          BoxShadow(
++            color: scheme.shadow.withValues(alpha: 0.3),
++            blurRadius: 8,
++            offset: const Offset(0, 4),
++          ),
++        ],
++      ),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Text(
++            title,
++            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
++          ),
++          const SizedBox(height: 8),
++          child,
++          if (note != null) ...[
++            const SizedBox(height: 8),
++            Text(note!, style: Theme.of(context).textTheme.bodySmall),
++          ],
++          const SizedBox(height: 4),
++        ],
++      ),
++    );
++  }
++}
+diff --git a/test/ffmpeg_arguments_test.dart b/test/ffmpeg_arguments_test.dart
+new file mode 100644
+index 0000000..50237c7
+--- /dev/null
++++ b/test/ffmpeg_arguments_test.dart
+@@ -0,0 +1,67 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/features/videos/data/services/ffmpeg_arguments.dart';
++
++void main() {
++  test('the scale filter is the one verified against real FFmpeg', () {
++    // Checked with FFmpeg 6.1: 1280x720 -> 854x480, and a phone video stored
++    // rotated -> 480x854, so the shorter side is what is scaled.
++    expect(
++      ffmpegScaleFilter(480),
++      r'scale=w=if(gt(iw\,ih)\,-2\,480):h=if(gt(iw\,ih)\,480\,-2)',
++    );
++  });
++
++  group('buildVideoArguments', () {
++    List<String> build({int? videoBitrateKbps, int? maxShortSide}) =>
++        buildVideoArguments(
++          inputPath: '/my videos/in.mp4',
++          outputPath: '/tmp/out.mp4',
++          videoCodec: 'libx264',
++          crf: 26,
++          preset: 'medium',
++          videoBitrateKbps: videoBitrateKbps,
++          maxShortSide: maxShortSide,
++        );
++
++    test('quality mode uses a constant quality and keeps the size', () {
++      expect(build(), [
++        '-i', '/my videos/in.mp4',
++        '-vcodec', 'libx264',
++        '-crf', '26',
++        '-preset', 'medium',
++        '/tmp/out.mp4',
++      ]);
++    });
++
++    test('target size mode uses a bitrate with a cap and a buffer, not a crf', () {
++      expect(build(videoBitrateKbps: 632), [
++        '-i', '/my videos/in.mp4',
++        '-vcodec', 'libx264',
++        '-b:v', '632k',
++        '-maxrate', '948k',
++        '-bufsize', '1264k',
++        '-preset', 'medium',
++        '/tmp/out.mp4',
++      ]);
++    });
++
++    test('a resolution adds the scale filter before the output file', () {
++      final arguments = build(maxShortSide: 720);
++
++      expect(arguments, containsAllInOrder(['-vf', ffmpegScaleFilter(720)]));
++      expect(arguments.last, '/tmp/out.mp4');
++    });
++
++    test('everything together', () {
++      final arguments = build(videoBitrateKbps: 800, maxShortSide: 480);
++
++      expect(arguments, contains('-b:v'));
++      expect(arguments, isNot(contains('-crf')));
++      expect(arguments, contains(ffmpegScaleFilter(480)));
++    });
++
++    test('paths with spaces stay one argument', () {
++      expect(build(), contains('/my videos/in.mp4'));
++    });
++  });
++}
+diff --git a/test/helpers/viewmodel_fakes.dart b/test/helpers/viewmodel_fakes.dart
+index a2277d0..2794a12 100644
+--- a/test/helpers/viewmodel_fakes.dart
++++ b/test/helpers/viewmodel_fakes.dart
+@@ -110,6 +110,8 @@ class FakeVideoTask implements VideoCompressionTask {
+ class FakeVideoCompressor implements VideoCompressor {
+   FakeVideoTask? lastTask;
+   void Function(int percent)? progressCallback;
++  int? usedBitrateKbps;
++  int? usedMaxShortSide;
+ 
+   @override
+   Future<VideoData> probe(File video) async => VideoData(
+@@ -129,8 +131,12 @@ class FakeVideoCompressor implements VideoCompressor {
+     required String preset,
+     required int totalDurationMs,
+     required void Function(int percent) onProgress,
++    int? videoBitrateKbps,
++    int? maxShortSide,
+   }) async {
+     progressCallback = onProgress;
++    usedBitrateKbps = videoBitrateKbps;
++    usedMaxShortSide = maxShortSide;
+     return lastTask = FakeVideoTask();
+   }
+ }
+diff --git a/test/video_bitrate_test.dart b/test/video_bitrate_test.dart
+new file mode 100644
+index 0000000..8f17f0a
+--- /dev/null
++++ b/test/video_bitrate_test.dart
+@@ -0,0 +1,42 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++import 'package:petit/features/videos/domain/video_bitrate.dart';
++
++void main() {
++  group('bitrateForTargetSize', () {
++    test('turns a target size and a length into a video bitrate', () {
++      // 1,000,000 bytes over 10 s: 1e6 * 8 * 0.95 / 10 s = 760 kbit/s in total,
++      // minus 128 kbit/s of audio.
++      expect(bitrateForTargetSize(targetBytes: 1000000, durationMs: 10000), 632);
++    });
++
++    test('longer clips get lower bitrates for the same size', () {
++      final short = bitrateForTargetSize(targetBytes: 25000000, durationMs: 60000);
++      final long = bitrateForTargetSize(targetBytes: 25000000, durationMs: 120000);
++      expect(short, greaterThan(long));
++    });
++
++    test('never goes below the minimum', () {
++      expect(bitrateForTargetSize(targetBytes: 100000, durationMs: 60000),
++          kMinVideoKbps);
++    });
++
++    test('the audio allowance can be changed', () {
++      expect(
++        bitrateForTargetSize(
++            targetBytes: 1000000, durationMs: 10000, audioKbps: 64),
++        696,
++      );
++    });
++  });
++
++  group('VideoResolution', () {
++    test('sizes are the length of the shorter side', () {
++      expect(VideoResolution.original.shortSide, isNull);
++      expect(VideoResolution.p1080.shortSide, 1080);
++      expect(VideoResolution.p720.shortSide, 720);
++      expect(VideoResolution.p480.shortSide, 480);
++      expect(VideoResolution.p720.label, '720p');
++    });
++  });
++}
+diff --git a/test/video_use_case_test.dart b/test/video_use_case_test.dart
+index 675a954..07b0daf 100644
+--- a/test/video_use_case_test.dart
++++ b/test/video_use_case_test.dart
+@@ -32,6 +32,8 @@ class FakeVideoCompressor implements VideoCompressor {
+   int? usedCrf;
+   String? usedPreset;
+   int? usedDurationMs;
++  int? usedBitrateKbps;
++  int? usedMaxShortSide;
+ 
+   @override
+   Future<VideoData> probe(File video) async {
+@@ -47,7 +49,11 @@ class FakeVideoCompressor implements VideoCompressor {
+     required String preset,
+     required int totalDurationMs,
+     required void Function(int percent) onProgress,
++    int? videoBitrateKbps,
++    int? maxShortSide,
+   }) async {
++    usedBitrateKbps = videoBitrateKbps;
++    usedMaxShortSide = maxShortSide;
+     usedCodec = videoCodec;
+     usedCrf = crf;
+     usedPreset = preset;
+@@ -258,6 +264,57 @@ void main() {
+       expect(compressor.usedCodec, isNull);
+     });
+ 
++    group('resolution and target size', () {
++      Future<FakeVideoCompressor> run({
++        int? maxShortSide,
++        int? targetBytes,
++        int? durationMs = 10000,
++      }) async {
++        final input = fileOfSize('in_${maxShortSide}_$targetBytes.mp4', 100);
++        final compressor =
++            FakeVideoCompressor(data: dataFor(input, durationMs: durationMs));
++        await CompressVideoUseCase(compressor, FakeSaver())(
++          input: input,
++          qualityPercent: 80,
++          preset: 'medium',
++          maxShortSide: maxShortSide,
++          targetBytes: targetBytes,
++          onProgress: (_) {},
++          onError: (_) {},
++        );
++        return compressor;
++      }
++
++      test('a smaller resolution is passed on (the video is 1920x1080)', () async {
++        expect((await run(maxShortSide: 720)).usedMaxShortSide, 720);
++        expect((await run(maxShortSide: 480)).usedMaxShortSide, 480);
++      });
++
++      test('a resolution that would not shrink the video is dropped', () async {
++        expect((await run(maxShortSide: 1080)).usedMaxShortSide, isNull);
++        expect((await run(maxShortSide: 2160)).usedMaxShortSide, isNull);
++        expect((await run()).usedMaxShortSide, isNull);
++      });
++
++      test('a target size becomes a bitrate from the video length', () async {
++        final compressor = await run(targetBytes: 1000000);
++
++        expect(compressor.usedBitrateKbps, 632); // 10 s, see video_bitrate_test
++      });
++
++      test('quality mode passes no bitrate', () async {
++        expect((await run()).usedBitrateKbps, isNull);
++      });
++
++      test('a target size needs the length of the video', () async {
++        await expectLater(
++          run(targetBytes: 1000000, durationMs: null),
++          throwsA(isA<MediaException>().having(
++              (e) => e.message, 'message', startsWith('Could not work out'))),
++        );
++      });
++    });
++
+     test('cancel is forwarded to the task', () async {
+       final input = fileOfSize('in.mp4', 500);
+       final compressor = FakeVideoCompressor(data: dataFor(input));
+diff --git a/test/videos_viewmodel_test.dart b/test/videos_viewmodel_test.dart
+index 32574a8..6a6576d 100644
+--- a/test/videos_viewmodel_test.dart
++++ b/test/videos_viewmodel_test.dart
+@@ -6,6 +6,9 @@ import 'package:flutter_test/flutter_test.dart';
+ import 'package:petit/common/data/summary_report.dart';
+ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/core/utils/format_bytes.dart';
++import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++import 'package:petit/features/videos/domain/video_bitrate.dart';
++import 'package:petit/features/videos/presentation/state/videos_state.dart';
+ import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
+ 
+ import 'helpers/viewmodel_fakes.dart';
+@@ -84,6 +87,117 @@ void main() {
+     });
+   });
+ 
++  group('video information', () {
++    // A sparse file: big on paper, instant to create.
++    File sparseFile(String name, int bytes) {
++      final file = File('${dir.path}/$name');
++      final handle = file.openSync(mode: FileMode.write);
++      handle.setPositionSync(bytes - 1);
++      handle.writeByteSync(0);
++      handle.closeSync();
++      return file;
++    }
++
++    test('the video is probed and its size read when it is picked', () async {
++      h.picker.video = h.file('in.mp4', 1000).path;
++      final c = h.container();
++
++      await c.read(videosViewModelProvider.notifier).pickVideo();
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.videoInfo?.pixelHeight, 1080);
++      expect(s.videoBytes, 1000);
++      expect(s.sourceShortSide, 1080);
++    });
++
++    test('removing the video forgets what was read from it', () async {
++      h.picker.video = h.file('in.mp4', 1000).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      await vm.pickVideo();
++
++      vm.removeVideo();
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.videoInfo, isNull);
++      expect(s.videoBytes, isNull);
++    });
++
++    test('a resolution that would not shrink the video is not offered', () async {
++      h.picker.video = h.file('in.mp4', 1000).path;
++      final c = h.container();
++      await c.read(videosViewModelProvider.notifier).pickVideo();
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.canUseResolution(VideoResolution.original), isTrue);
++      expect(s.canUseResolution(VideoResolution.p720), isTrue);
++      expect(s.canUseResolution(VideoResolution.p1080), isFalse); // 1080 is its size
++    });
++
++    test('a choice that no longer fits the next video is moved to one that does',
++        () async {
++      h.picker.video = sparseFile('big.mp4', 60000000).path; // 60 MB
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      vm.setResolution(VideoResolution.p1080); // the video is 1080p: no shrink
++      vm.setTargetSizeMb(100); // bigger than the file
++
++      await vm.pickVideo();
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.resolution, VideoResolution.original);
++      expect(s.targetSizeMb, 50, reason: 'the largest size below 60 MB');
++      expect(s.canTargetMb(50), isTrue);
++      expect(s.canTargetMb(100), isFalse);
++    });
++
++    test('choices that fit are kept', () async {
++      h.picker.video = sparseFile('big.mp4', 60000000).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      vm.setResolution(VideoResolution.p720);
++      vm.setTargetSizeMb(10);
++
++      await vm.pickVideo();
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.resolution, VideoResolution.p720);
++      expect(s.targetSizeMb, 10);
++    });
++  });
++
++  group('options reach the compressor', () {
++    test('quality mode with a resolution', () async {
++      h.picker.video = h.file('in.mp4', 1000).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      await vm.pickVideo();
++      vm.setResolution(VideoResolution.p720);
++
++      await vm.compressVideo(onComplete: (_) {});
++
++      expect(h.videoCompressor.usedMaxShortSide, 720);
++      expect(h.videoCompressor.usedBitrateKbps, isNull);
++    });
++
++    test('target size mode asks for a bitrate that fits the length', () async {
++      h.picker.video = h.file('in.mp4', 1000).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      await vm.pickVideo();
++      vm.setMode(VideoMode.targetSize);
++      vm.setTargetSizeMb(10);
++
++      await vm.compressVideo(onComplete: (_) {});
++
++      // The fake video lasts 5 seconds.
++      expect(
++        h.videoCompressor.usedBitrateKbps,
++        bitrateForTargetSize(targetBytes: 10000000, durationMs: 5000),
++      );
++    });
++  });
++
+   group('settings', () {
+     test('sliders update the state', () {
+       final c = h.container();
+@@ -94,10 +208,16 @@ void main() {
+ 
+       vm.updateCfrQualitySlider(0.4);
+       vm.setPresetIndex(2);
++      vm.setMode(VideoMode.targetSize);
++      vm.setResolution(VideoResolution.p480);
++      vm.setTargetSizeMb(50);
+ 
+       final s = c.read(videosViewModelProvider);
+       expect(s.crfQuality, 40);
+       expect(s.presetIndex, 2);
++      expect(s.mode, VideoMode.targetSize);
++      expect(s.resolution, VideoResolution.p480);
++      expect(s.targetSizeMb, 50);
+     });
+   });
+ 

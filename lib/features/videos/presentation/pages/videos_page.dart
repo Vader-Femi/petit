@@ -3,12 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:petit/core/utils/adaptive.dart';
 import 'package:petit/core/utils/platform_utils.dart';
 import 'package:petit/core/utils/shortcut_labels.dart';
-import 'package:petit/features/videos/presentation/state/video_presets.dart';
 import 'package:petit/features/videos/presentation/state/videos_state.dart';
 import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
+import 'package:petit/features/videos/presentation/widget/video_options_panel.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
 import '../../../../common/widgets/compression_summary_dialog.dart';
-import '../../../../common/widgets/slider_box.dart';
 
 class VideosPage extends ConsumerStatefulWidget {
   const VideosPage({super.key});
@@ -20,56 +19,6 @@ class VideosPage extends ConsumerStatefulWidget {
 class _VideosPageState extends ConsumerState<VideosPage> {
   // Adjust to actual height of your FAB + margin
   static const fabHeight = 72.0;
-
-  /// The two quality sliders.
-  Widget _buildSliders(
-    BuildContext context,
-    VideosState state,
-    VideosViewModel viewModel,
-  ) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        buildSliderBox(
-          context: context,
-          label: "Compression Level",
-          minValue: labelForCrfSlider(0),
-          maxValue: labelForCrfSlider(100),
-          tootTipMessage: "Adjusts the compression level.\n"
-              "•${labelForCrfSlider(100)} = smallest size, less clarity\n"
-              "•${labelForCrfSlider(0)} = smaller size, more clarity\n"
-              "•Recommended = ${labelForCrfSlider(80)}",
-          slider: Slider(
-            value: state.crfQuality / 100,
-            min: 0,
-            max: 1,
-            divisions: 4,
-            label: "${labelForCrfSlider(state.crfQuality)} Compression",
-            onChanged: viewModel.updateCfrQualitySlider,
-          ),
-        ),
-        const SizedBox(height: 12),
-        buildSliderBox(
-          context: context,
-          label: "Desired File Size",
-          minValue: kFfmpegPresets.first.desc,
-          maxValue: kFfmpegPresets.last.desc,
-          tootTipMessage: //"Choose a desired file size.\n"
-              "•${kFfmpegPresets.first.desc} = For archival\n"
-              "•${kFfmpegPresets[1].desc} = For social media\n"
-              "•${kFfmpegPresets.last.desc} = For quick sharing",
-          slider: Slider(
-            value: state.presetIndex.toDouble(),
-            min: 0,
-            max: (kFfmpegPresets.length - 1).toDouble(),
-            divisions: kFfmpegPresets.length - 1,
-            label: kFfmpegPresets[state.presetIndex].desc,
-            onChanged: (value) => viewModel.setPresetIndex(value.toInt()),
-          ),
-        ),
-      ],
-    );
-  }
 
   Widget _buildBody(
     BuildContext context,
@@ -107,7 +56,7 @@ class _VideosPageState extends ConsumerState<VideosPage> {
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                _buildSliders(context, state, viewModel),
+                                const VideoOptionsPanel(),
                                 // Space for FABs
                                 const SizedBox(height: fabHeight),
                               ],
@@ -119,19 +68,22 @@ class _VideosPageState extends ConsumerState<VideosPage> {
                   );
                 }
 
-                // Narrow: stacked, as on a phone.
-                return Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Expanded(child: previewBox),
-
-                    const SizedBox(height: 12),
-
-                    _buildSliders(context, state, viewModel),
-
-                    // Space for FABs
-                    const SizedBox(height: fabHeight),
-                  ],
+                // Narrow: stacked, as on a phone. There are many options, so
+                // the whole column scrolls instead of squeezing the preview.
+                return SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                            maxHeight: constraints.maxHeight * 0.45),
+                        child: previewBox,
+                      ),
+                      const SizedBox(height: 12),
+                      const VideoOptionsPanel(),
+                      // Space for FABs
+                      const SizedBox(height: fabHeight),
+                    ],
+                  ),
                 );
               },
             ),

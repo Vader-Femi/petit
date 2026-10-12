@@ -52,6 +52,9 @@ dependencies:
   #Native file/folder dialogs on desktop
   file_selector: ^1.0.3
 
+  #Open the output folder in Finder / Explorer after compressing (desktop)
+  url_launcher: ^6.3.1
+
   #Drag and drop files onto the window (desktop)
   desktop_drop: ^0.8.1
 

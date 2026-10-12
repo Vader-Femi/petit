@@ -208,7 +208,8 @@ class ImagesViewModel extends Notifier<ImagesState> {
         compressedSizeBytes: formatBytes(batch.compressedBytes),
         savedBytes: formatBytes(batch.savedBytes),
         savedPercent: batch.savedFraction,
-        path: batch.destinationLabel);
+        path: batch.destinationLabel,
+        folderPath: batch.destinationFolder);
   }
 
   /// Starts compressing every picked image. [onComplete] receives the summary

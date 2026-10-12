@@ -8,6 +8,7 @@ import 'package:petit/features/images/presentation/state/images_state.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
 import '../../../../common/widgets/compression_summary_dialog.dart';
+import '../../../../common/widgets/save_to_tile.dart';
 import '../../../../common/widgets/slider_box.dart';
 
 class ImagesPage extends ConsumerStatefulWidget {
@@ -159,6 +160,9 @@ class _ImagesPageState extends ConsumerState<ImagesPage> {
           isGlobal: state.globalQuality != null,
           onGlobalToggle: viewModel.setGlobalQualityEnabled,
         ),
+
+      // Desktop only: where the results are saved.
+      const SaveToTile(),
     ];
   }
 

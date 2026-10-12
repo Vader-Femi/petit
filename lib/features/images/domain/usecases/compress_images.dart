@@ -22,10 +22,14 @@ class ImageBatchResult {
   final int compressedBytes;
   final String destinationLabel;
 
+  /// Folder the user can open, or null (see [MediaSaver.destinationFolder]).
+  final String? destinationFolder;
+
   const ImageBatchResult({
     required this.originalBytes,
     required this.compressedBytes,
     required this.destinationLabel,
+    this.destinationFolder,
   });
 
   int get savedBytes => originalBytes - compressedBytes;
@@ -116,6 +120,7 @@ class CompressImagesUseCase {
       originalBytes: sizeBefore,
       compressedBytes: sizeAfter,
       destinationLabel: _saver.imageDestinationLabel,
+      destinationFolder: _saver.destinationFolder,
     );
   }
 }

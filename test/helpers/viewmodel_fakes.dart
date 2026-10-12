@@ -48,6 +48,9 @@ class FakeWorkspace implements Workspace {
 
 class FakeSaver implements MediaSaver {
   bool declineToPrepare = false;
+
+  /// The folder reported to the summary (null, like the gallery on mobile).
+  String? folder;
   final saved = <String>[];
 
   @override
@@ -62,6 +65,9 @@ class FakeSaver implements MediaSaver {
 
   @override
   Future<void> saveVideo(String path) async => saved.add(path);
+
+  @override
+  String? get destinationFolder => folder;
 
   @override
   String get imageDestinationLabel => 'Photos';
@@ -104,6 +110,8 @@ class FakeVideoTask implements VideoCompressionTask {
 class FakeVideoCompressor implements VideoCompressor {
   FakeVideoTask? lastTask;
   void Function(int percent)? progressCallback;
+  int? usedBitrateKbps;
+  int? usedMaxShortSide;
 
   @override
   Future<VideoData> probe(File video) async => VideoData(
@@ -123,8 +131,12 @@ class FakeVideoCompressor implements VideoCompressor {
     required String preset,
     required int totalDurationMs,
     required void Function(int percent) onProgress,
+    int? videoBitrateKbps,
+    int? maxShortSide,
   }) async {
     progressCallback = onProgress;
+    usedBitrateKbps = videoBitrateKbps;
+    usedMaxShortSide = maxShortSide;
     return lastTask = FakeVideoTask();
   }
 }

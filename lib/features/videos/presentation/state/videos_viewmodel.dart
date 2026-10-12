@@ -8,6 +8,8 @@ import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/core/di/providers.dart';
 import 'package:petit/core/utils/format_bytes.dart';
 import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+import 'package:petit/features/videos/domain/entities/video_data.dart';
+import 'package:petit/features/videos/domain/entities/video_resolution.dart';
 import 'package:share_handler/share_handler.dart';
 import 'video_presets.dart';
 import 'videos_state.dart';
@@ -36,6 +38,18 @@ class VideosViewModel extends Notifier<VideosState> {
 
   void setPresetIndex(int index) {
     state = state.copyWith(presetIndex: index);
+  }
+
+  void setMode(VideoMode mode) {
+    state = state.copyWith(mode: mode);
+  }
+
+  void setResolution(VideoResolution resolution) {
+    state = state.copyWith(resolution: resolution);
+  }
+
+  void setTargetSizeMb(int mb) {
+    state = state.copyWith(targetSizeMb: mb);
   }
 
   void updateCfrQualitySlider(double value) {
@@ -87,7 +101,40 @@ class VideosViewModel extends Notifier<VideosState> {
     state = state.copyWith(preview: preview);
     await preview.initialize();
 
-    state = state.copyWith(videoFile: file, isLoading: false);
+    // What the options offer depends on the video, so read its properties now.
+    // Failing to read them only means the options cannot be narrowed down.
+    VideoData? info;
+    try {
+      info = await ref.read(videoCompressorProvider).probe(file);
+    } catch (_) {
+      info = null;
+    }
+    final bytes = await file.length();
+
+    state = state.copyWith(
+      videoFile: file,
+      videoInfo: info,
+      videoBytes: bytes,
+      isLoading: false,
+    );
+    _fitOptionsToVideo();
+  }
+
+  /// Moves a selection that makes no sense for this video (a bigger resolution
+  /// or a target above the file's own size) to the nearest one that does.
+  void _fitOptionsToVideo() {
+    var resolution = state.resolution;
+    if (!state.canUseResolution(resolution)) {
+      resolution = VideoResolution.original;
+    }
+
+    var targetMb = state.targetSizeMb;
+    if (!state.canTargetMb(targetMb)) {
+      final smaller = kTargetSizeOptionsMb.where(state.canTargetMb);
+      if (smaller.isNotEmpty) targetMb = smaller.last;
+    }
+
+    state = state.copyWith(resolution: resolution, targetSizeMb: targetMb);
   }
 
   /// Starts compressing the selected video. Returns once the job has started;
@@ -109,6 +156,10 @@ class VideosViewModel extends Notifier<VideosState> {
         qualityPercent: state.crfQuality,
         preset: kFfmpegPresets[state.presetIndex].value,
         totalDurationMs: state.preview?.duration.inMilliseconds,
+        maxShortSide: state.resolution.shortSide,
+        targetBytes: state.mode == VideoMode.targetSize
+            ? state.targetSizeMb * 1000000
+            : null,
         onProgress: (percent) =>
             state = state.copyWith(percentComplete: percent),
         onError: showResult,
@@ -146,6 +197,7 @@ class VideosViewModel extends Notifier<VideosState> {
         savedBytes: formatBytes(outcome.savedBytes),
         savedPercent: outcome.savedFraction,
         path: outcome.destinationLabel,
+        folderPath: outcome.destinationFolder,
       ));
     } on MediaException catch (e) {
       _forgetJob(job);
@@ -172,6 +224,8 @@ class VideosViewModel extends Notifier<VideosState> {
     state = state.copyWith(
       preview: null,
       videoFile: null,
+      videoInfo: null,
+      videoBytes: null,
       isCompressing: false,
       isLoading: false,
       percentComplete: 0,

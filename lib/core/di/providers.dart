@@ -1,10 +1,13 @@
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:petit/common/domain/services/folder_picker.dart';
 import 'package:petit/common/domain/services/media_picker.dart';
+import 'package:petit/common/domain/services/output_folder_preference.dart';
 import 'package:petit/common/domain/services/workspace.dart';
 import 'package:petit/features/images/domain/usecases/compress_images.dart';
 import 'package:petit/features/images/domain/usecases/read_images.dart';
+import 'package:petit/features/videos/domain/services/video_compressor.dart';
 import 'package:petit/features/videos/domain/usecases/compress_video.dart';
 import 'package:petit/features/videos/presentation/preview/video_preview.dart';
 import 'package:petit/features/videos/presentation/preview/video_preview_factory.dart';
@@ -18,11 +21,20 @@ final mediaPickerProvider = Provider<MediaPicker>((ref) => sl<MediaPicker>());
 
 final workspaceProvider = Provider<Workspace>((ref) => sl<Workspace>());
 
+final folderPickerProvider =
+    Provider<FolderPicker>((ref) => sl<FolderPicker>());
+
+final outputFolderPreferenceProvider = Provider<OutputFolderPreference>(
+    (ref) => sl<OutputFolderPreference>());
+
 final readImagesUseCaseProvider =
     Provider<ReadImagesUseCase>((ref) => sl<ReadImagesUseCase>());
 
 final compressImagesUseCaseProvider =
     Provider<CompressImagesUseCase>((ref) => sl<CompressImagesUseCase>());
+
+final videoCompressorProvider =
+    Provider<VideoCompressor>((ref) => sl<VideoCompressor>());
 
 final compressVideoUseCaseProvider =
     Provider<CompressVideoUseCase>((ref) => sl<CompressVideoUseCase>());

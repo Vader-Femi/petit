@@ -21,6 +21,9 @@ class GalleryMediaSaver implements MediaSaver {
   }
 
   @override
+  String? get destinationFolder => null;
+
+  @override
   String get imageDestinationLabel =>
       PlatformInfo.isAndroid ? "Pictures/Petit" : "Photos";
 

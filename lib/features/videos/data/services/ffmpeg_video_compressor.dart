@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/core/utils/work_dir.dart';
+import 'package:petit/features/videos/data/services/ffmpeg_arguments.dart';
 import 'package:petit/features/videos/domain/entities/video_data.dart';
 import 'package:petit/features/videos/domain/services/video_compressor.dart';
 
@@ -65,23 +66,23 @@ class FfmpegVideoCompressor implements VideoCompressor {
     required String preset,
     required int totalDurationMs,
     required void Function(int percent) onProgress,
+    int? videoBitrateKbps,
+    int? maxShortSide,
   }) async {
     final jobDir = await createJobDir();
+    // The job folder is unique, so the name can simply follow the original's.
     final outPath = p.join(
-        jobDir.path, 'compressed_${DateTime.now().millisecondsSinceEpoch}.mp4');
+        jobDir.path, '${p.basenameWithoutExtension(input.path)}_compressed.mp4');
 
-    // Passed as a list (not one string) so paths with spaces work on every OS.
-    final arguments = <String>[
-      '-i',
-      input.path,
-      '-vcodec',
-      videoCodec,
-      '-crf',
-      '$crf',
-      '-preset',
-      preset,
-      outPath,
-    ];
+    final arguments = buildVideoArguments(
+      inputPath: input.path,
+      outputPath: outPath,
+      videoCodec: videoCodec,
+      crf: crf,
+      preset: preset,
+      videoBitrateKbps: videoBitrateKbps,
+      maxShortSide: maxShortSide,
+    );
 
     final completer = Completer<File>();
 
