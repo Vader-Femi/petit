@@ -1,0 +1,268 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 97e20ac..9ab2e1c 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -39,6 +39,7 @@ jobs:
+           test/images_viewmodel_test.dart
+           test/videos_viewmodel_test.dart
+           test/home_viewmodel_test.dart
++          test/macos_image_converter_test.dart
+ 
+   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
+   # it runs on demand and for pull requests into the production branch.
+diff --git a/docs/architecture.md b/docs/architecture.md
+index 2d0b2c1..3ebffc1 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -25,7 +25,7 @@ Platform implementations (chosen in `service_locator.dart`)
+ |---|---|---|
+ | `MediaPicker` | `ImagePickerMediaPicker` (image_picker) | `FileSelectorMediaPicker` (OS file dialog) |
+ | `MediaSaver` | `GalleryMediaSaver` (gallery) | `FolderMediaSaver` (folder chosen per job) |
+-| `ImageCompressor` | `FlutterImageCompressor` (+ HEIC) | `DesktopImageCompressor` (`image` package in an isolate; HEIC via FFmpeg, best effort) |
++| `ImageCompressor` | `FlutterImageCompressor` (+ HEIC) | `DesktopImageCompressor` (`image` package in an isolate; HEIC via macOS ImageIO on macOS, FFmpeg best effort elsewhere) |
+ | `VideoCompressor` | `FfmpegVideoCompressor` | same (FFmpeg Kit supports all five platforms) |
+ | `VideoThumbnailer` | not used | `FfmpegVideoThumbnailer` (Windows, Linux preview) |
+ 
+diff --git a/docs/macos.md b/docs/macos.md
+index 7496211..f82b372 100644
+--- a/docs/macos.md
++++ b/docs/macos.md
+@@ -36,6 +36,14 @@ It writes the seven PNGs in `macos/Runner/Assets.xcassets/AppIcon.appiconset/`.
+ disabled for macOS on purpose, so running it will not overwrite them. Re-run the script if the logo
+ changes.
+ 
++### HEIC photos
++
++HEIC is what iPhones and Macs save by default. Flutter and the bundled FFmpeg cannot read it, so on
++macOS the app asks the system to decode it: `ImageConverter` in `MainFlutterWindow.swift` (ImageIO)
++converts the HEIC to a JPEG, which is then compressed like any other image. Windows and Linux still
++report that HEIC is not supported. The carousel shows a placeholder instead of a preview for HEIC
++files, because Flutter cannot draw them.
++
+ ### Bundle identifier
+ 
+ `com.example.petit` is Flutter's placeholder. Before you sign and notarize for real, pick your own
+diff --git a/lib/features/images/data/services/desktop_image_compressor.dart b/lib/features/images/data/services/desktop_image_compressor.dart
+index 4608cd6..4b5bcd3 100644
+--- a/lib/features/images/data/services/desktop_image_compressor.dart
++++ b/lib/features/images/data/services/desktop_image_compressor.dart
+@@ -11,16 +11,23 @@ import 'package:image_size_getter/image_size_getter.dart';
+ import 'package:path/path.dart' as p;
+ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/core/utils/media_formats.dart';
++import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:petit/core/utils/work_dir.dart';
+ import 'package:petit/features/images/domain/entities/image_data.dart';
+ import 'package:petit/features/images/domain/entities/image_size.dart';
++import 'package:petit/features/images/data/services/macos_image_converter.dart';
+ import 'package:petit/features/images/domain/services/image_compressor.dart';
+ 
+ /// Desktop implementation. JPEG, PNG and WebP are re-encoded as JPEG in pure
+ /// Dart (in a background isolate) so `quality` means the same thing as on
+-/// mobile. HEIC/HEIF is attempted through FFmpeg and reports a clear error if
+-/// the bundled FFmpeg cannot read it.
++/// mobile. HEIC/HEIF is decoded by macOS itself on macOS, and attempted through
++/// FFmpeg elsewhere, with a clear error if the bundled FFmpeg cannot read it.
+ class DesktopImageCompressor implements ImageCompressor {
++  DesktopImageCompressor({MacosImageConverter? macosConverter})
++      : _macosConverter = macosConverter ?? MacosImageConverter();
++
++  final MacosImageConverter _macosConverter;
++
+   @override
+   Future<ImageSize> readSize(String path) async {
+     try {
+@@ -81,6 +88,13 @@ class DesktopImageCompressor implements ImageCompressor {
+   Future<String> _convertHeifToJpeg(
+       String source, Directory jobDir, String baseName) async {
+     final out = p.join(jobDir.path, '$baseName.jpg');
++
++    // macOS reads HEIC natively; FFmpeg cannot.
++    if (PlatformInfo.isMacOS &&
++        await _macosConverter.convertToJpeg(source, out)) {
++      return out;
++    }
++
+     try {
+       final session = await FFmpegKit.executeWithArguments(
+           ['-y', '-i', source, '-frames:v', '1', '-q:v', '2', out]);
+diff --git a/lib/features/images/data/services/macos_image_converter.dart b/lib/features/images/data/services/macos_image_converter.dart
+new file mode 100644
+index 0000000..7caf03c
+--- /dev/null
++++ b/lib/features/images/data/services/macos_image_converter.dart
+@@ -0,0 +1,36 @@
++import 'package:flutter/foundation.dart';
++import 'package:flutter/services.dart';
++
++/// Converts an image to JPEG with macOS's own image decoders (ImageIO), which
++/// read HEIC/HEIF. FFmpeg and Flutter cannot. The native side is the
++/// `ImageConverter` in `macos/Runner/MainFlutterWindow.swift`.
++class MacosImageConverter {
++  MacosImageConverter({MethodChannel? channel})
++      : _channel = channel ?? const MethodChannel(channelName);
++
++  static const channelName = 'petit/image_converter';
++
++  final MethodChannel _channel;
++
++  /// Writes [input] as a JPEG to [output]. Returns true on success, false if
++  /// the conversion failed or there is no native side (not running on macOS).
++  Future<bool> convertToJpeg(
++    String input,
++    String output, {
++    double quality = 0.95,
++  }) async {
++    try {
++      await _channel.invokeMethod<String>('convertToJpeg', {
++        'input': input,
++        'output': output,
++        'quality': quality,
++      });
++      return true;
++    } on PlatformException catch (e) {
++      debugPrint('macOS image conversion failed: ${e.message}');
++      return false;
++    } on MissingPluginException {
++      return false;
++    }
++  }
++}
+diff --git a/macos/Runner/MainFlutterWindow.swift b/macos/Runner/MainFlutterWindow.swift
+index 08d5b83..2ec936d 100644
+--- a/macos/Runner/MainFlutterWindow.swift
++++ b/macos/Runner/MainFlutterWindow.swift
+@@ -1,5 +1,7 @@
+ import Cocoa
+ import FlutterMacOS
++import ImageIO
++import UniformTypeIdentifiers
+ 
+ class MainFlutterWindow: NSWindow {
+   override func awakeFromNib() {
+@@ -11,7 +13,76 @@ class MainFlutterWindow: NSWindow {
+     self.contentMinSize = NSSize(width: 480, height: 480)
+ 
+     RegisterGeneratedPlugins(registry: flutterViewController)
++    ImageConverter.register(with: flutterViewController.engine.binaryMessenger)
+ 
+     super.awakeFromNib()
+   }
+ }
++
++/// Converts an image to JPEG with the system's own decoders (ImageIO), which
++/// read HEIC/HEIF. The Dart side is `MacosImageConverter`
++/// (lib/features/images/data/services/macos_image_converter.dart).
++private enum ImageConverter {
++  static func register(with messenger: FlutterBinaryMessenger) {
++    let channel = FlutterMethodChannel(name: "petit/image_converter", binaryMessenger: messenger)
++    channel.setMethodCallHandler { call, result in
++      guard call.method == "convertToJpeg",
++            let arguments = call.arguments as? [String: Any],
++            let input = arguments["input"] as? String,
++            let output = arguments["output"] as? String
++      else {
++        result(FlutterMethodNotImplemented)
++        return
++      }
++      let quality = (arguments["quality"] as? Double) ?? 0.95
++
++      // Decoding a large photo takes a moment: keep it off the main thread.
++      DispatchQueue.global(qos: .userInitiated).async {
++        let failure = convertToJpeg(input: input, output: output, quality: quality)
++        DispatchQueue.main.async {
++          if let failure = failure {
++            result(FlutterError(code: "convert_failed", message: failure, details: nil))
++          } else {
++            result(output)
++          }
++        }
++      }
++    }
++  }
++
++  /// Returns an error message, or nil when the JPEG was written.
++  private static func convertToJpeg(input: String, output: String, quality: Double) -> String? {
++    guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: input) as CFURL, nil) else {
++      return "Could not open the image."
++    }
++    guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
++          let width = properties[kCGImagePropertyPixelWidth] as? Int,
++          let height = properties[kCGImagePropertyPixelHeight] as? Int
++    else {
++      return "Could not read the image size."
++    }
++
++    // A thumbnail at the full size applies the image's orientation, so the
++    // JPEG comes out upright.
++    let options: [CFString: Any] = [
++      kCGImageSourceCreateThumbnailFromImageAlways: true,
++      kCGImageSourceCreateThumbnailWithTransform: true,
++      kCGImageSourceThumbnailMaxPixelSize: max(width, height),
++    ]
++    guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
++      return "Could not decode the image."
++    }
++
++    guard let destination = CGImageDestinationCreateWithURL(
++      URL(fileURLWithPath: output) as CFURL, UTType.jpeg.identifier as CFString, 1, nil)
++    else {
++      return "Could not create the output file."
++    }
++    CGImageDestinationAddImage(
++      destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
++    guard CGImageDestinationFinalize(destination) else {
++      return "Could not write the JPEG."
++    }
++    return nil
++  }
++}
+diff --git a/test/macos_image_converter_test.dart b/test/macos_image_converter_test.dart
+new file mode 100644
+index 0000000..f6278cb
+--- /dev/null
++++ b/test/macos_image_converter_test.dart
+@@ -0,0 +1,43 @@
++import 'package:flutter/services.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/features/images/data/services/macos_image_converter.dart';
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++
++  const channel = MethodChannel(MacosImageConverter.channelName);
++  final messenger =
++      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
++
++  tearDown(() => messenger.setMockMethodCallHandler(channel, null));
++
++  test('sends the paths and quality and reports success', () async {
++    MethodCall? received;
++    messenger.setMockMethodCallHandler(channel, (call) async {
++      received = call;
++      return '/out.jpg';
++    });
++
++    final ok = await MacosImageConverter()
++        .convertToJpeg('/in.heic', '/out.jpg', quality: 0.8);
++
++    expect(ok, isTrue);
++    expect(received!.method, 'convertToJpeg');
++    expect(received!.arguments,
++        {'input': '/in.heic', 'output': '/out.jpg', 'quality': 0.8});
++  });
++
++  test('reports failure when the native side returns an error', () async {
++    messenger.setMockMethodCallHandler(channel, (call) async {
++      throw PlatformException(code: 'convert_failed', message: 'nope');
++    });
++
++    expect(await MacosImageConverter().convertToJpeg('/in.heic', '/out.jpg'),
++        isFalse);
++  });
++
++  test('reports failure when there is no native side (not macOS)', () async {
++    expect(await MacosImageConverter().convertToJpeg('/in.heic', '/out.jpg'),
++        isFalse);
++  });
++}

@@ -39,6 +39,7 @@ jobs:
           test/images_viewmodel_test.dart
           test/videos_viewmodel_test.dart
           test/home_viewmodel_test.dart
+          test/macos_image_converter_test.dart
 
   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
   # it runs on demand and for pull requests into the production branch.

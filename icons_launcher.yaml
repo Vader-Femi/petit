@@ -19,6 +19,8 @@ icons_launcher:
       image_path: "assets/images/app_logo.png"
       favicon_path: "assets/images/app_logo.png"
     macos:
+      # Not generated here: macOS icons need the rounded plate and shadow.
+      # Run packaging/macos/make_icon.py instead (see docs/macos.md).
       enable: false
       image_path: "assets/images/app_logo.png"
     windows:

@@ -11,16 +11,23 @@ import 'package:image_size_getter/image_size_getter.dart';
 import 'package:path/path.dart' as p;
 import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/core/utils/media_formats.dart';
+import 'package:petit/core/utils/platform_utils.dart';
 import 'package:petit/core/utils/work_dir.dart';
 import 'package:petit/features/images/domain/entities/image_data.dart';
 import 'package:petit/features/images/domain/entities/image_size.dart';
+import 'package:petit/features/images/data/services/macos_image_converter.dart';
 import 'package:petit/features/images/domain/services/image_compressor.dart';
 
 /// Desktop implementation. JPEG, PNG and WebP are re-encoded as JPEG in pure
 /// Dart (in a background isolate) so `quality` means the same thing as on
-/// mobile. HEIC/HEIF is attempted through FFmpeg and reports a clear error if
-/// the bundled FFmpeg cannot read it.
+/// mobile. HEIC/HEIF is decoded by macOS itself on macOS, and attempted through
+/// FFmpeg elsewhere, with a clear error if the bundled FFmpeg cannot read it.
 class DesktopImageCompressor implements ImageCompressor {
+  DesktopImageCompressor({MacosImageConverter? macosConverter})
+      : _macosConverter = macosConverter ?? MacosImageConverter();
+
+  final MacosImageConverter _macosConverter;
+
   @override
   Future<ImageSize> readSize(String path) async {
     try {
@@ -81,6 +88,13 @@ class DesktopImageCompressor implements ImageCompressor {
   Future<String> _convertHeifToJpeg(
       String source, Directory jobDir, String baseName) async {
     final out = p.join(jobDir.path, '$baseName.jpg');
+
+    // macOS reads HEIC natively; FFmpeg cannot.
+    if (PlatformInfo.isMacOS &&
+        await _macosConverter.convertToJpeg(source, out)) {
+      return out;
+    }
+
     try {
       final session = await FFmpegKit.executeWithArguments(
           ['-y', '-i', source, '-frames:v', '1', '-q:v', '2', out]);
