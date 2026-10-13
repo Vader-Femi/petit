@@ -9,10 +9,14 @@ import 'package:petit/common/domain/services/media_saver.dart';
 import 'package:petit/common/domain/services/workspace.dart';
 import 'package:petit/core/di/providers.dart';
 import 'package:petit/features/images/domain/entities/image_data.dart';
+import 'package:petit/features/images/domain/entities/image_options.dart';
 import 'package:petit/features/images/domain/entities/image_size.dart';
 import 'package:petit/features/images/domain/services/image_compressor.dart';
 import 'package:petit/features/images/domain/usecases/compress_images.dart';
+import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
 import 'package:petit/features/images/domain/usecases/read_images.dart';
+import 'package:petit/features/settings/domain/entities/app_settings.dart';
+import 'package:petit/features/settings/domain/services/settings_repository.dart';
 import 'package:petit/features/videos/domain/entities/video_data.dart';
 import 'package:petit/features/videos/domain/services/video_compressor.dart';
 import 'package:petit/features/videos/domain/usecases/compress_video.dart';
@@ -83,11 +87,19 @@ class FakeImageCompressor implements ImageCompressor {
   final Directory dir;
   int _counter = 0;
 
+  /// Options of the latest compress call (a real job or an estimate).
+  ImageOptions? lastOptions;
+
   @override
   Future<ImageSize> readSize(String path) async => const ImageSize(640, 480);
 
   @override
-  Future<File> compress(ImageData image, {required int quality}) async {
+  Future<File> compress(
+    ImageData image, {
+    required int quality,
+    ImageOptions options = const ImageOptions(),
+  }) async {
+    lastOptions = options;
     final out = File('${dir.path}/out_${_counter++}.bin');
     await out.writeAsBytes(List.filled(40, 1));
     return out;
@@ -147,6 +159,7 @@ class FakeVideoPreview implements VideoPreview {
   final Object? initializeError;
   bool initialized = false;
   bool disposed = false;
+  bool playing = false;
 
   @override
   Future<void> initialize() async {
@@ -167,10 +180,12 @@ class FakeVideoPreview implements VideoPreview {
   bool get canPlay => false;
 
   @override
-  bool get isPlaying => false;
+  bool get isPlaying => playing;
 
   @override
-  Future<void> togglePlayback() async {}
+  Future<void> togglePlayback() async {
+    playing = !playing;
+  }
 
   @override
   Widget build(BuildContext context) => const SizedBox();
@@ -178,6 +193,23 @@ class FakeVideoPreview implements VideoPreview {
   @override
   void dispose() {
     disposed = true;
+  }
+}
+
+/// Keeps settings in memory. Set [failToSave] to make saving throw.
+class FakeSettingsRepository implements SettingsRepository {
+  AppSettings? saved;
+  int saves = 0;
+  bool failToSave = false;
+
+  @override
+  Future<AppSettings> load() async => saved ?? const AppSettings();
+
+  @override
+  Future<void> save(AppSettings settings) async {
+    saves++;
+    if (failToSave) throw StateError('disk full');
+    saved = settings;
   }
 }
 
@@ -192,6 +224,7 @@ class Harness {
   final saver = FakeSaver();
   final videoCompressor = FakeVideoCompressor();
   final previews = <FakeVideoPreview>[];
+  final settingsRepository = FakeSettingsRepository();
 
   /// Set to make the next previews fail to initialize.
   Object? previewInitializeError;
@@ -202,13 +235,20 @@ class Harness {
       File('${dir.path}/$name')..writeAsBytesSync(List.filled(bytes, 0));
 
   /// Disposed automatically at the end of the test.
-  ProviderContainer container() => ProviderContainer.test(overrides: [
+  ///
+  /// [settings] are the defaults the app would have loaded at start-up.
+  ProviderContainer container({AppSettings settings = const AppSettings()}) =>
+      ProviderContainer.test(overrides: [
+        initialSettingsProvider.overrideWithValue(settings),
+        settingsRepositoryProvider.overrideWithValue(settingsRepository),
         mediaPickerProvider.overrideWithValue(picker),
         workspaceProvider.overrideWithValue(workspace),
         readImagesUseCaseProvider
             .overrideWithValue(ReadImagesUseCase(imageCompressor)),
         compressImagesUseCaseProvider.overrideWithValue(
             CompressImagesUseCase(imageCompressor, saver)),
+        estimateImageSizeUseCaseProvider
+            .overrideWithValue(EstimateImageSizeUseCase(imageCompressor)),
         compressVideoUseCaseProvider.overrideWithValue(
             CompressVideoUseCase(videoCompressor, saver)),
         videoPreviewFactoryProvider.overrideWithValue((file) {

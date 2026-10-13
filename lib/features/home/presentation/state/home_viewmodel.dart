@@ -11,19 +11,19 @@ class HomeViewModel extends Notifier<int> {
   @override
   int build() => 0;
 
-  /// True while either tab is loading or compressing. Switching tabs or adding
-  /// files then would clear the other tab's work, so callers must not.
+  /// True while either tab is loading or compressing. Adding files then would
+  /// replace work in progress, and two jobs must not run at once (they share
+  /// one work folder), so callers must not start one.
   bool get isBusy =>
       ref.read(imagesViewModelProvider).isBusy ||
       ref.read(videosViewModelProvider).isBusy;
 
-  /// Selects a tab. Leaving a tab discards its content.
+  /// Selects a tab. Each tab keeps what was picked and its settings, so the
+  /// user can look at the other tab and come back.
   Future<void> updateCurrentTabIndex(int index) async {
-    if (index == 0) {
-      ref.read(videosViewModelProvider.notifier).removeVideo();
-    }
-    if (index == 1) {
-      ref.read(imagesViewModelProvider.notifier).clearPickedImages();
+    if (index != 1) {
+      // The Videos page stays alive under the Images tab; stop its playback.
+      ref.read(videosViewModelProvider.notifier).pausePlayback();
     }
     state = index;
   }

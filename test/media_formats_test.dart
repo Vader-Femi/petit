@@ -11,6 +11,14 @@ void main() {
       expect(isImageSizeGetterSupported('C:\\Users\\Jo Doe\\pic.PNG'), isTrue);
     });
 
+    test('only PNG and WebP can hold transparency', () {
+      expect(canHaveTransparency('/a/logo.PNG'), isTrue);
+      expect(canHaveTransparency('/a/logo.webp'), isTrue);
+      expect(canHaveTransparency('/a/photo.jpg'), isFalse);
+      expect(canHaveTransparency('/a/photo.heic'), isFalse);
+      expect(canHaveTransparency('/a/logo_png.jpg'), isFalse);
+    });
+
     test('does not match the dot as a wildcard', () {
       // Old regex `.png` matched "_png" and skipped the HEIC conversion.
       expect(isImageSizeGetterSupported('/a/photo_png.heic'), isFalse);

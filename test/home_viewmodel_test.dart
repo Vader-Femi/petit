@@ -23,7 +23,7 @@ void main() {
     expect(c.read(homeViewModelProvider), 0);
   });
 
-  test('switching to Videos clears the picked images', () async {
+  test('switching to Videos keeps the picked images', () async {
     h.picker.images = [h.file('a.jpg', 100).path];
     final c = h.container();
     await c.read(imagesViewModelProvider.notifier).pickImages();
@@ -31,10 +31,10 @@ void main() {
     await c.read(homeViewModelProvider.notifier).updateCurrentTabIndex(1);
 
     expect(c.read(homeViewModelProvider), 1);
-    expect(c.read(imagesViewModelProvider).pickedImages, isEmpty);
+    expect(c.read(imagesViewModelProvider).pickedImages.length, 1);
   });
 
-  test('switching to Images removes the video', () async {
+  test('switching to Images keeps the video', () async {
     h.picker.video = h.file('in.mp4', 100).path;
     final c = h.container();
     await c.read(videosViewModelProvider.notifier).pickVideo();
@@ -42,8 +42,36 @@ void main() {
     await c.read(homeViewModelProvider.notifier).updateCurrentTabIndex(0);
 
     expect(c.read(homeViewModelProvider), 0);
-    expect(c.read(videosViewModelProvider).videoFile, isNull);
-    expect(h.previews.single.disposed, isTrue);
+    expect(c.read(videosViewModelProvider).videoFile, isNotNull);
+    expect(h.previews.single.disposed, isFalse);
+  });
+
+  test('a tab keeps its settings when you leave and come back', () async {
+    h.picker.images = [h.file('a.jpg', 100).path];
+    final c = h.container();
+    final images = c.read(imagesViewModelProvider.notifier);
+    await images.pickImages();
+    images.setRemoveLocation(true);
+    images.updateCurrentImageQuality(0.8);
+    final home = c.read(homeViewModelProvider.notifier);
+
+    await home.updateCurrentTabIndex(1);
+    await home.updateCurrentTabIndex(0);
+
+    final s = c.read(imagesViewModelProvider);
+    expect(s.options.removeLocation, isTrue);
+    expect(s.currentImage?.quality, 80);
+  });
+
+  test('leaving the Videos tab pauses the video', () async {
+    h.picker.video = h.file('in.mp4', 100).path;
+    final c = h.container();
+    await c.read(videosViewModelProvider.notifier).pickVideo();
+    h.previews.single.playing = true;
+
+    await c.read(homeViewModelProvider.notifier).updateCurrentTabIndex(0);
+
+    expect(h.previews.single.playing, isFalse);
   });
 
   test('is busy while either tab is working', () async {

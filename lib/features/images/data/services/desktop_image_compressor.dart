@@ -10,18 +10,23 @@ import 'package:image_size_getter/file_input.dart';
 import 'package:image_size_getter/image_size_getter.dart';
 import 'package:path/path.dart' as p;
 import 'package:petit/common/domain/media_exception.dart';
+import 'package:petit/core/utils/image_processing.dart';
 import 'package:petit/core/utils/media_formats.dart';
 import 'package:petit/core/utils/platform_utils.dart';
 import 'package:petit/core/utils/work_dir.dart';
 import 'package:petit/features/images/domain/entities/image_data.dart';
+import 'package:petit/features/images/domain/entities/image_options.dart';
 import 'package:petit/features/images/domain/entities/image_size.dart';
 import 'package:petit/features/images/data/services/macos_image_converter.dart';
 import 'package:petit/features/images/domain/services/image_compressor.dart';
 
 /// Desktop implementation. JPEG, PNG and WebP are re-encoded as JPEG in pure
 /// Dart (in a background isolate) so `quality` means the same thing as on
-/// mobile. HEIC/HEIF is decoded by macOS itself on macOS, and attempted through
-/// FFmpeg elsewhere, with a clear error if the bundled FFmpeg cannot read it.
+/// mobile. A PNG or WebP that really has transparent pixels stays a (lossless)
+/// PNG instead, because JPEG cannot hold transparency and the pure Dart
+/// package cannot write WebP. HEIC/HEIF is decoded by macOS itself on macOS,
+/// and attempted through FFmpeg elsewhere, with a clear error if the bundled
+/// FFmpeg cannot read it.
 class DesktopImageCompressor implements ImageCompressor {
   DesktopImageCompressor({MacosImageConverter? macosConverter})
       : _macosConverter = macosConverter ?? MacosImageConverter();
@@ -55,7 +60,11 @@ class DesktopImageCompressor implements ImageCompressor {
   }
 
   @override
-  Future<File> compress(ImageData image, {required int quality}) async {
+  Future<File> compress(
+    ImageData image, {
+    required int quality,
+    ImageOptions options = const ImageOptions(),
+  }) async {
     try {
       final sourcePath = image.imageFile.path;
       if (!isCompressibleImage(sourcePath)) {
@@ -66,18 +75,38 @@ class DesktopImageCompressor implements ImageCompressor {
       final jobDir = await createJobDir();
       final baseName = p.basenameWithoutExtension(sourcePath);
 
-      final decodePath = isHeif(sourcePath)
+      final isHeifSource = isHeif(sourcePath);
+      final decodePath = isHeifSource
           ? await _convertHeifToJpeg(sourcePath, jobDir, baseName)
           : sourcePath;
 
-      final outPath = p.join(jobDir.path, '${baseName}_compressed.jpg');
-      await Isolate.run(() => _reencodeAsJpeg(decodePath, outPath, quality));
+      // The isolate picks .png or .jpg, depending on the pixels. Plain values
+      // only: nothing but these is copied into the isolate.
+      final outBase = p.join(jobDir.path, '${baseName}_compressed');
+      final keepTransparency = options.keepTransparency;
+      final removeLocation = options.removeLocation;
+      final outPath = await Isolate.run(() =>
+          _reencode(decodePath, outBase, quality, keepTransparency, removeLocation));
+
+      if (isHeifSource) {
+        // Only a stepping stone; this runs for every estimate too.
+        try {
+          await File(decodePath).delete();
+        } on FileSystemException {
+          // Removed with the rest of the work folder later.
+        }
+      }
 
       final originalSize = await image.imageFile.length();
       final compressedSize = await File(outPath).length();
 
-      // Compressed is larger or equal: hand back the original.
-      return compressedSize < originalSize ? File(outPath) : image.imageFile;
+      // Compressed is larger or equal: hand back the original, unless the
+      // user asked for the location data to go, which only the new file
+      // satisfies.
+      if (compressedSize < originalSize || options.removeLocation) {
+        return File(outPath);
+      }
+      return image.imageFile;
     } on MediaException {
       rethrow;
     } catch (e) {
@@ -110,9 +139,16 @@ class DesktopImageCompressor implements ImageCompressor {
   }
 }
 
-/// Runs in a background isolate: decode, apply EXIF orientation, write JPEG.
-Future<void> _reencodeAsJpeg(
-    String inPath, String outPath, int quality) async {
+/// Runs in a background isolate: decode, apply EXIF orientation, optionally
+/// drop the metadata, then write a PNG (transparent images when asked to keep
+/// transparency) or a JPEG. Returns the path written.
+Future<String> _reencode(
+  String inPath,
+  String outBase,
+  int quality,
+  bool keepTransparency,
+  bool removeLocation,
+) async {
   final bytes = await File(inPath).readAsBytes();
   final decoded = img.decodeImage(bytes);
   if (decoded == null) {
@@ -121,6 +157,23 @@ Future<void> _reencodeAsJpeg(
   // Bake the EXIF orientation into the pixels so the result is upright
   // whether or not the encoder keeps the EXIF block.
   final upright = img.bakeOrientation(decoded);
-  final jpg = img.encodeJpg(upright, quality: quality.clamp(1, 100).toInt());
-  await File(outPath).writeAsBytes(jpg);
+  if (removeLocation) {
+    // The encoders write whatever EXIF the image carries; an empty block
+    // means no GPS position (and no camera or date either).
+    upright.exif = img.ExifData();
+  }
+
+  final transparent = imageHasTransparency(upright);
+
+  if (transparent && keepTransparency) {
+    final outPath = '$outBase.png';
+    await File(outPath).writeAsBytes(img.encodePng(upright, level: 9));
+    return outPath;
+  }
+
+  final flat = transparent ? flattenOnWhite(upright) : upright;
+  final outPath = '$outBase.jpg';
+  await File(outPath)
+      .writeAsBytes(img.encodeJpg(flat, quality: quality.clamp(1, 100).toInt()));
+  return outPath;
 }

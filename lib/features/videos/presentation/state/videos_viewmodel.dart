@@ -7,6 +7,9 @@ import 'package:petit/common/data/summary_report.dart';
 import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/core/di/providers.dart';
 import 'package:petit/core/utils/format_bytes.dart';
+import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+import 'package:petit/features/settings/domain/entities/app_settings.dart';
+import 'package:petit/features/settings/presentation/state/settings_viewmodel.dart';
 import 'package:petit/features/videos/domain/usecases/compress_video.dart';
 import 'package:petit/features/videos/domain/entities/video_data.dart';
 import 'package:petit/features/videos/domain/entities/video_resolution.dart';
@@ -21,7 +24,30 @@ final videosViewModelProvider =
 /// `CompressVideoUseCase`; this class only holds state and reacts to it.
 class VideosViewModel extends Notifier<VideosState> {
   @override
-  VideosState build() => const VideosState();
+  VideosState build() {
+    // Changing the defaults in Settings applies at once while no video is
+    // picked; a video being prepared keeps the settings it was started with.
+    ref.listen(settingsViewModelProvider, (_, settings) {
+      if (state.videoFile == null && !state.isBusy) {
+        state = _withDefaults(state, settings);
+      }
+    });
+
+    return _withDefaults(
+        const VideosState(), ref.read(settingsViewModelProvider));
+  }
+
+  VideosState _withDefaults(VideosState base, AppSettings settings) {
+    return base.copyWith(
+      mode: settings.videoUseTargetSize
+          ? VideoMode.targetSize
+          : VideoMode.quality,
+      crfQuality: settings.videoQuality,
+      resolution: settings.videoResolution,
+      presetIndex: settings.videoPresetIndex,
+      targetSizeMb: settings.videoTargetSizeMb,
+    );
+  }
 
   /// True while a video is being loaded or compressed.
   bool get isBusy => state.isBusy;
@@ -34,6 +60,17 @@ class VideosViewModel extends Notifier<VideosState> {
 
   void toggleFab() {
     state = state.copyWith(isFabOpen: !state.isFabOpen);
+  }
+
+  /// Pauses playback, e.g. when the user moves to another tab: the page stays
+  /// alive there, so the video would otherwise keep playing out of sight.
+  void pausePlayback() {
+    final preview = state.preview;
+    if (preview == null || !preview.isPlaying) return;
+    unawaited(preview.togglePlayback());
+    // The play/pause button reads the preview directly; a new state makes the
+    // page rebuild it.
+    state = state.copyWith();
   }
 
   void setPresetIndex(int index) {
@@ -148,6 +185,12 @@ class VideosViewModel extends Notifier<VideosState> {
 
       final originalFile = state.videoFile;
       if (originalFile == null) return;
+
+      // Both tabs share one work folder, which a finishing job empties.
+      if (ref.read(imagesViewModelProvider).isBusy) {
+        showResult('Wait for the images to finish first');
+        return;
+      }
 
       state = state.copyWith(isCompressing: true, percentComplete: 0);
 

@@ -11,6 +11,7 @@ import 'package:petit/core/utils/adaptive.dart';
 import 'package:petit/core/utils/dropped_files.dart';
 import 'package:petit/core/utils/platform_utils.dart';
 import 'package:petit/features/home/presentation/state/home_viewmodel.dart';
+import 'package:petit/features/settings/presentation/pages/settings_page.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
 import 'package:petit/features/videos/presentation/pages/videos_page.dart';
 import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
@@ -150,12 +151,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         const SingleActivator(LogicalKeyboardKey.arrowRight): _nextImage,
         _withModifier(LogicalKeyboardKey.digit1): () => _selectTab(0),
         _withModifier(LogicalKeyboardKey.digit2): () => _selectTab(1),
+        _withModifier(LogicalKeyboardKey.digit3): () => _selectTab(2),
       };
+
+  static const _settingsTab = 2;
 
   int get _tab => ref.read(homeViewModelProvider);
 
   void _openFiles() {
-    if (_home.isBusy) return;
+    if (_home.isBusy || _tab == _settingsTab) return;
     if (_tab == 0) {
       _images.pickImages();
     } else {
@@ -164,7 +168,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _compress() {
-    if (_home.isBusy) return;
+    if (_home.isBusy || _tab == _settingsTab) return;
     if (_tab == 0) {
       if (ref.read(imagesViewModelProvider).pickedImages.isEmpty) return;
       _images.startCompression(onComplete: _showSummary);
@@ -175,7 +179,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _clear() {
-    if (_home.isBusy) return;
+    if (_home.isBusy || _tab == _settingsTab) return;
     if (_tab == 0) {
       _images.clearPickedImages();
     } else {
@@ -205,7 +209,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _selectTab(int index) {
-    if (_home.isBusy || _tab == index) return;
+    if (_tab == index) return;
     _home.updateCurrentTabIndex(index);
   }
 
@@ -222,7 +226,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _handleDroppedFiles(List<String> droppedPaths) async {
-    // Switching tabs clears the other tab's work, so never do it mid-job.
+    // Dropped files replace the tab's selection, so never do it mid-job.
     if (_home.isBusy) {
       _snack('Wait for the current job to finish.');
       return;
@@ -272,13 +276,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 children: const [
                   ImagesPage(),
                   VideosPage(),
+                  SettingsPage(),
                 ],
               );
 
               return Scaffold(
                 appBar: AppBar(
                   title: Text(
-                    "Petit - ${selectedTab == 0 ? "Image" : "Video"} Compressor",
+                    switch (selectedTab) {
+                      0 => "Petit - Image Compressor",
+                      1 => "Petit - Video Compressor",
+                      _ => "Petit - Settings",
+                    },
                     style: TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.w600,
@@ -307,6 +316,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                 selectedIcon: Icon(Icons.videocam),
                                 label: Text('Videos'),
                               ),
+                              NavigationRailDestination(
+                                icon: Icon(Icons.settings_outlined),
+                                selectedIcon: Icon(Icons.settings),
+                                label: Text('Settings'),
+                              ),
                             ],
                           ),
                           const VerticalDivider(width: 1),
@@ -330,6 +344,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             icon: Icon(Icons.videocam_outlined),
                             selectedIcon: Icon(Icons.videocam),
                             label: 'Videos',
+                          ),
+                          NavigationDestination(
+                            icon: Icon(Icons.settings_outlined),
+                            selectedIcon: Icon(Icons.settings),
+                            label: 'Settings',
                           ),
                         ],
                       ),

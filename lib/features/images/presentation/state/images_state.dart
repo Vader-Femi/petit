@@ -1,4 +1,6 @@
 import 'package:petit/features/images/domain/entities/image_data.dart';
+import 'package:petit/features/images/domain/entities/image_options.dart';
+import 'package:petit/features/images/domain/entities/image_size_estimate.dart';
 import 'package:petit/features/images/presentation/state/loading_data.dart';
 
 const Object _unset = Object();
@@ -13,6 +15,9 @@ class ImagesState {
     this.loading = const LoadingData(isLoading: false),
     this.result,
     this.isFabOpen = true,
+    this.options = const ImageOptions(),
+    this.estimate,
+    this.isEstimating = false,
   });
 
   final List<ImageData> pickedImages;
@@ -27,6 +32,14 @@ class ImagesState {
   final String? result;
   final bool isFabOpen;
 
+  /// Transparency and metadata choices for the whole job.
+  final ImageOptions options;
+
+  /// Size the current image would have with the current settings, once worked
+  /// out. Null while [isEstimating] or when it could not be worked out.
+  final ImageSizeEstimate? estimate;
+  final bool isEstimating;
+
   /// True while images are being read or compressed.
   bool get isBusy => loading.isLoading;
 
@@ -39,6 +52,9 @@ class ImagesState {
     LoadingData? loading,
     Object? result = _unset,
     bool? isFabOpen,
+    ImageOptions? options,
+    Object? estimate = _unset,
+    bool? isEstimating,
   }) {
     return ImagesState(
       pickedImages: pickedImages ?? this.pickedImages,
@@ -54,6 +70,11 @@ class ImagesState {
       loading: loading ?? this.loading,
       result: identical(result, _unset) ? this.result : result as String?,
       isFabOpen: isFabOpen ?? this.isFabOpen,
+      options: options ?? this.options,
+      estimate: identical(estimate, _unset)
+          ? this.estimate
+          : estimate as ImageSizeEstimate?,
+      isEstimating: isEstimating ?? this.isEstimating,
     );
   }
 }

@@ -1,0 +1,1755 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 1c06d25..ccb0284 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -44,6 +44,8 @@ jobs:
+           test/output_folder_viewmodel_test.dart
+           test/video_bitrate_test.dart
+           test/ffmpeg_arguments_test.dart
++          test/estimate_image_size_test.dart
++          test/image_processing_test.dart
+ 
+   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
+   # it runs on demand and for pull requests into the production branch.
+diff --git a/docs/architecture.md b/docs/architecture.md
+index bb2113b..0c315f9 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -58,8 +58,8 @@ Rules
+ - **Drag and drop** (`common/widgets/drop_zone.dart`, desktop only): one drop target wraps
+   the whole home screen. Dropped files are classified by extension
+   (`core/utils/dropped_files.dart`); images go to the Images tab, a video to the Videos tab.
+-  Folders are expanded one level. Drops are ignored while a job is running, because switching
+-  tabs clears the other tab's work.
++  Folders are expanded one level. Drops are ignored while a job is running, because they would
++  replace the tab's selection.
+ - **Keyboard shortcuts** (`home_screen.dart`; Ctrl on Windows/Linux, Cmd on macOS): `O` add
+   files, `Enter` compress, `Del` or `Backspace` clear, `Esc` cancel a running job, `1`/`2`
+   switch tab, left/right arrows move through images. They are ignored while a job is running
+@@ -83,6 +83,10 @@ Each tab has a **ViewModel**, which is a Riverpod `Notifier` holding one immutab
+ - `core/di/providers.dart` exposes the get_it services (use cases, picker, workspace, preview
+   factory) as providers. Tests override them with fakes (`test/helpers/viewmodel_fakes.dart`), so
+   the ViewModels are tested without plugins or a device.
++- **Tabs keep their work.** Switching between Images and Videos no longer clears either tab; both
++  pages stay alive in an `IndexedStack`. Leaving the Videos tab pauses the player. Only one job runs
++  at a time (both tabs share one work folder, which a finishing job empties), so each ViewModel
++  refuses to start while the other is busy.
+ - Keep real state inside the state class, not in Notifier fields: Riverpod 3 creates a new Notifier
+   if its provider ever rebuilds. The only Notifier field is the cancelable handle of a running image
+   job (the provider watches nothing, so it never rebuilds). The carousel controller has its own provider.
+@@ -110,3 +114,26 @@ The Videos tab's options live in `VideoOptionsPanel` and `VideosState`:
+ 
+ `data/services/ffmpeg_arguments.dart` builds the FFmpeg command line as a pure function; its tests check
+ the exact arguments, which were verified with a real FFmpeg 6.1.
++
++## Image options and size estimate
++
++Under the quality slider, `ImageOptionsPanel` shows the expected size of the current image and two
++switches, kept in `ImagesState.options` (`ImageOptions`):
++
++- **Keep transparency** (on by default; only shown for PNG and WebP). Before, every image became a
++  JPEG, so transparent areas turned black. Now an image that really has transparent pixels (checked
++  by decoding it, because many PNGs have an alpha channel but are fully opaque) stays transparent:
++  Android saves WebP (lossy, honours the quality slider), iOS and desktop save PNG (lossless, so the
++  slider has little effect; the page says so). Turned off, transparent areas are flattened onto white
++  and the image is saved as JPEG. The pure Dart `image` package cannot write WebP, and iOS Photos
++  cannot store it, which is why only Android gets WebP.
++- **Remove location data** (off by default). Mobile uses `keepExif: false`; desktop replaces the EXIF
++  block with an empty one. Neither can drop only the GPS tags, so camera and date go too. When this
++  is on, the compressed file is saved even if it is larger than the original, because the original
++  still has the location.
++
++The estimate is exact: `EstimateImageSizeUseCase` runs the real compressor on the current image, reads
++the size of the result and deletes it. `ImagesViewModel` waits 500 ms after the last change, ignores
++results that arrive for older settings, caches results per (file, quality, options), and does not
++estimate while a job runs. The panel also says when the result would not be smaller (the original is
++kept) or would be larger.
+diff --git a/lib/core/di/providers.dart b/lib/core/di/providers.dart
+index 32fe4ee..cfc694e 100644
+--- a/lib/core/di/providers.dart
++++ b/lib/core/di/providers.dart
+@@ -6,6 +6,7 @@ import 'package:petit/common/domain/services/media_picker.dart';
+ import 'package:petit/common/domain/services/output_folder_preference.dart';
+ import 'package:petit/common/domain/services/workspace.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
++import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
+ import 'package:petit/features/images/domain/usecases/read_images.dart';
+ import 'package:petit/features/videos/domain/services/video_compressor.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+@@ -33,6 +34,9 @@ final readImagesUseCaseProvider =
+ final compressImagesUseCaseProvider =
+     Provider<CompressImagesUseCase>((ref) => sl<CompressImagesUseCase>());
+ 
++final estimateImageSizeUseCaseProvider = Provider<EstimateImageSizeUseCase>(
++    (ref) => sl<EstimateImageSizeUseCase>());
++
+ final videoCompressorProvider =
+     Provider<VideoCompressor>((ref) => sl<VideoCompressor>());
+ 
+diff --git a/lib/core/utils/image_processing.dart b/lib/core/utils/image_processing.dart
+new file mode 100644
+index 0000000..4082715
+--- /dev/null
++++ b/lib/core/utils/image_processing.dart
+@@ -0,0 +1,54 @@
++import 'dart:io';
++import 'dart:isolate';
++import 'dart:typed_data';
++
++import 'package:image/image.dart' as img;
++
++/// True when [image] has at least one pixel that is not fully opaque.
++///
++/// An image can carry an alpha channel and still be fully opaque (most
++/// screenshots do), so the channel count alone is not enough.
++bool imageHasTransparency(img.Image image) {
++  if (!image.hasAlpha && !image.hasPalette) return false;
++  for (final pixel in image) {
++    if (pixel.aNormalized < 1.0) return true;
++  }
++  return false;
++}
++
++/// A copy of [image] on a white background without an alpha channel, which is
++/// what JPEG needs. Without this, transparent areas become whatever colour
++/// happens to be stored under them (often black).
++img.Image flattenOnWhite(img.Image image) {
++  final withAlpha = image.convert(numChannels: 4);
++  final background = img.Image(
++    width: image.width,
++    height: image.height,
++    numChannels: 3,
++  )..clear(img.ColorRgb8(255, 255, 255));
++  return img.compositeImage(background, withAlpha);
++}
++
++/// Decodes the file at [path] in a background isolate and reports whether it
++/// has transparent pixels. Unreadable files count as opaque.
++Future<bool> hasTransparentPixels(String path) =>
++    Isolate.run(() => _hasTransparentPixelsSync(path));
++
++bool _hasTransparentPixelsSync(String path) {
++  final decoded = img.decodeImage(File(path).readAsBytesSync());
++  return decoded != null && imageHasTransparency(decoded);
++}
++
++/// Decodes the file at [path], puts it on white and returns JPEG bytes at
++/// maximum quality (a later step lowers the quality), in a background isolate.
++Future<Uint8List> flattenToJpegBytes(String path) =>
++    Isolate.run(() => _flattenToJpegBytesSync(path));
++
++Uint8List _flattenToJpegBytesSync(String path) {
++  final decoded = img.decodeImage(File(path).readAsBytesSync());
++  if (decoded == null) {
++    throw const FormatException('Could not read this image.');
++  }
++  final flat = imageHasTransparency(decoded) ? flattenOnWhite(decoded) : decoded;
++  return img.encodeJpg(flat, quality: 100);
++}
+diff --git a/lib/core/utils/media_formats.dart b/lib/core/utils/media_formats.dart
+index d3fc6ea..d6d0449 100644
+--- a/lib/core/utils/media_formats.dart
++++ b/lib/core/utils/media_formats.dart
+@@ -4,6 +4,8 @@ final _imageSizeGetterFormats =
+     RegExp(r'\.(png|webp|jpe?g|gif|bmp)$', caseSensitive: false);
+ final _heifFormats = RegExp(r'\.(heic|heif)$', caseSensitive: false);
+ final _jpegFormats = RegExp(r'\.jpe?g$', caseSensitive: false);
++final _pngFormats = RegExp(r'\.png$', caseSensitive: false);
++final _webpFormats = RegExp(r'\.webp$', caseSensitive: false);
+ final _compressibleImageFormats =
+     RegExp(r'\.(png|webp|jpe?g|heic|heif)$', caseSensitive: false);
+ 
+@@ -15,6 +17,15 @@ bool isHeif(String path) => _heifFormats.hasMatch(path);
+ 
+ bool isJpeg(String path) => _jpegFormats.hasMatch(path);
+ 
++bool isPng(String path) => _pngFormats.hasMatch(path);
++
++bool isWebp(String path) => _webpFormats.hasMatch(path);
++
++/// Formats that can contain transparent pixels (JPEG and HEIC photos cannot,
++/// in practice). Whether an image really uses transparency is checked by
++/// decoding it.
++bool canHaveTransparency(String path) => isPng(path) || isWebp(path);
++
+ final _videoFormats =
+     RegExp(r'\.(mp4|mov|m4v|mkv|avi|webm|3gp)$', caseSensitive: false);
+ 
+diff --git a/lib/features/home/presentation/pages/home_screen.dart b/lib/features/home/presentation/pages/home_screen.dart
+index 79b7a0f..8d96297 100644
+--- a/lib/features/home/presentation/pages/home_screen.dart
++++ b/lib/features/home/presentation/pages/home_screen.dart
+@@ -205,7 +205,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
+   }
+ 
+   void _selectTab(int index) {
+-    if (_home.isBusy || _tab == index) return;
++    if (_tab == index) return;
+     _home.updateCurrentTabIndex(index);
+   }
+ 
+@@ -222,7 +222,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
+   }
+ 
+   Future<void> _handleDroppedFiles(List<String> droppedPaths) async {
+-    // Switching tabs clears the other tab's work, so never do it mid-job.
++    // Dropped files replace the tab's selection, so never do it mid-job.
+     if (_home.isBusy) {
+       _snack('Wait for the current job to finish.');
+       return;
+diff --git a/lib/features/home/presentation/state/home_viewmodel.dart b/lib/features/home/presentation/state/home_viewmodel.dart
+index e5b81eb..b489852 100644
+--- a/lib/features/home/presentation/state/home_viewmodel.dart
++++ b/lib/features/home/presentation/state/home_viewmodel.dart
+@@ -11,19 +11,19 @@ class HomeViewModel extends Notifier<int> {
+   @override
+   int build() => 0;
+ 
+-  /// True while either tab is loading or compressing. Switching tabs or adding
+-  /// files then would clear the other tab's work, so callers must not.
++  /// True while either tab is loading or compressing. Adding files then would
++  /// replace work in progress, and two jobs must not run at once (they share
++  /// one work folder), so callers must not start one.
+   bool get isBusy =>
+       ref.read(imagesViewModelProvider).isBusy ||
+       ref.read(videosViewModelProvider).isBusy;
+ 
+-  /// Selects a tab. Leaving a tab discards its content.
++  /// Selects a tab. Each tab keeps what was picked and its settings, so the
++  /// user can look at the other tab and come back.
+   Future<void> updateCurrentTabIndex(int index) async {
+-    if (index == 0) {
+-      ref.read(videosViewModelProvider.notifier).removeVideo();
+-    }
+-    if (index == 1) {
+-      ref.read(imagesViewModelProvider.notifier).clearPickedImages();
++    if (index != 1) {
++      // The Videos page stays alive under the Images tab; stop its playback.
++      ref.read(videosViewModelProvider.notifier).pausePlayback();
+     }
+     state = index;
+   }
+diff --git a/lib/features/images/data/services/desktop_image_compressor.dart b/lib/features/images/data/services/desktop_image_compressor.dart
+index 4b5bcd3..01a5e95 100644
+--- a/lib/features/images/data/services/desktop_image_compressor.dart
++++ b/lib/features/images/data/services/desktop_image_compressor.dart
+@@ -10,18 +10,23 @@ import 'package:image_size_getter/file_input.dart';
+ import 'package:image_size_getter/image_size_getter.dart';
+ import 'package:path/path.dart' as p;
+ import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/core/utils/image_processing.dart';
+ import 'package:petit/core/utils/media_formats.dart';
+ import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:petit/core/utils/work_dir.dart';
+ import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/entities/image_options.dart';
+ import 'package:petit/features/images/domain/entities/image_size.dart';
+ import 'package:petit/features/images/data/services/macos_image_converter.dart';
+ import 'package:petit/features/images/domain/services/image_compressor.dart';
+ 
+ /// Desktop implementation. JPEG, PNG and WebP are re-encoded as JPEG in pure
+ /// Dart (in a background isolate) so `quality` means the same thing as on
+-/// mobile. HEIC/HEIF is decoded by macOS itself on macOS, and attempted through
+-/// FFmpeg elsewhere, with a clear error if the bundled FFmpeg cannot read it.
++/// mobile. A PNG or WebP that really has transparent pixels stays a (lossless)
++/// PNG instead, because JPEG cannot hold transparency and the pure Dart
++/// package cannot write WebP. HEIC/HEIF is decoded by macOS itself on macOS,
++/// and attempted through FFmpeg elsewhere, with a clear error if the bundled
++/// FFmpeg cannot read it.
+ class DesktopImageCompressor implements ImageCompressor {
+   DesktopImageCompressor({MacosImageConverter? macosConverter})
+       : _macosConverter = macosConverter ?? MacosImageConverter();
+@@ -55,7 +60,11 @@ class DesktopImageCompressor implements ImageCompressor {
+   }
+ 
+   @override
+-  Future<File> compress(ImageData image, {required int quality}) async {
++  Future<File> compress(
++    ImageData image, {
++    required int quality,
++    ImageOptions options = const ImageOptions(),
++  }) async {
+     try {
+       final sourcePath = image.imageFile.path;
+       if (!isCompressibleImage(sourcePath)) {
+@@ -66,18 +75,38 @@ class DesktopImageCompressor implements ImageCompressor {
+       final jobDir = await createJobDir();
+       final baseName = p.basenameWithoutExtension(sourcePath);
+ 
+-      final decodePath = isHeif(sourcePath)
++      final isHeifSource = isHeif(sourcePath);
++      final decodePath = isHeifSource
+           ? await _convertHeifToJpeg(sourcePath, jobDir, baseName)
+           : sourcePath;
+ 
+-      final outPath = p.join(jobDir.path, '${baseName}_compressed.jpg');
+-      await Isolate.run(() => _reencodeAsJpeg(decodePath, outPath, quality));
++      // The isolate picks .png or .jpg, depending on the pixels. Plain values
++      // only: nothing but these is copied into the isolate.
++      final outBase = p.join(jobDir.path, '${baseName}_compressed');
++      final keepTransparency = options.keepTransparency;
++      final removeLocation = options.removeLocation;
++      final outPath = await Isolate.run(() =>
++          _reencode(decodePath, outBase, quality, keepTransparency, removeLocation));
++
++      if (isHeifSource) {
++        // Only a stepping stone; this runs for every estimate too.
++        try {
++          await File(decodePath).delete();
++        } on FileSystemException {
++          // Removed with the rest of the work folder later.
++        }
++      }
+ 
+       final originalSize = await image.imageFile.length();
+       final compressedSize = await File(outPath).length();
+ 
+-      // Compressed is larger or equal: hand back the original.
+-      return compressedSize < originalSize ? File(outPath) : image.imageFile;
++      // Compressed is larger or equal: hand back the original, unless the
++      // user asked for the location data to go, which only the new file
++      // satisfies.
++      if (compressedSize < originalSize || options.removeLocation) {
++        return File(outPath);
++      }
++      return image.imageFile;
+     } on MediaException {
+       rethrow;
+     } catch (e) {
+@@ -110,9 +139,16 @@ class DesktopImageCompressor implements ImageCompressor {
+   }
+ }
+ 
+-/// Runs in a background isolate: decode, apply EXIF orientation, write JPEG.
+-Future<void> _reencodeAsJpeg(
+-    String inPath, String outPath, int quality) async {
++/// Runs in a background isolate: decode, apply EXIF orientation, optionally
++/// drop the metadata, then write a PNG (transparent images when asked to keep
++/// transparency) or a JPEG. Returns the path written.
++Future<String> _reencode(
++  String inPath,
++  String outBase,
++  int quality,
++  bool keepTransparency,
++  bool removeLocation,
++) async {
+   final bytes = await File(inPath).readAsBytes();
+   final decoded = img.decodeImage(bytes);
+   if (decoded == null) {
+@@ -121,6 +157,23 @@ Future<void> _reencodeAsJpeg(
+   // Bake the EXIF orientation into the pixels so the result is upright
+   // whether or not the encoder keeps the EXIF block.
+   final upright = img.bakeOrientation(decoded);
+-  final jpg = img.encodeJpg(upright, quality: quality.clamp(1, 100).toInt());
+-  await File(outPath).writeAsBytes(jpg);
++  if (removeLocation) {
++    // The encoders write whatever EXIF the image carries; an empty block
++    // means no GPS position (and no camera or date either).
++    upright.exif = img.ExifData();
++  }
++
++  final transparent = imageHasTransparency(upright);
++
++  if (transparent && keepTransparency) {
++    final outPath = '$outBase.png';
++    await File(outPath).writeAsBytes(img.encodePng(upright, level: 9));
++    return outPath;
++  }
++
++  final flat = transparent ? flattenOnWhite(upright) : upright;
++  final outPath = '$outBase.jpg';
++  await File(outPath)
++      .writeAsBytes(img.encodeJpg(flat, quality: quality.clamp(1, 100).toInt()));
++  return outPath;
+ }
+diff --git a/lib/features/images/data/services/flutter_image_compressor.dart b/lib/features/images/data/services/flutter_image_compressor.dart
+index 092fd04..997b9ce 100644
+--- a/lib/features/images/data/services/flutter_image_compressor.dart
++++ b/lib/features/images/data/services/flutter_image_compressor.dart
+@@ -7,9 +7,12 @@ import 'package:image_size_getter/file_input.dart';
+ import 'package:image_size_getter/image_size_getter.dart';
+ import 'package:path/path.dart' as p;
+ import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/core/utils/image_processing.dart';
+ import 'package:petit/core/utils/media_formats.dart';
++import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:petit/core/utils/work_dir.dart';
+ import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/entities/image_options.dart';
+ import 'package:petit/features/images/domain/entities/image_size.dart';
+ import 'package:petit/features/images/domain/services/image_compressor.dart';
+ 
+@@ -39,7 +42,11 @@ class FlutterImageCompressor implements ImageCompressor {
+   }
+ 
+   @override
+-  Future<File> compress(ImageData image, {required int quality}) async {
++  Future<File> compress(
++    ImageData image, {
++    required int quality,
++    ImageOptions options = const ImageOptions(),
++  }) async {
+     try {
+       var filePath = image.imageFile.path;
+       if (!isCompressibleImage(filePath)) {
+@@ -53,35 +60,53 @@ class FlutterImageCompressor implements ImageCompressor {
+       final jobDir = await createJobDir();
+       final baseName = p.basenameWithoutExtension(filePath);
+ 
+-      if (!isJpeg(filePath)) {
+-        final jpgFile = File(p.join(jobDir.path, "$baseName.jpg"));
++      var format = CompressFormat.jpeg;
++      File? intermediate;
+ 
+-        if (isHeif(filePath)) {
+-          final jpgPath = await HeifConverter.convert(filePath, format: "jpg");
+-          if (jpgPath == null) {
+-            throw const MediaException("Invalid HEIC/HEIF file");
+-          }
+-
+-          //Resize, Rotate, then replace the file path
+-          final jpgImage = img.decodeImage(await File(jpgPath).readAsBytes());
+-          final resizedImage = img.copyResize(jpgImage!,
+-              width: image.pixelWidth, height: image.pixelHeight);
+-          // TODO: this hardcoded 90 degree rotation is kept from the old code;
+-          // verify it per platform (orientation differs on desktop).
+-          final rotatedJpgImage = img.copyRotate(resizedImage, angle: 90);
+-
+-          await jpgFile.writeAsBytes(img.encodeJpg(rotatedJpgImage));
+-        } else {
+-          //Re encode png/webp to jpg
+-          final decoded = img.decodeImage(await image.imageFile.readAsBytes())!;
+-          await jpgFile.writeAsBytes(img.encodeJpg(decoded));
++      if (isHeif(filePath)) {
++        final jpgFile = File(p.join(jobDir.path, "$baseName.jpg"));
++        final jpgPath = await HeifConverter.convert(filePath, format: "jpg");
++        if (jpgPath == null) {
++          throw const MediaException("Invalid HEIC/HEIF file");
+         }
+ 
++        //Resize, Rotate, then replace the file path
++        final jpgImage = img.decodeImage(await File(jpgPath).readAsBytes());
++        final resizedImage = img.copyResize(jpgImage!,
++            width: image.pixelWidth, height: image.pixelHeight);
++        // TODO: this hardcoded 90 degree rotation is kept from the old code;
++        // verify it per platform (orientation differs on desktop).
++        final rotatedJpgImage = img.copyRotate(resizedImage, angle: 90);
++
++        await jpgFile.writeAsBytes(img.encodeJpg(rotatedJpgImage));
++        intermediate = jpgFile;
+         filePath = jpgFile.path;
++      } else if (!isJpeg(filePath)) {
++        final keepAlpha = options.keepTransparency &&
++            await hasTransparentPixels(filePath);
++
++        if (keepAlpha) {
++          // The platform encoder reads the original and keeps its alpha
++          // channel. Android's gallery takes WebP, which also honours the
++          // quality slider; iOS Photos does not, so it gets lossless PNG.
++          format = PlatformInfo.isAndroid
++              ? CompressFormat.webp
++              : CompressFormat.png;
++        } else {
++          // Opaque (or flattened) image: JPEG, transparent areas on white.
++          final jpgFile = File(p.join(jobDir.path, "$baseName.jpg"));
++          await jpgFile.writeAsBytes(await flattenToJpegBytes(filePath));
++          intermediate = jpgFile;
++          filePath = jpgFile.path;
++        }
+       }
+ 
+-      final outPath = p.join(
+-          jobDir.path, "${baseName}_compressed${p.extension(filePath)}");
++      final extension = switch (format) {
++        CompressFormat.webp => '.webp',
++        CompressFormat.png => '.png',
++        _ => p.extension(filePath),
++      };
++      final outPath = p.join(jobDir.path, "${baseName}_compressed$extension");
+ 
+       final compressedImage = await FlutterImageCompress.compressAndGetFile(
+         filePath,
+@@ -89,20 +114,35 @@ class FlutterImageCompressor implements ImageCompressor {
+         minWidth: image.pixelWidth,
+         minHeight: image.pixelHeight,
+         quality: quality,
+-        keepExif: true,
++        format: format,
++        keepExif: !options.removeLocation,
+       );
+ 
+       if (compressedImage == null) {
+         throw const MediaException("Error compressing image!");
+       }
+ 
+-      final originalSize = await File(filePath).length();
+-      final compressedSize = await compressedImage.length();
++      final compressedFile = File(compressedImage.path);
+ 
+-      // Compressed is larger or equal: hand back the original.
+-      return compressedSize < originalSize
+-          ? File(compressedImage.path)
+-          : image.imageFile;
++      // The intermediate JPEG is only a stepping stone; keep the work folder
++      // small, which matters when this runs for every slider change.
++      if (intermediate != null) {
++        try {
++          await intermediate.delete();
++        } on FileSystemException {
++          // Removed with the rest of the work folder later.
++        }
++      }
++
++      // Compressed is larger or equal: hand back the original, unless the
++      // user asked for the location data to go, which only the new file
++      // satisfies.
++      final originalSize = await image.imageFile.length();
++      final compressedSize = await compressedFile.length();
++      if (compressedSize < originalSize || options.removeLocation) {
++        return compressedFile;
++      }
++      return image.imageFile;
+     } on MediaException {
+       rethrow;
+     } catch (e) {
+diff --git a/lib/features/images/domain/entities/image_options.dart b/lib/features/images/domain/entities/image_options.dart
+new file mode 100644
+index 0000000..ff48d3e
+--- /dev/null
++++ b/lib/features/images/domain/entities/image_options.dart
+@@ -0,0 +1,35 @@
++/// Choices that apply to every image in a job, next to each image's quality.
++///
++/// Plain Dart, with value equality, so it can be a key for cached estimates.
++class ImageOptions {
++  const ImageOptions({
++    this.keepTransparency = true,
++    this.removeLocation = false,
++  });
++
++  /// Transparent PNG/WebP images stay transparent (saved as PNG, or WebP on
++  /// Android). When false they are flattened onto white and saved as JPEG.
++  final bool keepTransparency;
++
++  /// Drops the photo's metadata, including where it was taken. The platform
++  /// encoders cannot remove only the GPS tags, so the rest of the metadata
++  /// (camera, date) goes too.
++  final bool removeLocation;
++
++  ImageOptions copyWith({bool? keepTransparency, bool? removeLocation}) {
++    return ImageOptions(
++      keepTransparency: keepTransparency ?? this.keepTransparency,
++      removeLocation: removeLocation ?? this.removeLocation,
++    );
++  }
++
++  @override
++  bool operator ==(Object other) =>
++      identical(this, other) ||
++      other is ImageOptions &&
++          other.keepTransparency == keepTransparency &&
++          other.removeLocation == removeLocation;
++
++  @override
++  int get hashCode => Object.hash(keepTransparency, removeLocation);
++}
+diff --git a/lib/features/images/domain/entities/image_size_estimate.dart b/lib/features/images/domain/entities/image_size_estimate.dart
+new file mode 100644
+index 0000000..c0e8ad3
+--- /dev/null
++++ b/lib/features/images/domain/entities/image_size_estimate.dart
+@@ -0,0 +1,34 @@
++/// What compressing one image with the current settings would produce.
++class ImageSizeEstimate {
++  const ImageSizeEstimate({
++    required this.originalBytes,
++    required this.estimatedBytes,
++    required this.formatLabel,
++    required this.keepsOriginal,
++  });
++
++  final int originalBytes;
++
++  /// Size of the file that would be saved.
++  final int estimatedBytes;
++
++  /// Format of the saved file, e.g. `JPG`, `PNG` or `WebP`.
++  final String formatLabel;
++
++  /// True when compressing would not make the file smaller and the original is
++  /// saved unchanged.
++  final bool keepsOriginal;
++
++  /// The result is bigger than the original. Only happens when the original
++  /// cannot be kept, for example because location data has to be removed.
++  bool get isLarger => !keepsOriginal && estimatedBytes > originalBytes;
++
++  bool get isPng => formatLabel == 'PNG';
++
++  /// Fraction (0..1) of the original size that would be saved.
++  double get savedFraction => originalBytes <= 0 || keepsOriginal
++      ? 0.0
++      : ((originalBytes - estimatedBytes) / originalBytes)
++          .clamp(0.0, 1.0)
++          .toDouble();
++}
+diff --git a/lib/features/images/domain/services/image_compressor.dart b/lib/features/images/domain/services/image_compressor.dart
+index c748443..81903f2 100644
+--- a/lib/features/images/domain/services/image_compressor.dart
++++ b/lib/features/images/domain/services/image_compressor.dart
+@@ -1,6 +1,7 @@
+ import 'dart:io';
+ 
+ import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/entities/image_options.dart';
+ import 'package:petit/features/images/domain/entities/image_size.dart';
+ 
+ abstract interface class ImageCompressor {
+@@ -10,6 +11,12 @@ abstract interface class ImageCompressor {
+ 
+   /// Compresses [image] and returns the file that should be saved: the
+   /// compressed file, or the original when compression did not make it
+-  /// smaller. Throws a [MediaException] with a user-facing message on failure.
+-  Future<File> compress(ImageData image, {required int quality});
++  /// smaller (unless [options] ask for the location data to be removed, which
++  /// the original cannot satisfy). Throws a [MediaException] with a
++  /// user-facing message on failure.
++  Future<File> compress(
++    ImageData image, {
++    required int quality,
++    ImageOptions options = const ImageOptions(),
++  });
+ }
+diff --git a/lib/features/images/domain/usecases/compress_images.dart b/lib/features/images/domain/usecases/compress_images.dart
+index 8402b52..09987aa 100644
+--- a/lib/features/images/domain/usecases/compress_images.dart
++++ b/lib/features/images/domain/usecases/compress_images.dart
+@@ -3,6 +3,7 @@ import 'dart:io';
+ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/common/domain/services/media_saver.dart';
+ import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/entities/image_options.dart';
+ import 'package:petit/features/images/domain/services/image_compressor.dart';
+ 
+ class BatchProgress {
+@@ -54,6 +55,7 @@ class CompressImagesUseCase {
+   Future<ImageBatchResult> call({
+     required List<ImageData> images,
+     int? globalQuality,
++    ImageOptions options = const ImageOptions(),
+     required bool Function() isCancelled,
+     required void Function(BatchProgress progress) onProgress,
+     required void Function(String message) onError,
+@@ -85,6 +87,7 @@ class CompressImagesUseCase {
+         compressed = await _compressor.compress(
+           image,
+           quality: globalQuality ?? image.quality,
++          options: options,
+         );
+       } on MediaException catch (e) {
+         sizeBefore -= originalSize;
+diff --git a/lib/features/images/domain/usecases/estimate_image_size.dart b/lib/features/images/domain/usecases/estimate_image_size.dart
+new file mode 100644
+index 0000000..10d9eec
+--- /dev/null
++++ b/lib/features/images/domain/usecases/estimate_image_size.dart
+@@ -0,0 +1,65 @@
++import 'dart:io';
++
++import 'package:path/path.dart' as p;
++import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/entities/image_options.dart';
++import 'package:petit/features/images/domain/entities/image_size_estimate.dart';
++import 'package:petit/features/images/domain/services/image_compressor.dart';
++
++/// Works out how big one image would be after compression by compressing it
++/// for real and measuring the result. That is exact, not a guess, and it keeps
++/// the estimate consistent with the real job whatever the platform does.
++///
++/// The test output is deleted again, so estimating leaves no big files behind.
++class EstimateImageSizeUseCase {
++  EstimateImageSizeUseCase(this._compressor);
++
++  final ImageCompressor _compressor;
++
++  Future<ImageSizeEstimate> call(
++    ImageData image, {
++    required int quality,
++    required ImageOptions options,
++  }) async {
++    final originalBytes = await image.imageFile.length();
++    final output = await _compressor.compress(
++      image,
++      quality: quality,
++      options: options,
++    );
++
++    final keepsOriginal = output.path == image.imageFile.path;
++    final estimatedBytes = keepsOriginal ? originalBytes : await output.length();
++    final label = _formatLabel(output.path);
++
++    if (!keepsOriginal) {
++      // Only the output file: never delete anything that is not ours.
++      try {
++        await output.delete();
++      } on FileSystemException {
++        // Cleaned up with the rest of the work folder later.
++      }
++    }
++
++    return ImageSizeEstimate(
++      originalBytes: originalBytes,
++      estimatedBytes: estimatedBytes,
++      formatLabel: label,
++      keepsOriginal: keepsOriginal,
++    );
++  }
++
++  static String _formatLabel(String path) {
++    switch (p.extension(path).toLowerCase()) {
++      case '.png':
++        return 'PNG';
++      case '.webp':
++        return 'WebP';
++      case '.heic':
++      case '.heif':
++        return 'HEIC';
++      default:
++        return 'JPG';
++    }
++  }
++}
+diff --git a/lib/features/images/presentation/pages/images_page.dart b/lib/features/images/presentation/pages/images_page.dart
+index 558795f..f2c2cac 100644
+--- a/lib/features/images/presentation/pages/images_page.dart
++++ b/lib/features/images/presentation/pages/images_page.dart
+@@ -6,6 +6,7 @@ import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:petit/core/utils/shortcut_labels.dart';
+ import 'package:petit/features/images/presentation/state/images_state.dart';
+ import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
++import 'package:petit/features/images/presentation/widget/image_options_panel.dart';
+ import 'package:step_progress_indicator/step_progress_indicator.dart';
+ import '../../../../common/widgets/compression_summary_dialog.dart';
+ import '../../../../common/widgets/save_to_tile.dart';
+@@ -110,7 +111,7 @@ class _ImagesPageState extends ConsumerState<ImagesPage> {
+     );
+   }
+ 
+-  /// "2 of 5" and the quality slider.
++  /// "2 of 5", the quality slider and the options under it.
+   List<Widget> _buildControls(
+     BuildContext context,
+     ImagesState state,
+@@ -161,6 +162,9 @@ class _ImagesPageState extends ConsumerState<ImagesPage> {
+           onGlobalToggle: viewModel.setGlobalQualityEnabled,
+         ),
+ 
++      // Expected size, transparency and location switches.
++      const ImageOptionsPanel(),
++
+       // Desktop only: where the results are saved.
+       const SaveToTile(),
+     ];
+diff --git a/lib/features/images/presentation/state/images_state.dart b/lib/features/images/presentation/state/images_state.dart
+index d86e402..df64da7 100644
+--- a/lib/features/images/presentation/state/images_state.dart
++++ b/lib/features/images/presentation/state/images_state.dart
+@@ -1,4 +1,6 @@
+ import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/entities/image_options.dart';
++import 'package:petit/features/images/domain/entities/image_size_estimate.dart';
+ import 'package:petit/features/images/presentation/state/loading_data.dart';
+ 
+ const Object _unset = Object();
+@@ -13,6 +15,9 @@ class ImagesState {
+     this.loading = const LoadingData(isLoading: false),
+     this.result,
+     this.isFabOpen = true,
++    this.options = const ImageOptions(),
++    this.estimate,
++    this.isEstimating = false,
+   });
+ 
+   final List<ImageData> pickedImages;
+@@ -27,6 +32,14 @@ class ImagesState {
+   final String? result;
+   final bool isFabOpen;
+ 
++  /// Transparency and metadata choices for the whole job.
++  final ImageOptions options;
++
++  /// Size the current image would have with the current settings, once worked
++  /// out. Null while [isEstimating] or when it could not be worked out.
++  final ImageSizeEstimate? estimate;
++  final bool isEstimating;
++
+   /// True while images are being read or compressed.
+   bool get isBusy => loading.isLoading;
+ 
+@@ -39,6 +52,9 @@ class ImagesState {
+     LoadingData? loading,
+     Object? result = _unset,
+     bool? isFabOpen,
++    ImageOptions? options,
++    Object? estimate = _unset,
++    bool? isEstimating,
+   }) {
+     return ImagesState(
+       pickedImages: pickedImages ?? this.pickedImages,
+@@ -54,6 +70,11 @@ class ImagesState {
+       loading: loading ?? this.loading,
+       result: identical(result, _unset) ? this.result : result as String?,
+       isFabOpen: isFabOpen ?? this.isFabOpen,
++      options: options ?? this.options,
++      estimate: identical(estimate, _unset)
++          ? this.estimate
++          : estimate as ImageSizeEstimate?,
++      isEstimating: isEstimating ?? this.isEstimating,
+     );
+   }
+ }
+diff --git a/lib/features/images/presentation/state/images_viewmodel.dart b/lib/features/images/presentation/state/images_viewmodel.dart
+index 3e601c3..684c1c0 100644
+--- a/lib/features/images/presentation/state/images_viewmodel.dart
++++ b/lib/features/images/presentation/state/images_viewmodel.dart
+@@ -1,3 +1,5 @@
++import 'dart:async';
++
+ import 'package:async/async.dart';
+ import 'package:carousel_slider/carousel_slider.dart';
+ import 'package:flutter/animation.dart';
+@@ -8,7 +10,9 @@ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/core/di/providers.dart';
+ import 'package:petit/core/utils/format_bytes.dart';
+ import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/entities/image_size_estimate.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
++import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
+ import 'package:share_handler/share_handler.dart';
+ import 'images_state.dart';
+ import 'loading_data.dart';
+@@ -28,8 +32,23 @@ class ImagesViewModel extends Notifier<ImagesState> {
+   /// rebuilt by Riverpod because [build] watches nothing.
+   CancelableCompleter<void> completer = CancelableCompleter();
+ 
++  /// Waits for the sliders to settle before the (real) test compression runs.
++  static const _estimateDelay = Duration(milliseconds: 500);
++
++  Timer? _estimateTimer;
++
++  /// Bumped whenever an estimate in flight stops being wanted, so a late
++  /// result is ignored instead of shown for the wrong settings.
++  int _estimateGeneration = 0;
++
++  /// Estimates already worked out, so going back to a setting is instant.
++  final Map<String, ImageSizeEstimate> _estimateCache = {};
++
+   @override
+-  ImagesState build() => const ImagesState();
++  ImagesState build() {
++    ref.onDispose(() => _estimateTimer?.cancel());
++    return const ImagesState();
++  }
+ 
+   /// True while images are being read or compressed.
+   bool get isBusy => state.isBusy;
+@@ -52,6 +71,7 @@ class ImagesViewModel extends Notifier<ImagesState> {
+     final images = state.pickedImages;
+     if (index < 0 || index >= images.length) return;
+     state = state.copyWith(currentImage: images[index], currentImageIndex: index);
++    _scheduleEstimate();
+   }
+ 
+   void updateCurrentImageQuality(double value) {
+@@ -70,15 +90,85 @@ class ImagesViewModel extends Notifier<ImagesState> {
+       currentImage: updated,
+       globalQuality: null,
+     );
++    _scheduleEstimate();
+   }
+ 
+   void updateGlobalQualitySlider(double value) {
+     state = state.copyWith(globalQuality: (value * 100).toInt());
++    _scheduleEstimate();
+   }
+ 
+   /// Switches "same quality for all images" on (at 50) or off.
+   void setGlobalQualityEnabled(bool enabled) {
+     state = state.copyWith(globalQuality: enabled ? 50 : null);
++    _scheduleEstimate();
++  }
++
++  /// Keep transparent PNG/WebP images transparent (or flatten them to JPEG).
++  void setKeepTransparency(bool keep) {
++    state = state.copyWith(
++        options: state.options.copyWith(keepTransparency: keep));
++    _scheduleEstimate();
++  }
++
++  /// Remove the location (and other metadata) from the compressed images.
++  void setRemoveLocation(bool remove) {
++    state =
++        state.copyWith(options: state.options.copyWith(removeLocation: remove));
++    _scheduleEstimate();
++  }
++
++  /// Works out, after a short pause, how big the current image would be with
++  /// the current settings. Does nothing useful while a job is running (the
++  /// real compression must not compete with test compressions).
++  void _scheduleEstimate() {
++    _estimateTimer?.cancel();
++    final generation = ++_estimateGeneration;
++
++    final image = state.currentImage;
++    if (image == null || state.isBusy) {
++      state = state.copyWith(estimate: null, isEstimating: false);
++      return;
++    }
++
++    final quality = state.globalQuality ?? image.quality;
++    final options = state.options;
++    final key = '${image.imageFile.path}|$quality|'
++        '${options.keepTransparency}|${options.removeLocation}';
++
++    final cached = _estimateCache[key];
++    if (cached != null) {
++      state = state.copyWith(estimate: cached, isEstimating: false);
++      return;
++    }
++
++    state = state.copyWith(estimate: null, isEstimating: true);
++
++    _estimateTimer = Timer(_estimateDelay, () async {
++      ImageSizeEstimate? result;
++      try {
++        result = await ref.read(estimateImageSizeUseCaseProvider)(
++          image,
++          quality: quality,
++          options: options,
++        );
++      } catch (e) {
++        // The estimate is a convenience: if it fails, the real job reports
++        // the problem.
++        debugPrint('Could not estimate the size: $e');
++      }
++
++      if (generation != _estimateGeneration) return;
++      if (result != null) _estimateCache[key] = result;
++      state = state.copyWith(estimate: result, isEstimating: false);
++    });
++  }
++
++  /// Forgets any estimate and stops one in progress.
++  void _cancelEstimate() {
++    _estimateTimer?.cancel();
++    _estimateGeneration++;
++    state = state.copyWith(estimate: null, isEstimating: false);
+   }
+ 
+   Future<void> addSharedImages([List<SharedAttachment>? sharedFiles]) async {
+@@ -96,6 +186,7 @@ class ImagesViewModel extends Notifier<ImagesState> {
+     try {
+       setLoading(const LoadingData(isLoading: true));
+ 
++      _estimateCache.clear();
+       state = state.copyWith(
+         pickedImages: const [],
+         currentImage: null,
+@@ -110,6 +201,7 @@ class ImagesViewModel extends Notifier<ImagesState> {
+         currentImageIndex: 0,
+         loading: const LoadingData(isLoading: false),
+       );
++      _scheduleEstimate();
+     } catch (e) {
+       state = state.copyWith(
+         result: "An error ocurred - ${e.toString()}",
+@@ -127,6 +219,7 @@ class ImagesViewModel extends Notifier<ImagesState> {
+       final paths = await ref.read(mediaPickerProvider).pickImages();
+ 
+       if (paths.isNotEmpty) {
++        _estimateCache.clear();
+         state = state.copyWith(
+           pickedImages: const [],
+           currentImage: null,
+@@ -141,6 +234,7 @@ class ImagesViewModel extends Notifier<ImagesState> {
+           currentImageIndex: 0,
+           loading: const LoadingData(isLoading: false),
+         );
++        _scheduleEstimate();
+       } else {
+         state = state.copyWith(
+           result: "No file picked!",
+@@ -163,6 +257,14 @@ class ImagesViewModel extends Notifier<ImagesState> {
+       return null;
+     }
+ 
++    // Both tabs share one work folder, which a finishing job empties.
++    if (ref.read(videosViewModelProvider).isBusy) {
++      showResult("Wait for the video to finish first");
++      return null;
++    }
++
++    _cancelEstimate();
++
+     final totalLength = state.pickedImages.length;
+ 
+     final ImageBatchResult batch;
+@@ -170,6 +272,7 @@ class ImagesViewModel extends Notifier<ImagesState> {
+       batch = await ref.read(compressImagesUseCaseProvider)(
+         images: List.of(state.pickedImages),
+         globalQuality: state.globalQuality,
++        options: state.options,
+         isCancelled: () => completer.isCanceled,
+         onProgress: (progress) => setLoading(
+           LoadingData(
+@@ -238,6 +341,8 @@ class ImagesViewModel extends Notifier<ImagesState> {
+   /// Drops the selection (the "Clear" button, tab switches, and a cancelled job).
+   void clearPickedImages() {
+     final totalLength = state.pickedImages.length;
++    _estimateCache.clear();
++    _cancelEstimate();
+ 
+     state = state.copyWith(
+       pickedImages: const [],
+diff --git a/lib/features/images/presentation/widget/image_options_panel.dart b/lib/features/images/presentation/widget/image_options_panel.dart
+new file mode 100644
+index 0000000..347604f
+--- /dev/null
++++ b/lib/features/images/presentation/widget/image_options_panel.dart
+@@ -0,0 +1,152 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:petit/core/utils/format_bytes.dart';
++import 'package:petit/core/utils/media_formats.dart';
++import 'package:petit/features/images/domain/entities/image_size_estimate.dart';
++import 'package:petit/features/images/presentation/state/images_state.dart';
++import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
++
++/// The expected size of the current image, plus the transparency and location
++/// switches. Sits under the quality slider.
++class ImageOptionsPanel extends ConsumerWidget {
++  const ImageOptionsPanel({super.key});
++
++  @override
++  Widget build(BuildContext context, WidgetRef ref) {
++    final state = ref.watch(imagesViewModelProvider);
++    final viewModel = ref.read(imagesViewModelProvider.notifier);
++    final image = state.currentImage;
++    if (image == null) return const SizedBox.shrink();
++
++    final theme = Theme.of(context);
++    final showTransparency = canHaveTransparency(image.imageFile.path);
++
++    return Container(
++      margin: const EdgeInsets.only(top: 12),
++      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
++      decoration: BoxDecoration(
++        color: theme.colorScheme.surfaceContainer,
++        borderRadius: BorderRadius.circular(16),
++      ),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          _EstimateRow(state: state),
++          if (showTransparency)
++            SwitchListTile(
++              contentPadding: EdgeInsets.zero,
++              dense: true,
++              title: const Text('Keep transparency'),
++              subtitle: const Text(
++                  'Transparent areas stay transparent. Off: they turn white and the image is saved as JPG.'),
++              value: state.options.keepTransparency,
++              onChanged: state.isBusy ? null : viewModel.setKeepTransparency,
++            ),
++          SwitchListTile(
++            contentPadding: EdgeInsets.zero,
++            dense: true,
++            title: const Text('Remove location data'),
++            subtitle: const Text(
++                'Where the photo was taken. Camera and date details go too.'),
++            value: state.options.removeLocation,
++            onChanged: state.isBusy ? null : viewModel.setRemoveLocation,
++          ),
++        ],
++      ),
++    );
++  }
++}
++
++class _EstimateRow extends StatelessWidget {
++  const _EstimateRow({required this.state});
++
++  final ImagesState state;
++
++  @override
++  Widget build(BuildContext context) {
++    final theme = Theme.of(context);
++    final estimate = state.estimate;
++
++    if (state.isEstimating) {
++      return const Padding(
++        padding: EdgeInsets.symmetric(vertical: 8),
++        child: Row(
++          children: [
++            SizedBox(
++              width: 16,
++              height: 16,
++              child: CircularProgressIndicator(strokeWidth: 2),
++            ),
++            SizedBox(width: 10),
++            Text('Estimating size...'),
++          ],
++        ),
++      );
++    }
++
++    if (estimate == null) return const SizedBox.shrink();
++
++    final warning = estimate.keepsOriginal || estimate.isLarger;
++    final color =
++        warning ? theme.colorScheme.error : theme.colorScheme.primary;
++
++    return Padding(
++      padding: const EdgeInsets.symmetric(vertical: 8),
++      child: Row(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Icon(
++            warning ? Icons.warning_amber_rounded : Icons.straighten,
++            size: 20,
++            color: color,
++          ),
++          const SizedBox(width: 10),
++          Expanded(
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Text(
++                  _headline(estimate),
++                  style: TextStyle(fontWeight: FontWeight.w600, color: color),
++                ),
++                if (_detail(estimate) case final detail?)
++                  Padding(
++                    padding: const EdgeInsets.only(top: 2),
++                    child: Text(detail, style: theme.textTheme.bodySmall),
++                  ),
++              ],
++            ),
++          ),
++        ],
++      ),
++    );
++  }
++
++  static String _headline(ImageSizeEstimate e) {
++    final before = formatBytes(e.originalBytes);
++    if (e.keepsOriginal) {
++      return 'Can\'t get smaller than $before';
++    }
++    final after = formatBytes(e.estimatedBytes);
++    if (e.isLarger) {
++      return '$before \u2192 about $after (larger)';
++    }
++    final percent = (e.savedFraction * 100).round();
++    return '$before \u2192 about $after (-$percent%) \u00b7 ${e.formatLabel}';
++  }
++
++  static String? _detail(ImageSizeEstimate e) {
++    if (e.keepsOriginal) {
++      return 'At this quality the result would not be smaller, so the '
++          'original is saved unchanged. Try a lower quality.';
++    }
++    if (e.isLarger) {
++      return 'It is saved anyway because location data is being removed.';
++    }
++    if (e.isPng) {
++      return 'Saved as PNG to keep the transparency, so the quality slider '
++          'has little effect here.';
++    }
++    return null;
++  }
++}
+diff --git a/lib/features/videos/presentation/state/videos_viewmodel.dart b/lib/features/videos/presentation/state/videos_viewmodel.dart
+index fd5cb14..538f5b3 100644
+--- a/lib/features/videos/presentation/state/videos_viewmodel.dart
++++ b/lib/features/videos/presentation/state/videos_viewmodel.dart
+@@ -7,6 +7,7 @@ import 'package:petit/common/data/summary_report.dart';
+ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/core/di/providers.dart';
+ import 'package:petit/core/utils/format_bytes.dart';
++import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+ import 'package:petit/features/videos/domain/entities/video_data.dart';
+ import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+@@ -36,6 +37,17 @@ class VideosViewModel extends Notifier<VideosState> {
+     state = state.copyWith(isFabOpen: !state.isFabOpen);
+   }
+ 
++  /// Pauses playback, e.g. when the user moves to another tab: the page stays
++  /// alive there, so the video would otherwise keep playing out of sight.
++  void pausePlayback() {
++    final preview = state.preview;
++    if (preview == null || !preview.isPlaying) return;
++    unawaited(preview.togglePlayback());
++    // The play/pause button reads the preview directly; a new state makes the
++    // page rebuild it.
++    state = state.copyWith();
++  }
++
+   void setPresetIndex(int index) {
+     state = state.copyWith(presetIndex: index);
+   }
+@@ -149,6 +161,12 @@ class VideosViewModel extends Notifier<VideosState> {
+       final originalFile = state.videoFile;
+       if (originalFile == null) return;
+ 
++      // Both tabs share one work folder, which a finishing job empties.
++      if (ref.read(imagesViewModelProvider).isBusy) {
++        showResult('Wait for the images to finish first');
++        return;
++      }
++
+       state = state.copyWith(isCompressing: true, percentComplete: 0);
+ 
+       final job = await ref.read(compressVideoUseCaseProvider)(
+diff --git a/lib/service_locator.dart b/lib/service_locator.dart
+index 4eafb10..ad391b1 100644
+--- a/lib/service_locator.dart
++++ b/lib/service_locator.dart
+@@ -16,6 +16,7 @@ import 'package:petit/features/images/data/services/desktop_image_compressor.dar
+ import 'package:petit/features/images/data/services/flutter_image_compressor.dart';
+ import 'package:petit/features/images/domain/services/image_compressor.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
++import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
+ import 'package:petit/features/images/domain/usecases/read_images.dart';
+ import 'package:petit/features/videos/data/services/ffmpeg_video_compressor.dart';
+ import 'package:petit/features/videos/data/services/ffmpeg_video_thumbnailer.dart';
+@@ -66,6 +67,8 @@ void _registerMediaDependencies() {
+   // Use cases
+   sl.registerLazySingleton<ReadImagesUseCase>(
+       () => ReadImagesUseCase(sl<ImageCompressor>()));
++  sl.registerLazySingleton<EstimateImageSizeUseCase>(
++      () => EstimateImageSizeUseCase(sl<ImageCompressor>()));
+   sl.registerLazySingleton<CompressImagesUseCase>(
+       () => CompressImagesUseCase(sl<ImageCompressor>(), sl<MediaSaver>()));
+   sl.registerLazySingleton<CompressVideoUseCase>(
+diff --git a/test/estimate_image_size_test.dart b/test/estimate_image_size_test.dart
+new file mode 100644
+index 0000000..ee190a8
+--- /dev/null
++++ b/test/estimate_image_size_test.dart
+@@ -0,0 +1,122 @@
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/entities/image_options.dart';
++import 'package:petit/features/images/domain/services/image_compressor.dart';
++import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
++import 'package:petit/features/images/domain/entities/image_size.dart';
++
++/// Returns whatever [result] says, as the real compressors do.
++class _StubCompressor implements ImageCompressor {
++  _StubCompressor(this.result);
++
++  final File Function(ImageData image) result;
++  ImageOptions? seenOptions;
++  int? seenQuality;
++
++  @override
++  Future<ImageSize> readSize(String path) async => const ImageSize(10, 10);
++
++  @override
++  Future<File> compress(
++    ImageData image, {
++    required int quality,
++    ImageOptions options = const ImageOptions(),
++  }) async {
++    seenQuality = quality;
++    seenOptions = options;
++    return result(image);
++  }
++}
++
++void main() {
++  late Directory dir;
++
++  setUp(() => dir = Directory.systemTemp.createTempSync('petit_estimate_'));
++  tearDown(() => dir.deleteSync(recursive: true));
++
++  ImageData imageOf(String name, int bytes) => ImageData(
++        imageFile: File('${dir.path}/$name')
++          ..writeAsBytesSync(List.filled(bytes, 0)),
++        pixelWidth: 10,
++        pixelHeight: 10,
++        quality: 50,
++      );
++
++  File outputOf(String name, int bytes) =>
++      File('${dir.path}/$name')..writeAsBytesSync(List.filled(bytes, 1));
++
++  test('measures the compressed file and deletes it afterwards', () async {
++    final image = imageOf('a.jpg', 1000);
++    final out = outputOf('a_compressed.jpg', 250);
++    final stub = _StubCompressor((_) => out);
++
++    final estimate = await EstimateImageSizeUseCase(stub)(
++      image,
++      quality: 30,
++      options: const ImageOptions(removeLocation: true),
++    );
++
++    expect(estimate.originalBytes, 1000);
++    expect(estimate.estimatedBytes, 250);
++    expect(estimate.formatLabel, 'JPG');
++    expect(estimate.keepsOriginal, isFalse);
++    expect(estimate.isLarger, isFalse);
++    expect(estimate.savedFraction, closeTo(0.75, 1e-9));
++    expect(stub.seenQuality, 30);
++    expect(stub.seenOptions?.removeLocation, isTrue);
++    expect(out.existsSync(), isFalse);
++    expect(image.imageFile.existsSync(), isTrue);
++  });
++
++  test('reports that the original is kept, and never deletes it', () async {
++    final image = imageOf('a.jpg', 1000);
++    final stub = _StubCompressor((i) => i.imageFile);
++
++    final estimate = await EstimateImageSizeUseCase(stub)(
++      image,
++      quality: 95,
++      options: const ImageOptions(),
++    );
++
++    expect(estimate.keepsOriginal, isTrue);
++    expect(estimate.estimatedBytes, 1000);
++    expect(estimate.isLarger, isFalse);
++    expect(estimate.savedFraction, 0.0);
++    expect(image.imageFile.existsSync(), isTrue);
++  });
++
++  test('flags a result that is larger than the original', () async {
++    final image = imageOf('a.jpg', 100);
++    final stub = _StubCompressor((_) => outputOf('big.jpg', 150));
++
++    final estimate = await EstimateImageSizeUseCase(stub)(
++      image,
++      quality: 95,
++      options: const ImageOptions(removeLocation: true),
++    );
++
++    expect(estimate.isLarger, isTrue);
++    expect(estimate.savedFraction, 0.0);
++  });
++
++  test('names the output format from the file extension', () async {
++    final image = imageOf('logo.png', 1000);
++
++    Future<String> labelFor(String outName) async {
++      final stub = _StubCompressor((_) => outputOf(outName, 10));
++      final estimate = await EstimateImageSizeUseCase(stub)(
++        image,
++        quality: 50,
++        options: const ImageOptions(),
++      );
++      return estimate.formatLabel;
++    }
++
++    expect(await labelFor('x.png'), 'PNG');
++    expect(await labelFor('x.webp'), 'WebP');
++    expect(await labelFor('x.jpg'), 'JPG');
++    expect(await labelFor('x.jpeg'), 'JPG');
++  });
++}
+diff --git a/test/helpers/viewmodel_fakes.dart b/test/helpers/viewmodel_fakes.dart
+index 2794a12..c380165 100644
+--- a/test/helpers/viewmodel_fakes.dart
++++ b/test/helpers/viewmodel_fakes.dart
+@@ -9,9 +9,11 @@ import 'package:petit/common/domain/services/media_saver.dart';
+ import 'package:petit/common/domain/services/workspace.dart';
+ import 'package:petit/core/di/providers.dart';
+ import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/entities/image_options.dart';
+ import 'package:petit/features/images/domain/entities/image_size.dart';
+ import 'package:petit/features/images/domain/services/image_compressor.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
++import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
+ import 'package:petit/features/images/domain/usecases/read_images.dart';
+ import 'package:petit/features/videos/domain/entities/video_data.dart';
+ import 'package:petit/features/videos/domain/services/video_compressor.dart';
+@@ -83,11 +85,19 @@ class FakeImageCompressor implements ImageCompressor {
+   final Directory dir;
+   int _counter = 0;
+ 
++  /// Options of the latest compress call (a real job or an estimate).
++  ImageOptions? lastOptions;
++
+   @override
+   Future<ImageSize> readSize(String path) async => const ImageSize(640, 480);
+ 
+   @override
+-  Future<File> compress(ImageData image, {required int quality}) async {
++  Future<File> compress(
++    ImageData image, {
++    required int quality,
++    ImageOptions options = const ImageOptions(),
++  }) async {
++    lastOptions = options;
+     final out = File('${dir.path}/out_${_counter++}.bin');
+     await out.writeAsBytes(List.filled(40, 1));
+     return out;
+@@ -147,6 +157,7 @@ class FakeVideoPreview implements VideoPreview {
+   final Object? initializeError;
+   bool initialized = false;
+   bool disposed = false;
++  bool playing = false;
+ 
+   @override
+   Future<void> initialize() async {
+@@ -167,10 +178,12 @@ class FakeVideoPreview implements VideoPreview {
+   bool get canPlay => false;
+ 
+   @override
+-  bool get isPlaying => false;
++  bool get isPlaying => playing;
+ 
+   @override
+-  Future<void> togglePlayback() async {}
++  Future<void> togglePlayback() async {
++    playing = !playing;
++  }
+ 
+   @override
+   Widget build(BuildContext context) => const SizedBox();
+@@ -209,6 +222,8 @@ class Harness {
+             .overrideWithValue(ReadImagesUseCase(imageCompressor)),
+         compressImagesUseCaseProvider.overrideWithValue(
+             CompressImagesUseCase(imageCompressor, saver)),
++        estimateImageSizeUseCaseProvider
++            .overrideWithValue(EstimateImageSizeUseCase(imageCompressor)),
+         compressVideoUseCaseProvider.overrideWithValue(
+             CompressVideoUseCase(videoCompressor, saver)),
+         videoPreviewFactoryProvider.overrideWithValue((file) {
+diff --git a/test/home_viewmodel_test.dart b/test/home_viewmodel_test.dart
+index da5c994..796fa24 100644
+--- a/test/home_viewmodel_test.dart
++++ b/test/home_viewmodel_test.dart
+@@ -23,7 +23,7 @@ void main() {
+     expect(c.read(homeViewModelProvider), 0);
+   });
+ 
+-  test('switching to Videos clears the picked images', () async {
++  test('switching to Videos keeps the picked images', () async {
+     h.picker.images = [h.file('a.jpg', 100).path];
+     final c = h.container();
+     await c.read(imagesViewModelProvider.notifier).pickImages();
+@@ -31,10 +31,10 @@ void main() {
+     await c.read(homeViewModelProvider.notifier).updateCurrentTabIndex(1);
+ 
+     expect(c.read(homeViewModelProvider), 1);
+-    expect(c.read(imagesViewModelProvider).pickedImages, isEmpty);
++    expect(c.read(imagesViewModelProvider).pickedImages.length, 1);
+   });
+ 
+-  test('switching to Images removes the video', () async {
++  test('switching to Images keeps the video', () async {
+     h.picker.video = h.file('in.mp4', 100).path;
+     final c = h.container();
+     await c.read(videosViewModelProvider.notifier).pickVideo();
+@@ -42,8 +42,36 @@ void main() {
+     await c.read(homeViewModelProvider.notifier).updateCurrentTabIndex(0);
+ 
+     expect(c.read(homeViewModelProvider), 0);
+-    expect(c.read(videosViewModelProvider).videoFile, isNull);
+-    expect(h.previews.single.disposed, isTrue);
++    expect(c.read(videosViewModelProvider).videoFile, isNotNull);
++    expect(h.previews.single.disposed, isFalse);
++  });
++
++  test('a tab keeps its settings when you leave and come back', () async {
++    h.picker.images = [h.file('a.jpg', 100).path];
++    final c = h.container();
++    final images = c.read(imagesViewModelProvider.notifier);
++    await images.pickImages();
++    images.setRemoveLocation(true);
++    images.updateCurrentImageQuality(0.8);
++    final home = c.read(homeViewModelProvider.notifier);
++
++    await home.updateCurrentTabIndex(1);
++    await home.updateCurrentTabIndex(0);
++
++    final s = c.read(imagesViewModelProvider);
++    expect(s.options.removeLocation, isTrue);
++    expect(s.currentImage?.quality, 80);
++  });
++
++  test('leaving the Videos tab pauses the video', () async {
++    h.picker.video = h.file('in.mp4', 100).path;
++    final c = h.container();
++    await c.read(videosViewModelProvider.notifier).pickVideo();
++    h.previews.single.playing = true;
++
++    await c.read(homeViewModelProvider.notifier).updateCurrentTabIndex(0);
++
++    expect(h.previews.single.playing, isFalse);
+   });
+ 
+   test('is busy while either tab is working', () async {
+diff --git a/test/image_processing_test.dart b/test/image_processing_test.dart
+new file mode 100644
+index 0000000..62daf75
+--- /dev/null
++++ b/test/image_processing_test.dart
+@@ -0,0 +1,88 @@
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:image/image.dart' as img;
++import 'package:petit/core/utils/image_processing.dart';
++
++img.Image _rgba(int size, {required int alpha}) {
++  final image = img.Image(width: size, height: size, numChannels: 4);
++  for (var y = 0; y < size; y++) {
++    for (var x = 0; x < size; x++) {
++      image.setPixelRgba(x, y, 200, 40, 40, alpha);
++    }
++  }
++  return image;
++}
++
++void main() {
++  group('imageHasTransparency', () {
++    test('is false for an image without an alpha channel', () {
++      final image = img.Image(width: 4, height: 4, numChannels: 3);
++      expect(imageHasTransparency(image), isFalse);
++    });
++
++    test('is false when every pixel is fully opaque', () {
++      expect(imageHasTransparency(_rgba(4, alpha: 255)), isFalse);
++    });
++
++    test('is true when one pixel is not fully opaque', () {
++      final image = _rgba(4, alpha: 255)..setPixelRgba(2, 2, 200, 40, 40, 0);
++      expect(imageHasTransparency(image), isTrue);
++    });
++
++    test('is true for a half transparent image', () {
++      expect(imageHasTransparency(_rgba(4, alpha: 128)), isTrue);
++    });
++  });
++
++  group('flattenOnWhite', () {
++    test('puts transparent pixels on white and keeps opaque ones', () {
++      final image = _rgba(2, alpha: 255)..setPixelRgba(0, 0, 0, 0, 0, 0);
++
++      final flat = flattenOnWhite(image);
++
++      expect(flat.hasAlpha, isFalse);
++      final cleared = flat.getPixel(0, 0);
++      expect([cleared.r, cleared.g, cleared.b], [255, 255, 255]);
++      final kept = flat.getPixel(1, 1);
++      expect([kept.r, kept.g, kept.b], [200, 40, 40]);
++    });
++  });
++
++  group('files', () {
++    late Directory dir;
++
++    setUp(() => dir = Directory.systemTemp.createTempSync('petit_pixels_'));
++    tearDown(() => dir.deleteSync(recursive: true));
++
++    test('hasTransparentPixels reads a PNG from disk', () async {
++      final clear = File('${dir.path}/clear.png')
++        ..writeAsBytesSync(img.encodePng(_rgba(8, alpha: 0)));
++      final solid = File('${dir.path}/solid.png')
++        ..writeAsBytesSync(img.encodePng(_rgba(8, alpha: 255)));
++
++      expect(await hasTransparentPixels(clear.path), isTrue);
++      expect(await hasTransparentPixels(solid.path), isFalse);
++    });
++
++    test('hasTransparentPixels treats an unreadable file as opaque', () async {
++      final junk = File('${dir.path}/junk.png')..writeAsBytesSync([1, 2, 3]);
++      expect(await hasTransparentPixels(junk.path), isFalse);
++    });
++
++    test('flattenToJpegBytes produces a JPEG of the same size', () async {
++      final png = File('${dir.path}/clear.png')
++        ..writeAsBytesSync(img.encodePng(_rgba(8, alpha: 0)));
++
++      final bytes = await flattenToJpegBytes(png.path);
++
++      final decoded = img.decodeJpg(bytes)!;
++      expect([decoded.width, decoded.height], [8, 8]);
++      final pixel = decoded.getPixel(4, 4);
++      // Fully transparent source: white (JPEG rounding allowed).
++      expect(pixel.r, greaterThan(240));
++      expect(pixel.g, greaterThan(240));
++      expect(pixel.b, greaterThan(240));
++    });
++  });
++}
+diff --git a/test/image_use_cases_test.dart b/test/image_use_cases_test.dart
+index ef382ea..832ba1a 100644
+--- a/test/image_use_cases_test.dart
++++ b/test/image_use_cases_test.dart
+@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
+ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/common/domain/services/media_saver.dart';
+ import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/features/images/domain/entities/image_options.dart';
+ import 'package:petit/features/images/domain/entities/image_size.dart';
+ import 'package:petit/features/images/domain/services/image_compressor.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
+@@ -15,13 +16,19 @@ class FakeImageCompressor implements ImageCompressor {
+   final Directory dir;
+   final Set<String> failOn;
+   final qualities = <int>[];
++  final optionsSeen = <ImageOptions>[];
+ 
+   @override
+   Future<ImageSize> readSize(String path) async => const ImageSize(640, 480);
+ 
+   @override
+-  Future<File> compress(ImageData image, {required int quality}) async {
++  Future<File> compress(
++    ImageData image, {
++    required int quality,
++    ImageOptions options = const ImageOptions(),
++  }) async {
+     qualities.add(quality);
++    optionsSeen.add(options);
+     if (failOn.contains(image.imageFile.path)) {
+       throw const MediaException('boom');
+     }
+diff --git a/test/images_viewmodel_test.dart b/test/images_viewmodel_test.dart
+index 14e24c6..3098384 100644
+--- a/test/images_viewmodel_test.dart
++++ b/test/images_viewmodel_test.dart
+@@ -4,6 +4,7 @@ import 'dart:io';
+ import 'package:flutter_test/flutter_test.dart';
+ import 'package:petit/common/data/summary_report.dart';
+ import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
++import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
+ 
+ import 'helpers/viewmodel_fakes.dart';
+ 
+@@ -121,6 +122,99 @@ void main() {
+     });
+   });
+ 
++  group('options and size estimate', () {
++    // The estimate waits half a second after the last change.
++    Future<void> settle() =>
++        Future<void>.delayed(const Duration(milliseconds: 700));
++
++    test('options default to keeping transparency and keeping metadata', () {
++      final c = h.container();
++      final options = c.read(imagesViewModelProvider).options;
++      expect(options.keepTransparency, isTrue);
++      expect(options.removeLocation, isFalse);
++    });
++
++    test('options reach the compressor when compressing', () async {
++      h.picker.images = [h.file('a.jpg', 100).path];
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++      await vm.pickImages();
++      vm.setRemoveLocation(true);
++      vm.setKeepTransparency(false);
++
++      await vm.compressAllSelectedImages();
++
++      expect(h.imageCompressor.lastOptions?.removeLocation, isTrue);
++      expect(h.imageCompressor.lastOptions?.keepTransparency, isFalse);
++    });
++
++    test('estimates the current image after picking', () async {
++      h.picker.images = [h.file('a.jpg', 100).path];
++      final c = h.container();
++      await c.read(imagesViewModelProvider.notifier).pickImages();
++      expect(c.read(imagesViewModelProvider).isEstimating, isTrue);
++
++      await settle();
++
++      final s = c.read(imagesViewModelProvider);
++      expect(s.isEstimating, isFalse);
++      expect(s.estimate?.originalBytes, 100);
++      expect(s.estimate?.estimatedBytes, 40);
++    });
++
++    test('a new setting clears the old estimate and estimates again',
++        () async {
++      h.picker.images = [h.file('a.jpg', 100).path];
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++      await vm.pickImages();
++      await settle();
++      expect(c.read(imagesViewModelProvider).estimate, isNotNull);
++
++      vm.updateCurrentImageQuality(0.8);
++      final during = c.read(imagesViewModelProvider);
++      expect(during.estimate, isNull);
++      expect(during.isEstimating, isTrue);
++
++      await settle();
++      expect(c.read(imagesViewModelProvider).estimate, isNotNull);
++    });
++
++    test('clearing the images drops the estimate', () async {
++      h.picker.images = [h.file('a.jpg', 100).path];
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++      await vm.pickImages();
++      await settle();
++
++      vm.clearPickedImages();
++
++      final s = c.read(imagesViewModelProvider);
++      expect(s.estimate, isNull);
++      expect(s.isEstimating, isFalse);
++    });
++
++    test('does not start compressing while a video is loading', () async {
++      h.picker.images = [h.file('a.jpg', 100).path];
++      final c = h.container();
++      final images = c.read(imagesViewModelProvider.notifier);
++      await images.pickImages();
++
++      h.picker.video = h.file('in.mp4', 100).path;
++      h.picker.gate = Completer<void>();
++      final loadingVideo =
++          c.read(videosViewModelProvider.notifier).pickVideo();
++
++      final report = await images.compressAllSelectedImages();
++
++      expect(report, isNull);
++      expect(c.read(imagesViewModelProvider).result,
++          'Wait for the video to finish first');
++      h.picker.gate!.complete();
++      await loadingVideo;
++    });
++  });
++
+   group('clearing', () {
+     test('clearPickedImages empties the selection', () async {
+       h.picker.images = [h.file('a.jpg', 100).path];
+diff --git a/test/media_formats_test.dart b/test/media_formats_test.dart
+index e841221..7f959d1 100644
+--- a/test/media_formats_test.dart
++++ b/test/media_formats_test.dart
+@@ -11,6 +11,14 @@ void main() {
+       expect(isImageSizeGetterSupported('C:\\Users\\Jo Doe\\pic.PNG'), isTrue);
+     });
+ 
++    test('only PNG and WebP can hold transparency', () {
++      expect(canHaveTransparency('/a/logo.PNG'), isTrue);
++      expect(canHaveTransparency('/a/logo.webp'), isTrue);
++      expect(canHaveTransparency('/a/photo.jpg'), isFalse);
++      expect(canHaveTransparency('/a/photo.heic'), isFalse);
++      expect(canHaveTransparency('/a/logo_png.jpg'), isFalse);
++    });
++
+     test('does not match the dot as a wildcard', () {
+       // Old regex `.png` matched "_png" and skipped the HEIC conversion.
+       expect(isImageSizeGetterSupported('/a/photo_png.heic'), isFalse);

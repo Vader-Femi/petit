@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:petit/common/data/summary_report.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
 
 import 'helpers/viewmodel_fakes.dart';
 
@@ -118,6 +119,99 @@ void main() {
 
       vm.updateCurrentImageAndIndex(9); // out of range: ignored
       expect(c.read(imagesViewModelProvider).currentImageIndex, 1);
+    });
+  });
+
+  group('options and size estimate', () {
+    // The estimate waits half a second after the last change.
+    Future<void> settle() =>
+        Future<void>.delayed(const Duration(milliseconds: 700));
+
+    test('options default to keeping transparency and keeping metadata', () {
+      final c = h.container();
+      final options = c.read(imagesViewModelProvider).options;
+      expect(options.keepTransparency, isTrue);
+      expect(options.removeLocation, isFalse);
+    });
+
+    test('options reach the compressor when compressing', () async {
+      h.picker.images = [h.file('a.jpg', 100).path];
+      final c = h.container();
+      final vm = c.read(imagesViewModelProvider.notifier);
+      await vm.pickImages();
+      vm.setRemoveLocation(true);
+      vm.setKeepTransparency(false);
+
+      await vm.compressAllSelectedImages();
+
+      expect(h.imageCompressor.lastOptions?.removeLocation, isTrue);
+      expect(h.imageCompressor.lastOptions?.keepTransparency, isFalse);
+    });
+
+    test('estimates the current image after picking', () async {
+      h.picker.images = [h.file('a.jpg', 100).path];
+      final c = h.container();
+      await c.read(imagesViewModelProvider.notifier).pickImages();
+      expect(c.read(imagesViewModelProvider).isEstimating, isTrue);
+
+      await settle();
+
+      final s = c.read(imagesViewModelProvider);
+      expect(s.isEstimating, isFalse);
+      expect(s.estimate?.originalBytes, 100);
+      expect(s.estimate?.estimatedBytes, 40);
+    });
+
+    test('a new setting clears the old estimate and estimates again',
+        () async {
+      h.picker.images = [h.file('a.jpg', 100).path];
+      final c = h.container();
+      final vm = c.read(imagesViewModelProvider.notifier);
+      await vm.pickImages();
+      await settle();
+      expect(c.read(imagesViewModelProvider).estimate, isNotNull);
+
+      vm.updateCurrentImageQuality(0.8);
+      final during = c.read(imagesViewModelProvider);
+      expect(during.estimate, isNull);
+      expect(during.isEstimating, isTrue);
+
+      await settle();
+      expect(c.read(imagesViewModelProvider).estimate, isNotNull);
+    });
+
+    test('clearing the images drops the estimate', () async {
+      h.picker.images = [h.file('a.jpg', 100).path];
+      final c = h.container();
+      final vm = c.read(imagesViewModelProvider.notifier);
+      await vm.pickImages();
+      await settle();
+
+      vm.clearPickedImages();
+
+      final s = c.read(imagesViewModelProvider);
+      expect(s.estimate, isNull);
+      expect(s.isEstimating, isFalse);
+    });
+
+    test('does not start compressing while a video is loading', () async {
+      h.picker.images = [h.file('a.jpg', 100).path];
+      final c = h.container();
+      final images = c.read(imagesViewModelProvider.notifier);
+      await images.pickImages();
+
+      h.picker.video = h.file('in.mp4', 100).path;
+      h.picker.gate = Completer<void>();
+      final loadingVideo =
+          c.read(videosViewModelProvider.notifier).pickVideo();
+
+      final report = await images.compressAllSelectedImages();
+
+      expect(report, isNull);
+      expect(c.read(imagesViewModelProvider).result,
+          'Wait for the video to finish first');
+      h.picker.gate!.complete();
+      await loadingVideo;
     });
   });
 

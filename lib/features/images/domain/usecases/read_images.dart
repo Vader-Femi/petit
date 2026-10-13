@@ -11,7 +11,10 @@ class ReadImagesUseCase {
 
   static const defaultQuality = 50;
 
-  Future<List<ImageData>> call(List<String> paths) async {
+  Future<List<ImageData>> call(
+    List<String> paths, {
+    int quality = defaultQuality,
+  }) async {
     final images = <ImageData>[];
     for (final path in paths) {
       final size = await _compressor.readSize(path);
@@ -19,7 +22,7 @@ class ReadImagesUseCase {
         imageFile: File(path),
         pixelWidth: size.width,
         pixelHeight: size.height,
-        quality: defaultQuality,
+        quality: quality,
       ));
     }
     return images;

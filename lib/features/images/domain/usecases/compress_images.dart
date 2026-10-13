@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/common/domain/services/media_saver.dart';
 import 'package:petit/features/images/domain/entities/image_data.dart';
+import 'package:petit/features/images/domain/entities/image_options.dart';
 import 'package:petit/features/images/domain/services/image_compressor.dart';
 
 class BatchProgress {
@@ -54,6 +55,7 @@ class CompressImagesUseCase {
   Future<ImageBatchResult> call({
     required List<ImageData> images,
     int? globalQuality,
+    ImageOptions options = const ImageOptions(),
     required bool Function() isCancelled,
     required void Function(BatchProgress progress) onProgress,
     required void Function(String message) onError,
@@ -85,6 +87,7 @@ class CompressImagesUseCase {
         compressed = await _compressor.compress(
           image,
           quality: globalQuality ?? image.quality,
+          options: options,
         );
       } on MediaException catch (e) {
         sizeBefore -= originalSize;

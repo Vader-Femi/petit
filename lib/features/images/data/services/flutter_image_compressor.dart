@@ -7,9 +7,12 @@ import 'package:image_size_getter/file_input.dart';
 import 'package:image_size_getter/image_size_getter.dart';
 import 'package:path/path.dart' as p;
 import 'package:petit/common/domain/media_exception.dart';
+import 'package:petit/core/utils/image_processing.dart';
 import 'package:petit/core/utils/media_formats.dart';
+import 'package:petit/core/utils/platform_utils.dart';
 import 'package:petit/core/utils/work_dir.dart';
 import 'package:petit/features/images/domain/entities/image_data.dart';
+import 'package:petit/features/images/domain/entities/image_options.dart';
 import 'package:petit/features/images/domain/entities/image_size.dart';
 import 'package:petit/features/images/domain/services/image_compressor.dart';
 
@@ -39,7 +42,11 @@ class FlutterImageCompressor implements ImageCompressor {
   }
 
   @override
-  Future<File> compress(ImageData image, {required int quality}) async {
+  Future<File> compress(
+    ImageData image, {
+    required int quality,
+    ImageOptions options = const ImageOptions(),
+  }) async {
     try {
       var filePath = image.imageFile.path;
       if (!isCompressibleImage(filePath)) {
@@ -53,35 +60,53 @@ class FlutterImageCompressor implements ImageCompressor {
       final jobDir = await createJobDir();
       final baseName = p.basenameWithoutExtension(filePath);
 
-      if (!isJpeg(filePath)) {
+      var format = CompressFormat.jpeg;
+      File? intermediate;
+
+      if (isHeif(filePath)) {
         final jpgFile = File(p.join(jobDir.path, "$baseName.jpg"));
-
-        if (isHeif(filePath)) {
-          final jpgPath = await HeifConverter.convert(filePath, format: "jpg");
-          if (jpgPath == null) {
-            throw const MediaException("Invalid HEIC/HEIF file");
-          }
-
-          //Resize, Rotate, then replace the file path
-          final jpgImage = img.decodeImage(await File(jpgPath).readAsBytes());
-          final resizedImage = img.copyResize(jpgImage!,
-              width: image.pixelWidth, height: image.pixelHeight);
-          // TODO: this hardcoded 90 degree rotation is kept from the old code;
-          // verify it per platform (orientation differs on desktop).
-          final rotatedJpgImage = img.copyRotate(resizedImage, angle: 90);
-
-          await jpgFile.writeAsBytes(img.encodeJpg(rotatedJpgImage));
-        } else {
-          //Re encode png/webp to jpg
-          final decoded = img.decodeImage(await image.imageFile.readAsBytes())!;
-          await jpgFile.writeAsBytes(img.encodeJpg(decoded));
+        final jpgPath = await HeifConverter.convert(filePath, format: "jpg");
+        if (jpgPath == null) {
+          throw const MediaException("Invalid HEIC/HEIF file");
         }
 
+        //Resize, Rotate, then replace the file path
+        final jpgImage = img.decodeImage(await File(jpgPath).readAsBytes());
+        final resizedImage = img.copyResize(jpgImage!,
+            width: image.pixelWidth, height: image.pixelHeight);
+        // TODO: this hardcoded 90 degree rotation is kept from the old code;
+        // verify it per platform (orientation differs on desktop).
+        final rotatedJpgImage = img.copyRotate(resizedImage, angle: 90);
+
+        await jpgFile.writeAsBytes(img.encodeJpg(rotatedJpgImage));
+        intermediate = jpgFile;
         filePath = jpgFile.path;
+      } else if (!isJpeg(filePath)) {
+        final keepAlpha = options.keepTransparency &&
+            await hasTransparentPixels(filePath);
+
+        if (keepAlpha) {
+          // The platform encoder reads the original and keeps its alpha
+          // channel. Android's gallery takes WebP, which also honours the
+          // quality slider; iOS Photos does not, so it gets lossless PNG.
+          format = PlatformInfo.isAndroid
+              ? CompressFormat.webp
+              : CompressFormat.png;
+        } else {
+          // Opaque (or flattened) image: JPEG, transparent areas on white.
+          final jpgFile = File(p.join(jobDir.path, "$baseName.jpg"));
+          await jpgFile.writeAsBytes(await flattenToJpegBytes(filePath));
+          intermediate = jpgFile;
+          filePath = jpgFile.path;
+        }
       }
 
-      final outPath = p.join(
-          jobDir.path, "${baseName}_compressed${p.extension(filePath)}");
+      final extension = switch (format) {
+        CompressFormat.webp => '.webp',
+        CompressFormat.png => '.png',
+        _ => p.extension(filePath),
+      };
+      final outPath = p.join(jobDir.path, "${baseName}_compressed$extension");
 
       final compressedImage = await FlutterImageCompress.compressAndGetFile(
         filePath,
@@ -89,20 +114,35 @@ class FlutterImageCompressor implements ImageCompressor {
         minWidth: image.pixelWidth,
         minHeight: image.pixelHeight,
         quality: quality,
-        keepExif: true,
+        format: format,
+        keepExif: !options.removeLocation,
       );
 
       if (compressedImage == null) {
         throw const MediaException("Error compressing image!");
       }
 
-      final originalSize = await File(filePath).length();
-      final compressedSize = await compressedImage.length();
+      final compressedFile = File(compressedImage.path);
 
-      // Compressed is larger or equal: hand back the original.
-      return compressedSize < originalSize
-          ? File(compressedImage.path)
-          : image.imageFile;
+      // The intermediate JPEG is only a stepping stone; keep the work folder
+      // small, which matters when this runs for every slider change.
+      if (intermediate != null) {
+        try {
+          await intermediate.delete();
+        } on FileSystemException {
+          // Removed with the rest of the work folder later.
+        }
+      }
+
+      // Compressed is larger or equal: hand back the original, unless the
+      // user asked for the location data to go, which only the new file
+      // satisfies.
+      final originalSize = await image.imageFile.length();
+      final compressedSize = await compressedFile.length();
+      if (compressedSize < originalSize || options.removeLocation) {
+        return compressedFile;
+      }
+      return image.imageFile;
     } on MediaException {
       rethrow;
     } catch (e) {

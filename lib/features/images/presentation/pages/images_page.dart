@@ -6,6 +6,7 @@ import 'package:petit/core/utils/platform_utils.dart';
 import 'package:petit/core/utils/shortcut_labels.dart';
 import 'package:petit/features/images/presentation/state/images_state.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+import 'package:petit/features/images/presentation/widget/image_options_panel.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
 import '../../../../common/widgets/compression_summary_dialog.dart';
 import '../../../../common/widgets/save_to_tile.dart';
@@ -110,7 +111,7 @@ class _ImagesPageState extends ConsumerState<ImagesPage> {
     );
   }
 
-  /// "2 of 5" and the quality slider.
+  /// "2 of 5", the quality slider and the options under it.
   List<Widget> _buildControls(
     BuildContext context,
     ImagesState state,
@@ -160,6 +161,9 @@ class _ImagesPageState extends ConsumerState<ImagesPage> {
           isGlobal: state.globalQuality != null,
           onGlobalToggle: viewModel.setGlobalQualityEnabled,
         ),
+
+      // Expected size, transparency and location switches.
+      const ImageOptionsPanel(),
 
       // Desktop only: where the results are saved.
       const SaveToTile(),

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:petit/features/images/domain/entities/image_data.dart';
+import 'package:petit/features/images/domain/entities/image_options.dart';
 import 'package:petit/features/images/domain/entities/image_size.dart';
 
 abstract interface class ImageCompressor {
@@ -10,6 +11,12 @@ abstract interface class ImageCompressor {
 
   /// Compresses [image] and returns the file that should be saved: the
   /// compressed file, or the original when compression did not make it
-  /// smaller. Throws a [MediaException] with a user-facing message on failure.
-  Future<File> compress(ImageData image, {required int quality});
+  /// smaller (unless [options] ask for the location data to be removed, which
+  /// the original cannot satisfy). Throws a [MediaException] with a
+  /// user-facing message on failure.
+  Future<File> compress(
+    ImageData image, {
+    required int quality,
+    ImageOptions options = const ImageOptions(),
+  });
 }

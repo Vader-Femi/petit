@@ -1,0 +1,1174 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index ccb0284..26d5e5f 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -46,6 +46,8 @@ jobs:
+           test/ffmpeg_arguments_test.dart
+           test/estimate_image_size_test.dart
+           test/image_processing_test.dart
++          test/settings_viewmodel_test.dart
++          test/settings_repository_test.dart
+ 
+   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
+   # it runs on demand and for pull requests into the production branch.
+diff --git a/docs/architecture.md b/docs/architecture.md
+index 0c315f9..9958753 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -61,7 +61,7 @@ Rules
+   Folders are expanded one level. Drops are ignored while a job is running, because they would
+   replace the tab's selection.
+ - **Keyboard shortcuts** (`home_screen.dart`; Ctrl on Windows/Linux, Cmd on macOS): `O` add
+-  files, `Enter` compress, `Del` or `Backspace` clear, `Esc` cancel a running job, `1`/`2`
++  files, `Enter` compress, `Del` or `Backspace` clear, `Esc` cancel a running job, `1`/`2`/`3`
+   switch tab, left/right arrows move through images. They are ignored while a job is running
+   (except `Esc`).
+ - Mouse dragging is enabled for scrollables (`core/utils/app_scroll_behavior.dart`) and the
+@@ -76,6 +76,7 @@ Each tab has a **ViewModel**, which is a Riverpod `Notifier` holding one immutab
+ | `ImagesViewModel` (`imagesViewModelProvider`) | `ImagesState` | picked images, quality settings, progress, one-shot message |
+ | `VideosViewModel` (`videosViewModelProvider`) | `VideosState` | video, preview, settings, progress, running job |
+ | `HomeViewModel` (`homeViewModelProvider`) | `int` (selected tab) | tab switching, `isBusy` |
++| `SettingsViewModel` (`settingsViewModelProvider`) | `AppSettings` | the default compression settings |
+ 
+ - Pages are `ConsumerStatefulWidget`s: `ref.watch(...)` for the state, `ref.read(....notifier)` to call
+   actions. State is never edited in place; ViewModels assign a new state with `copyWith`.
+@@ -137,3 +138,18 @@ the size of the result and deletes it. `ImagesViewModel` waits 500 ms after the
+ results that arrive for older settings, caches results per (file, quality, options), and does not
+ estimate while a job runs. The panel also says when the result would not be smaller (the original is
+ kept) or would be larger.
++
++## Settings tab
++
++The third tab (`features/settings/`) holds the default settings: image quality, keep transparency,
++remove location data, and for video the size mode (quality or target size), compression level,
++target size, resolution and encoding speed. On desktop it also shows the "Save to" folder.
++
++- `AppSettings` (domain) is the value; `SettingsRepository` (domain) is the interface and
++  `SharedPrefsSettingsRepository` (data) stores it. Bad or missing stored values fall back to the
++  default (`settingsFromMap` is a pure function with its own tests).
++- The settings are read once in `initializeDependencies()` and exposed as `initialSettingsProvider`, so
++  `SettingsViewModel` and the other ViewModels can read them synchronously from their first build.
++- Defaults apply to *new work*: a new selection of images starts at the default quality and options,
++  and the Videos tab starts from the video defaults. Changing a default applies at once to a tab that
++  has nothing picked, and leaves a selection in progress alone. Changes are saved immediately.
+diff --git a/lib/core/di/providers.dart b/lib/core/di/providers.dart
+index cfc694e..4ee03e1 100644
+--- a/lib/core/di/providers.dart
++++ b/lib/core/di/providers.dart
+@@ -8,6 +8,8 @@ import 'package:petit/common/domain/services/workspace.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
+ import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
+ import 'package:petit/features/images/domain/usecases/read_images.dart';
++import 'package:petit/features/settings/domain/entities/app_settings.dart';
++import 'package:petit/features/settings/domain/services/settings_repository.dart';
+ import 'package:petit/features/videos/domain/services/video_compressor.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+ import 'package:petit/features/videos/presentation/preview/video_preview.dart';
+@@ -28,6 +30,14 @@ final folderPickerProvider =
+ final outputFolderPreferenceProvider = Provider<OutputFolderPreference>(
+     (ref) => sl<OutputFolderPreference>());
+ 
++final settingsRepositoryProvider =
++    Provider<SettingsRepository>((ref) => sl<SettingsRepository>());
++
++/// The settings read from disk before the app started (the defaults if that
++/// failed). The Settings ViewModel starts from this.
++final initialSettingsProvider = Provider<AppSettings>(
++    (ref) => sl.isRegistered<AppSettings>() ? sl<AppSettings>() : const AppSettings());
++
+ final readImagesUseCaseProvider =
+     Provider<ReadImagesUseCase>((ref) => sl<ReadImagesUseCase>());
+ 
+diff --git a/lib/features/home/presentation/pages/home_screen.dart b/lib/features/home/presentation/pages/home_screen.dart
+index 8d96297..6a9093b 100644
+--- a/lib/features/home/presentation/pages/home_screen.dart
++++ b/lib/features/home/presentation/pages/home_screen.dart
+@@ -11,6 +11,7 @@ import 'package:petit/core/utils/adaptive.dart';
+ import 'package:petit/core/utils/dropped_files.dart';
+ import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:petit/features/home/presentation/state/home_viewmodel.dart';
++import 'package:petit/features/settings/presentation/pages/settings_page.dart';
+ import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+ import 'package:petit/features/videos/presentation/pages/videos_page.dart';
+ import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
+@@ -150,12 +151,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
+         const SingleActivator(LogicalKeyboardKey.arrowRight): _nextImage,
+         _withModifier(LogicalKeyboardKey.digit1): () => _selectTab(0),
+         _withModifier(LogicalKeyboardKey.digit2): () => _selectTab(1),
++        _withModifier(LogicalKeyboardKey.digit3): () => _selectTab(2),
+       };
+ 
++  static const _settingsTab = 2;
++
+   int get _tab => ref.read(homeViewModelProvider);
+ 
+   void _openFiles() {
+-    if (_home.isBusy) return;
++    if (_home.isBusy || _tab == _settingsTab) return;
+     if (_tab == 0) {
+       _images.pickImages();
+     } else {
+@@ -164,7 +168,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
+   }
+ 
+   void _compress() {
+-    if (_home.isBusy) return;
++    if (_home.isBusy || _tab == _settingsTab) return;
+     if (_tab == 0) {
+       if (ref.read(imagesViewModelProvider).pickedImages.isEmpty) return;
+       _images.startCompression(onComplete: _showSummary);
+@@ -175,7 +179,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
+   }
+ 
+   void _clear() {
+-    if (_home.isBusy) return;
++    if (_home.isBusy || _tab == _settingsTab) return;
+     if (_tab == 0) {
+       _images.clearPickedImages();
+     } else {
+@@ -272,13 +276,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
+                 children: const [
+                   ImagesPage(),
+                   VideosPage(),
++                  SettingsPage(),
+                 ],
+               );
+ 
+               return Scaffold(
+                 appBar: AppBar(
+                   title: Text(
+-                    "Petit - ${selectedTab == 0 ? "Image" : "Video"} Compressor",
++                    switch (selectedTab) {
++                      0 => "Petit - Image Compressor",
++                      1 => "Petit - Video Compressor",
++                      _ => "Petit - Settings",
++                    },
+                     style: TextStyle(
+                       fontSize: 20,
+                       fontWeight: FontWeight.w600,
+@@ -307,6 +316,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
+                                 selectedIcon: Icon(Icons.videocam),
+                                 label: Text('Videos'),
+                               ),
++                              NavigationRailDestination(
++                                icon: Icon(Icons.settings_outlined),
++                                selectedIcon: Icon(Icons.settings),
++                                label: Text('Settings'),
++                              ),
+                             ],
+                           ),
+                           const VerticalDivider(width: 1),
+@@ -331,6 +345,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
+                             selectedIcon: Icon(Icons.videocam),
+                             label: 'Videos',
+                           ),
++                          NavigationDestination(
++                            icon: Icon(Icons.settings_outlined),
++                            selectedIcon: Icon(Icons.settings),
++                            label: 'Settings',
++                          ),
+                         ],
+                       ),
+               );
+diff --git a/lib/features/images/domain/usecases/read_images.dart b/lib/features/images/domain/usecases/read_images.dart
+index cc9cc55..4e33975 100644
+--- a/lib/features/images/domain/usecases/read_images.dart
++++ b/lib/features/images/domain/usecases/read_images.dart
+@@ -11,7 +11,10 @@ class ReadImagesUseCase {
+ 
+   static const defaultQuality = 50;
+ 
+-  Future<List<ImageData>> call(List<String> paths) async {
++  Future<List<ImageData>> call(
++    List<String> paths, {
++    int quality = defaultQuality,
++  }) async {
+     final images = <ImageData>[];
+     for (final path in paths) {
+       final size = await _compressor.readSize(path);
+@@ -19,7 +22,7 @@ class ReadImagesUseCase {
+         imageFile: File(path),
+         pixelWidth: size.width,
+         pixelHeight: size.height,
+-        quality: defaultQuality,
++        quality: quality,
+       ));
+     }
+     return images;
+diff --git a/lib/features/images/presentation/state/images_viewmodel.dart b/lib/features/images/presentation/state/images_viewmodel.dart
+index 684c1c0..cd08b85 100644
+--- a/lib/features/images/presentation/state/images_viewmodel.dart
++++ b/lib/features/images/presentation/state/images_viewmodel.dart
+@@ -12,6 +12,7 @@ import 'package:petit/core/utils/format_bytes.dart';
+ import 'package:petit/features/images/domain/entities/image_data.dart';
+ import 'package:petit/features/images/domain/entities/image_size_estimate.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
++import 'package:petit/features/settings/presentation/state/settings_viewmodel.dart';
+ import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
+ import 'package:share_handler/share_handler.dart';
+ import 'images_state.dart';
+@@ -47,7 +48,17 @@ class ImagesViewModel extends Notifier<ImagesState> {
+   @override
+   ImagesState build() {
+     ref.onDispose(() => _estimateTimer?.cancel());
+-    return const ImagesState();
++
++    // Changing the defaults in Settings applies at once while nothing is
++    // picked; a selection in progress keeps the settings it was started with.
++    ref.listen(settingsViewModelProvider, (_, settings) {
++      if (state.pickedImages.isEmpty && !state.isBusy) {
++        state = state.copyWith(options: settings.imageOptions);
++      }
++    });
++
++    return ImagesState(
++        options: ref.read(settingsViewModelProvider).imageOptions);
+   }
+ 
+   /// True while images are being read or compressed.
+@@ -187,13 +198,16 @@ class ImagesViewModel extends Notifier<ImagesState> {
+       setLoading(const LoadingData(isLoading: true));
+ 
+       _estimateCache.clear();
++      final defaults = ref.read(settingsViewModelProvider);
+       state = state.copyWith(
+         pickedImages: const [],
+         currentImage: null,
+         globalQuality: null,
++        options: defaults.imageOptions,
+       );
+ 
+-      final picked = await ref.read(readImagesUseCaseProvider)(paths);
++      final picked = await ref.read(readImagesUseCaseProvider)(paths,
++          quality: defaults.imageQuality);
+ 
+       state = state.copyWith(
+         pickedImages: picked,
+@@ -220,13 +234,16 @@ class ImagesViewModel extends Notifier<ImagesState> {
+ 
+       if (paths.isNotEmpty) {
+         _estimateCache.clear();
++        final defaults = ref.read(settingsViewModelProvider);
+         state = state.copyWith(
+           pickedImages: const [],
+           currentImage: null,
+           globalQuality: null,
++          options: defaults.imageOptions,
+         );
+ 
+-        final picked = await ref.read(readImagesUseCaseProvider)(paths);
++        final picked = await ref.read(readImagesUseCaseProvider)(paths,
++            quality: defaults.imageQuality);
+ 
+         state = state.copyWith(
+           pickedImages: picked,
+diff --git a/lib/features/settings/data/services/shared_prefs_settings_repository.dart b/lib/features/settings/data/services/shared_prefs_settings_repository.dart
+new file mode 100644
+index 0000000..232e518
+--- /dev/null
++++ b/lib/features/settings/data/services/shared_prefs_settings_repository.dart
+@@ -0,0 +1,84 @@
++import 'package:petit/features/settings/domain/entities/app_settings.dart';
++import 'package:petit/features/settings/domain/services/settings_repository.dart';
++import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++import 'package:shared_preferences/shared_preferences.dart';
++
++const _imageQuality = 'settings_image_quality';
++const _keepTransparency = 'settings_keep_transparency';
++const _removeLocation = 'settings_remove_location';
++const _videoUseTargetSize = 'settings_video_use_target_size';
++const _videoQuality = 'settings_video_quality';
++const _videoResolution = 'settings_video_resolution';
++const _videoPreset = 'settings_video_preset';
++const _videoTargetSizeMb = 'settings_video_target_size_mb';
++
++const _allKeys = {
++  _imageQuality,
++  _keepTransparency,
++  _removeLocation,
++  _videoUseTargetSize,
++  _videoQuality,
++  _videoResolution,
++  _videoPreset,
++  _videoTargetSizeMb,
++};
++
++/// Builds settings from stored values. Missing, wrongly typed or out of range
++/// values keep their default, so a damaged or older store never breaks start-up.
++AppSettings settingsFromMap(Map<String, Object?> values) {
++  const defaults = AppSettings();
++
++  int intIn(String key, int fallback, int min, int max) {
++    final value = values[key];
++    return value is int ? value.clamp(min, max).toInt() : fallback;
++  }
++
++  bool boolOf(String key, bool fallback) {
++    final value = values[key];
++    return value is bool ? value : fallback;
++  }
++
++  final resolutionName = values[_videoResolution];
++  final resolution = VideoResolution.values.firstWhere(
++    (r) => r.name == resolutionName,
++    orElse: () => defaults.videoResolution,
++  );
++
++  return AppSettings(
++    imageQuality: intIn(_imageQuality, defaults.imageQuality, 0, 100),
++    keepTransparency: boolOf(_keepTransparency, defaults.keepTransparency),
++    removeLocation: boolOf(_removeLocation, defaults.removeLocation),
++    videoUseTargetSize:
++        boolOf(_videoUseTargetSize, defaults.videoUseTargetSize),
++    videoQuality: intIn(_videoQuality, defaults.videoQuality, 0, 100),
++    videoResolution: resolution,
++    videoPresetIndex: intIn(_videoPreset, defaults.videoPresetIndex, 0,
++        AppSettings.maxVideoPresetIndex),
++    videoTargetSizeMb:
++        intIn(_videoTargetSizeMb, defaults.videoTargetSizeMb, 1, 100000),
++  );
++}
++
++class SharedPrefsSettingsRepository implements SettingsRepository {
++  SharedPrefsSettingsRepository(this._prefs);
++
++  final SharedPreferencesAsync _prefs;
++
++  @override
++  Future<AppSettings> load() async {
++    final all = await _prefs.getAll(allowList: _allKeys);
++    return settingsFromMap(all);
++  }
++
++  @override
++  Future<void> save(AppSettings s) async {
++    await _prefs.setInt(_imageQuality, s.imageQuality);
++    await _prefs.setBool(_keepTransparency, s.keepTransparency);
++    await _prefs.setBool(_removeLocation, s.removeLocation);
++    await _prefs.setBool(_videoUseTargetSize, s.videoUseTargetSize);
++    await _prefs.setInt(_videoQuality, s.videoQuality);
++    await _prefs.setString(_videoResolution, s.videoResolution.name);
++    await _prefs.setInt(_videoPreset, s.videoPresetIndex);
++    await _prefs.setInt(_videoTargetSizeMb, s.videoTargetSizeMb);
++  }
++}
+diff --git a/lib/features/settings/domain/entities/app_settings.dart b/lib/features/settings/domain/entities/app_settings.dart
+new file mode 100644
+index 0000000..93929f1
+--- /dev/null
++++ b/lib/features/settings/domain/entities/app_settings.dart
+@@ -0,0 +1,91 @@
++import 'package:petit/features/images/domain/entities/image_options.dart';
++import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++
++/// The user's default compression settings. A new selection of images or a
++/// new app launch starts from these; each tab can still be changed for the
++/// job at hand.
++///
++/// Plain Dart with value equality, like the other entities.
++class AppSettings {
++  const AppSettings({
++    this.imageQuality = 50,
++    this.keepTransparency = true,
++    this.removeLocation = false,
++    this.videoUseTargetSize = false,
++    this.videoQuality = 80,
++    this.videoResolution = VideoResolution.original,
++    this.videoPresetIndex = 1,
++    this.videoTargetSizeMb = 25,
++  });
++
++  /// Highest valid index of the encoding speed choices (fast, balanced, slow).
++  static const maxVideoPresetIndex = 2;
++
++  /// Image quality, 0..100.
++  final int imageQuality;
++  final bool keepTransparency;
++  final bool removeLocation;
++
++  /// Videos: aim for a file size (true) or use the quality level (false).
++  final bool videoUseTargetSize;
++
++  /// Video compression level, 0..100.
++  final int videoQuality;
++  final VideoResolution videoResolution;
++
++  /// Index of the encoding speed.
++  final int videoPresetIndex;
++  final int videoTargetSizeMb;
++
++  ImageOptions get imageOptions => ImageOptions(
++        keepTransparency: keepTransparency,
++        removeLocation: removeLocation,
++      );
++
++  AppSettings copyWith({
++    int? imageQuality,
++    bool? keepTransparency,
++    bool? removeLocation,
++    bool? videoUseTargetSize,
++    int? videoQuality,
++    VideoResolution? videoResolution,
++    int? videoPresetIndex,
++    int? videoTargetSizeMb,
++  }) {
++    return AppSettings(
++      imageQuality: imageQuality ?? this.imageQuality,
++      keepTransparency: keepTransparency ?? this.keepTransparency,
++      removeLocation: removeLocation ?? this.removeLocation,
++      videoUseTargetSize: videoUseTargetSize ?? this.videoUseTargetSize,
++      videoQuality: videoQuality ?? this.videoQuality,
++      videoResolution: videoResolution ?? this.videoResolution,
++      videoPresetIndex: videoPresetIndex ?? this.videoPresetIndex,
++      videoTargetSizeMb: videoTargetSizeMb ?? this.videoTargetSizeMb,
++    );
++  }
++
++  @override
++  bool operator ==(Object other) =>
++      identical(this, other) ||
++      other is AppSettings &&
++          other.imageQuality == imageQuality &&
++          other.keepTransparency == keepTransparency &&
++          other.removeLocation == removeLocation &&
++          other.videoUseTargetSize == videoUseTargetSize &&
++          other.videoQuality == videoQuality &&
++          other.videoResolution == videoResolution &&
++          other.videoPresetIndex == videoPresetIndex &&
++          other.videoTargetSizeMb == videoTargetSizeMb;
++
++  @override
++  int get hashCode => Object.hash(
++        imageQuality,
++        keepTransparency,
++        removeLocation,
++        videoUseTargetSize,
++        videoQuality,
++        videoResolution,
++        videoPresetIndex,
++        videoTargetSizeMb,
++      );
++}
+diff --git a/lib/features/settings/domain/services/settings_repository.dart b/lib/features/settings/domain/services/settings_repository.dart
+new file mode 100644
+index 0000000..bdc8340
+--- /dev/null
++++ b/lib/features/settings/domain/services/settings_repository.dart
+@@ -0,0 +1,9 @@
++import 'package:petit/features/settings/domain/entities/app_settings.dart';
++
++/// Remembers the default settings across app launches.
++abstract interface class SettingsRepository {
++  /// The saved settings; anything missing or invalid falls back to the default.
++  Future<AppSettings> load();
++
++  Future<void> save(AppSettings settings);
++}
+diff --git a/lib/features/settings/presentation/pages/settings_page.dart b/lib/features/settings/presentation/pages/settings_page.dart
+new file mode 100644
+index 0000000..417b5c0
+--- /dev/null
++++ b/lib/features/settings/presentation/pages/settings_page.dart
+@@ -0,0 +1,257 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:petit/common/widgets/save_to_tile.dart';
++import 'package:petit/core/utils/platform_utils.dart';
++import 'package:petit/features/settings/presentation/state/settings_viewmodel.dart';
++import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++import 'package:petit/features/videos/presentation/state/video_presets.dart';
++import 'package:petit/features/videos/presentation/state/videos_state.dart';
++
++/// Default settings for images and videos (and, on desktop, where results are
++/// saved). A new selection starts from these; each tab can still be changed
++/// for the job at hand.
++class SettingsPage extends ConsumerWidget {
++  const SettingsPage({super.key});
++
++  @override
++  Widget build(BuildContext context, WidgetRef ref) {
++    final settings = ref.watch(settingsViewModelProvider);
++    final viewModel = ref.read(settingsViewModelProvider.notifier);
++    final theme = Theme.of(context);
++
++    return Scaffold(
++      body: Align(
++        alignment: Alignment.topCenter,
++        child: ConstrainedBox(
++          constraints: const BoxConstraints(maxWidth: 640),
++          child: ListView(
++            padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
++            children: [
++              Text(
++                'These are the starting settings for new images and videos. '
++                'You can still change them for any single job.',
++                style: theme.textTheme.bodyMedium,
++              ),
++              const SizedBox(height: 16),
++
++              _Section(
++                title: 'Images',
++                icon: Icons.image_outlined,
++                children: [
++                  _LabeledSlider(
++                    label: 'Image quality',
++                    valueLabel: '${settings.imageQuality}%',
++                    value: settings.imageQuality / 100,
++                    divisions: 99,
++                    onChanged: (v) =>
++                        viewModel.setImageQuality((v * 100).round()),
++                    hint: 'Lower is smaller. 20% to 98% works for most photos.',
++                  ),
++                  SwitchListTile(
++                    contentPadding: EdgeInsets.zero,
++                    title: const Text('Keep transparency'),
++                    subtitle: const Text(
++                        'Transparent PNG and WebP images stay transparent.'),
++                    value: settings.keepTransparency,
++                    onChanged: viewModel.setKeepTransparency,
++                  ),
++                  SwitchListTile(
++                    contentPadding: EdgeInsets.zero,
++                    title: const Text('Remove location data'),
++                    subtitle: const Text(
++                        'Where the photo was taken. Camera and date details go too.'),
++                    value: settings.removeLocation,
++                    onChanged: viewModel.setRemoveLocation,
++                  ),
++                ],
++              ),
++
++              _Section(
++                title: 'Videos',
++                icon: Icons.videocam_outlined,
++                children: [
++                  const _Caption('Choose the size by'),
++                  SegmentedButton<bool>(
++                    showSelectedIcon: false,
++                    segments: const [
++                      ButtonSegment(value: false, label: Text('Quality')),
++                      ButtonSegment(value: true, label: Text('Target size')),
++                    ],
++                    selected: {settings.videoUseTargetSize},
++                    onSelectionChanged: (s) =>
++                        viewModel.setVideoUseTargetSize(s.first),
++                  ),
++                  const SizedBox(height: 12),
++                  if (settings.videoUseTargetSize) ...[
++                    const _Caption('Aim for about'),
++                    Wrap(
++                      spacing: 8,
++                      children: [
++                        for (final mb in kTargetSizeOptionsMb)
++                          ChoiceChip(
++                            label: Text('$mb MB'),
++                            selected: settings.videoTargetSizeMb == mb,
++                            onSelected: (_) => viewModel.setVideoTargetSizeMb(mb),
++                          ),
++                      ],
++                    ),
++                  ] else
++                    _LabeledSlider(
++                      label: 'Compression level',
++                      valueLabel: labelForCrfSlider(settings.videoQuality),
++                      value: settings.videoQuality / 100,
++                      divisions: 100,
++                      onChanged: (v) =>
++                          viewModel.setVideoQuality((v * 100).round()),
++                      hint: 'Higher compresses more and gives a smaller file.',
++                    ),
++                  const SizedBox(height: 12),
++                  const _Caption('Resolution'),
++                  Wrap(
++                    spacing: 8,
++                    children: [
++                      for (final r in VideoResolution.values)
++                        ChoiceChip(
++                          label: Text(r.label),
++                          selected: settings.videoResolution == r,
++                          onSelected: (_) => viewModel.setVideoResolution(r),
++                        ),
++                    ],
++                  ),
++                  const SizedBox(height: 12),
++                  const _Caption('Encoding speed'),
++                  SegmentedButton<int>(
++                    showSelectedIcon: false,
++                    segments: [
++                      for (final (i, preset) in kFfmpegPresets.indexed)
++                        ButtonSegment(value: i, label: Text(preset.desc)),
++                    ],
++                    selected: {settings.videoPresetIndex},
++                    onSelectionChanged: (s) =>
++                        viewModel.setVideoPresetIndex(s.first),
++                  ),
++                  const SizedBox(height: 4),
++                  Text(
++                    'Slower encoding makes a smaller file for the same quality.',
++                    style: theme.textTheme.bodySmall,
++                  ),
++                ],
++              ),
++
++              // Desktop only: results go into a folder there.
++              if (PlatformInfo.isDesktop)
++                const _Section(
++                  title: 'Saving',
++                  icon: Icons.folder_outlined,
++                  children: [SaveToTile()],
++                ),
++
++              Align(
++                alignment: Alignment.centerLeft,
++                child: TextButton.icon(
++                  onPressed: viewModel.resetToDefaults,
++                  icon: const Icon(Icons.restart_alt),
++                  label: const Text('Reset to defaults'),
++                ),
++              ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++}
++
++class _Section extends StatelessWidget {
++  const _Section({
++    required this.title,
++    required this.icon,
++    required this.children,
++  });
++
++  final String title;
++  final IconData icon;
++  final List<Widget> children;
++
++  @override
++  Widget build(BuildContext context) {
++    final theme = Theme.of(context);
++    return Container(
++      margin: const EdgeInsets.only(bottom: 16),
++      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
++      decoration: BoxDecoration(
++        color: theme.colorScheme.surfaceContainer,
++        borderRadius: BorderRadius.circular(16),
++      ),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Row(
++            children: [
++              Icon(icon, color: theme.colorScheme.primary),
++              const SizedBox(width: 8),
++              Text(title, style: theme.textTheme.titleMedium),
++            ],
++          ),
++          const SizedBox(height: 8),
++          ...children,
++        ],
++      ),
++    );
++  }
++}
++
++class _Caption extends StatelessWidget {
++  const _Caption(this.text);
++
++  final String text;
++
++  @override
++  Widget build(BuildContext context) => Padding(
++        padding: const EdgeInsets.only(bottom: 6),
++        child: Text(text, style: Theme.of(context).textTheme.labelLarge),
++      );
++}
++
++class _LabeledSlider extends StatelessWidget {
++  const _LabeledSlider({
++    required this.label,
++    required this.valueLabel,
++    required this.value,
++    required this.divisions,
++    required this.onChanged,
++    this.hint,
++  });
++
++  final String label;
++  final String valueLabel;
++  final double value;
++  final int divisions;
++  final ValueChanged<double> onChanged;
++  final String? hint;
++
++  @override
++  Widget build(BuildContext context) {
++    final theme = Theme.of(context);
++    return Column(
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        Row(
++          children: [
++            Expanded(child: Text(label, style: theme.textTheme.labelLarge)),
++            Text(valueLabel,
++                style: theme.textTheme.labelLarge
++                    ?.copyWith(color: theme.colorScheme.primary)),
++          ],
++        ),
++        Slider(
++          value: value.clamp(0.0, 1.0),
++          divisions: divisions,
++          label: valueLabel,
++          onChanged: onChanged,
++        ),
++        if (hint != null) Text(hint!, style: theme.textTheme.bodySmall),
++      ],
++    );
++  }
++}
+diff --git a/lib/features/settings/presentation/state/settings_viewmodel.dart b/lib/features/settings/presentation/state/settings_viewmodel.dart
+new file mode 100644
+index 0000000..317ba87
+--- /dev/null
++++ b/lib/features/settings/presentation/state/settings_viewmodel.dart
+@@ -0,0 +1,60 @@
++import 'dart:async';
++
++import 'package:flutter/foundation.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:petit/core/di/providers.dart';
++import 'package:petit/features/settings/domain/entities/app_settings.dart';
++import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++
++final settingsViewModelProvider =
++    NotifierProvider<SettingsViewModel, AppSettings>(SettingsViewModel.new);
++
++/// ViewModel of the Settings tab. Its state is the user's default settings,
++/// loaded before the app starts so the other tabs can read them at once.
++/// Every change is saved right away.
++class SettingsViewModel extends Notifier<AppSettings> {
++  @override
++  AppSettings build() => ref.read(initialSettingsProvider);
++
++  void setImageQuality(int value) =>
++      _apply(state.copyWith(imageQuality: value.clamp(0, 100).toInt()));
++
++  void setKeepTransparency(bool value) =>
++      _apply(state.copyWith(keepTransparency: value));
++
++  void setRemoveLocation(bool value) =>
++      _apply(state.copyWith(removeLocation: value));
++
++  void setVideoUseTargetSize(bool value) =>
++      _apply(state.copyWith(videoUseTargetSize: value));
++
++  void setVideoQuality(int value) =>
++      _apply(state.copyWith(videoQuality: value.clamp(0, 100).toInt()));
++
++  void setVideoResolution(VideoResolution value) =>
++      _apply(state.copyWith(videoResolution: value));
++
++  void setVideoPresetIndex(int value) => _apply(state.copyWith(
++      videoPresetIndex:
++          value.clamp(0, AppSettings.maxVideoPresetIndex).toInt()));
++
++  void setVideoTargetSizeMb(int value) =>
++      _apply(state.copyWith(videoTargetSizeMb: value));
++
++  void resetToDefaults() => _apply(const AppSettings());
++
++  void _apply(AppSettings next) {
++    if (next == state) return;
++    state = next;
++    unawaited(_save(next));
++  }
++
++  Future<void> _save(AppSettings settings) async {
++    try {
++      await ref.read(settingsRepositoryProvider).save(settings);
++    } catch (e) {
++      // The setting still applies for this run; it just will not be remembered.
++      debugPrint('Could not save the settings: $e');
++    }
++  }
++}
+diff --git a/lib/features/videos/presentation/state/videos_viewmodel.dart b/lib/features/videos/presentation/state/videos_viewmodel.dart
+index 538f5b3..4c972e9 100644
+--- a/lib/features/videos/presentation/state/videos_viewmodel.dart
++++ b/lib/features/videos/presentation/state/videos_viewmodel.dart
+@@ -8,6 +8,8 @@ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/core/di/providers.dart';
+ import 'package:petit/core/utils/format_bytes.dart';
+ import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
++import 'package:petit/features/settings/domain/entities/app_settings.dart';
++import 'package:petit/features/settings/presentation/state/settings_viewmodel.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+ import 'package:petit/features/videos/domain/entities/video_data.dart';
+ import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+@@ -22,7 +24,30 @@ final videosViewModelProvider =
+ /// `CompressVideoUseCase`; this class only holds state and reacts to it.
+ class VideosViewModel extends Notifier<VideosState> {
+   @override
+-  VideosState build() => const VideosState();
++  VideosState build() {
++    // Changing the defaults in Settings applies at once while no video is
++    // picked; a video being prepared keeps the settings it was started with.
++    ref.listen(settingsViewModelProvider, (_, settings) {
++      if (state.videoFile == null && !state.isBusy) {
++        state = _withDefaults(state, settings);
++      }
++    });
++
++    return _withDefaults(
++        const VideosState(), ref.read(settingsViewModelProvider));
++  }
++
++  VideosState _withDefaults(VideosState base, AppSettings settings) {
++    return base.copyWith(
++      mode: settings.videoUseTargetSize
++          ? VideoMode.targetSize
++          : VideoMode.quality,
++      crfQuality: settings.videoQuality,
++      resolution: settings.videoResolution,
++      presetIndex: settings.videoPresetIndex,
++      targetSizeMb: settings.videoTargetSizeMb,
++    );
++  }
+ 
+   /// True while a video is being loaded or compressed.
+   bool get isBusy => state.isBusy;
+diff --git a/lib/service_locator.dart b/lib/service_locator.dart
+index ad391b1..b58fb8e 100644
+--- a/lib/service_locator.dart
++++ b/lib/service_locator.dart
+@@ -23,6 +23,9 @@ import 'package:petit/features/videos/data/services/ffmpeg_video_thumbnailer.dar
+ import 'package:petit/features/videos/domain/services/video_compressor.dart';
+ import 'package:petit/features/videos/domain/services/video_thumbnailer.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
++import 'package:petit/features/settings/data/services/shared_prefs_settings_repository.dart';
++import 'package:petit/features/settings/domain/entities/app_settings.dart';
++import 'package:petit/features/settings/domain/services/settings_repository.dart';
+ import 'package:shared_preferences/shared_preferences.dart';
+ 
+ final sl = GetIt.instance;
+@@ -35,6 +38,17 @@ Future<void> initializeDependencies() async {
+   );
+ 
+   _registerMediaDependencies();
++
++  // The default settings are read once, here, so the ViewModels can use them
++  // from their first build without waiting.
++  final settingsRepository = SharedPrefsSettingsRepository(
++      sl<SharedPreferencesAsync>());
++  sl.registerSingleton<SettingsRepository>(settingsRepository);
++  try {
++    sl.registerSingleton<AppSettings>(await settingsRepository.load());
++  } catch (_) {
++    // Start with the defaults; initialSettingsProvider falls back to them.
++  }
+ }
+ 
+ /// Platform services are registered here, so the ViewModels and use cases
+diff --git a/test/helpers/viewmodel_fakes.dart b/test/helpers/viewmodel_fakes.dart
+index c380165..9f9549d 100644
+--- a/test/helpers/viewmodel_fakes.dart
++++ b/test/helpers/viewmodel_fakes.dart
+@@ -15,6 +15,8 @@ import 'package:petit/features/images/domain/services/image_compressor.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
+ import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
+ import 'package:petit/features/images/domain/usecases/read_images.dart';
++import 'package:petit/features/settings/domain/entities/app_settings.dart';
++import 'package:petit/features/settings/domain/services/settings_repository.dart';
+ import 'package:petit/features/videos/domain/entities/video_data.dart';
+ import 'package:petit/features/videos/domain/services/video_compressor.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+@@ -194,6 +196,23 @@ class FakeVideoPreview implements VideoPreview {
+   }
+ }
+ 
++/// Keeps settings in memory. Set [failToSave] to make saving throw.
++class FakeSettingsRepository implements SettingsRepository {
++  AppSettings? saved;
++  int saves = 0;
++  bool failToSave = false;
++
++  @override
++  Future<AppSettings> load() async => saved ?? const AppSettings();
++
++  @override
++  Future<void> save(AppSettings settings) async {
++    saves++;
++    if (failToSave) throw StateError('disk full');
++    saved = settings;
++  }
++}
++
+ /// Wires fakes into a [ProviderContainer] so the ViewModels can be tested
+ /// without plugins, dialogs or a device.
+ class Harness {
+@@ -205,6 +224,7 @@ class Harness {
+   final saver = FakeSaver();
+   final videoCompressor = FakeVideoCompressor();
+   final previews = <FakeVideoPreview>[];
++  final settingsRepository = FakeSettingsRepository();
+ 
+   /// Set to make the next previews fail to initialize.
+   Object? previewInitializeError;
+@@ -215,7 +235,12 @@ class Harness {
+       File('${dir.path}/$name')..writeAsBytesSync(List.filled(bytes, 0));
+ 
+   /// Disposed automatically at the end of the test.
+-  ProviderContainer container() => ProviderContainer.test(overrides: [
++  ///
++  /// [settings] are the defaults the app would have loaded at start-up.
++  ProviderContainer container({AppSettings settings = const AppSettings()}) =>
++      ProviderContainer.test(overrides: [
++        initialSettingsProvider.overrideWithValue(settings),
++        settingsRepositoryProvider.overrideWithValue(settingsRepository),
+         mediaPickerProvider.overrideWithValue(picker),
+         workspaceProvider.overrideWithValue(workspace),
+         readImagesUseCaseProvider
+diff --git a/test/settings_repository_test.dart b/test/settings_repository_test.dart
+new file mode 100644
+index 0000000..4435ba2
+--- /dev/null
++++ b/test/settings_repository_test.dart
+@@ -0,0 +1,62 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/features/settings/data/services/shared_prefs_settings_repository.dart';
++import 'package:petit/features/settings/domain/entities/app_settings.dart';
++import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++
++void main() {
++  group('settingsFromMap', () {
++    test('an empty store gives the defaults', () {
++      expect(settingsFromMap({}), const AppSettings());
++    });
++
++    test('reads stored values', () {
++      final s = settingsFromMap({
++        'settings_image_quality': 65,
++        'settings_keep_transparency': false,
++        'settings_remove_location': true,
++        'settings_video_use_target_size': true,
++        'settings_video_quality': 55,
++        'settings_video_resolution': 'p720',
++        'settings_video_preset': 2,
++        'settings_video_target_size_mb': 50,
++      });
++
++      expect(
++          s,
++          const AppSettings(
++            imageQuality: 65,
++            keepTransparency: false,
++            removeLocation: true,
++            videoUseTargetSize: true,
++            videoQuality: 55,
++            videoResolution: VideoResolution.p720,
++            videoPresetIndex: 2,
++            videoTargetSizeMb: 50,
++          ));
++    });
++
++    test('out of range numbers are pulled into range', () {
++      final s = settingsFromMap({
++        'settings_image_quality': 900,
++        'settings_video_quality': -3,
++        'settings_video_preset': 7,
++        'settings_video_target_size_mb': 0,
++      });
++
++      expect(s.imageQuality, 100);
++      expect(s.videoQuality, 0);
++      expect(s.videoPresetIndex, AppSettings.maxVideoPresetIndex);
++      expect(s.videoTargetSizeMb, 1);
++    });
++
++    test('wrong types and unknown names keep the defaults', () {
++      final s = settingsFromMap({
++        'settings_image_quality': 'high',
++        'settings_keep_transparency': 1,
++        'settings_video_resolution': '4k',
++      });
++
++      expect(s, const AppSettings());
++    });
++  });
++}
+diff --git a/test/settings_viewmodel_test.dart b/test/settings_viewmodel_test.dart
+new file mode 100644
+index 0000000..c7402dd
+--- /dev/null
++++ b/test/settings_viewmodel_test.dart
+@@ -0,0 +1,169 @@
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
++import 'package:petit/features/settings/domain/entities/app_settings.dart';
++import 'package:petit/features/settings/presentation/state/settings_viewmodel.dart';
++import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++import 'package:petit/features/videos/presentation/state/videos_state.dart';
++import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
++
++import 'helpers/viewmodel_fakes.dart';
++
++void main() {
++  late Directory dir;
++  late Harness h;
++
++  setUp(() {
++    dir = Directory.systemTemp.createTempSync('petit_settings_vm_');
++    h = Harness(dir);
++  });
++  tearDown(() => dir.deleteSync(recursive: true));
++
++  group('settings', () {
++    test('start from what was loaded at launch', () {
++      final c = h.container(settings: const AppSettings(imageQuality: 70));
++      expect(c.read(settingsViewModelProvider).imageQuality, 70);
++    });
++
++    test('every change is applied and saved', () {
++      final c = h.container();
++      final vm = c.read(settingsViewModelProvider.notifier);
++
++      vm.setImageQuality(30);
++      vm.setKeepTransparency(false);
++      vm.setRemoveLocation(true);
++      vm.setVideoUseTargetSize(true);
++      vm.setVideoQuality(60);
++      vm.setVideoResolution(VideoResolution.p720);
++      vm.setVideoPresetIndex(2);
++      vm.setVideoTargetSizeMb(10);
++
++      const expected = AppSettings(
++        imageQuality: 30,
++        keepTransparency: false,
++        removeLocation: true,
++        videoUseTargetSize: true,
++        videoQuality: 60,
++        videoResolution: VideoResolution.p720,
++        videoPresetIndex: 2,
++        videoTargetSizeMb: 10,
++      );
++      expect(c.read(settingsViewModelProvider), expected);
++      expect(h.settingsRepository.saved, expected);
++    });
++
++    test('values are kept in range', () {
++      final c = h.container();
++      final vm = c.read(settingsViewModelProvider.notifier);
++
++      vm.setImageQuality(250);
++      vm.setVideoQuality(-5);
++      vm.setVideoPresetIndex(9);
++
++      final s = c.read(settingsViewModelProvider);
++      expect(s.imageQuality, 100);
++      expect(s.videoQuality, 0);
++      expect(s.videoPresetIndex, AppSettings.maxVideoPresetIndex);
++    });
++
++    test('setting the same value saves nothing', () {
++      final c = h.container();
++      c.read(settingsViewModelProvider.notifier).setImageQuality(50);
++      expect(h.settingsRepository.saves, 0);
++    });
++
++    test('reset goes back to the defaults', () {
++      final c = h.container(settings: const AppSettings(imageQuality: 10));
++      c.read(settingsViewModelProvider.notifier).resetToDefaults();
++
++      expect(c.read(settingsViewModelProvider), const AppSettings());
++      expect(h.settingsRepository.saved, const AppSettings());
++    });
++
++    test('a failed save still applies the change', () async {
++      h.settingsRepository.failToSave = true;
++      final c = h.container();
++
++      c.read(settingsViewModelProvider.notifier).setImageQuality(20);
++      await Future<void>.delayed(Duration.zero);
++
++      expect(c.read(settingsViewModelProvider).imageQuality, 20);
++    });
++  });
++
++  group('images use the defaults', () {
++    test('a new selection starts at the default quality and options',
++        () async {
++      h.picker.images = [h.file('a.jpg', 100).path];
++      final c = h.container(
++          settings: const AppSettings(imageQuality: 70, removeLocation: true));
++
++      await c.read(imagesViewModelProvider.notifier).pickImages();
++
++      final s = c.read(imagesViewModelProvider);
++      expect(s.currentImage?.quality, 70);
++      expect(s.options.removeLocation, isTrue);
++    });
++
++    test('changing a default applies while nothing is picked', () async {
++      final c = h.container();
++      c.read(imagesViewModelProvider); // start it listening
++
++      c.read(settingsViewModelProvider.notifier).setRemoveLocation(true);
++      await Future<void>.delayed(Duration.zero);
++
++      expect(c.read(imagesViewModelProvider).options.removeLocation, isTrue);
++    });
++
++    test('changing a default leaves a selection in progress alone', () async {
++      h.picker.images = [h.file('a.jpg', 100).path];
++      final c = h.container();
++      await c.read(imagesViewModelProvider.notifier).pickImages();
++
++      c.read(settingsViewModelProvider.notifier).setRemoveLocation(true);
++
++      expect(c.read(imagesViewModelProvider).options.removeLocation, isFalse);
++    });
++  });
++
++  group('videos use the defaults', () {
++    test('start from the saved defaults', () {
++      final c = h.container(
++          settings: const AppSettings(
++        videoUseTargetSize: true,
++        videoQuality: 40,
++        videoResolution: VideoResolution.p480,
++        videoPresetIndex: 0,
++        videoTargetSizeMb: 10,
++      ));
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.mode, VideoMode.targetSize);
++      expect(s.crfQuality, 40);
++      expect(s.resolution, VideoResolution.p480);
++      expect(s.presetIndex, 0);
++      expect(s.targetSizeMb, 10);
++    });
++
++    test('changing a default applies while no video is picked', () async {
++      final c = h.container();
++      c.read(videosViewModelProvider); // start it listening
++
++      c.read(settingsViewModelProvider.notifier).setVideoQuality(30);
++      await Future<void>.delayed(Duration.zero);
++
++      expect(c.read(videosViewModelProvider).crfQuality, 30);
++    });
++
++    test('changing a default leaves a picked video alone', () async {
++      h.picker.video = h.file('in.mp4', 100).path;
++      final c = h.container();
++      await c.read(videosViewModelProvider.notifier).pickVideo();
++
++      c.read(settingsViewModelProvider.notifier).setVideoQuality(30);
++
++      expect(c.read(videosViewModelProvider).crfQuality, 80);
++    });
++  });
++}

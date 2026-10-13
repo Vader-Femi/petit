@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/common/domain/services/media_saver.dart';
 import 'package:petit/features/images/domain/entities/image_data.dart';
+import 'package:petit/features/images/domain/entities/image_options.dart';
 import 'package:petit/features/images/domain/entities/image_size.dart';
 import 'package:petit/features/images/domain/services/image_compressor.dart';
 import 'package:petit/features/images/domain/usecases/compress_images.dart';
@@ -15,13 +16,19 @@ class FakeImageCompressor implements ImageCompressor {
   final Directory dir;
   final Set<String> failOn;
   final qualities = <int>[];
+  final optionsSeen = <ImageOptions>[];
 
   @override
   Future<ImageSize> readSize(String path) async => const ImageSize(640, 480);
 
   @override
-  Future<File> compress(ImageData image, {required int quality}) async {
+  Future<File> compress(
+    ImageData image, {
+    required int quality,
+    ImageOptions options = const ImageOptions(),
+  }) async {
     qualities.add(quality);
+    optionsSeen.add(options);
     if (failOn.contains(image.imageFile.path)) {
       throw const MediaException('boom');
     }
