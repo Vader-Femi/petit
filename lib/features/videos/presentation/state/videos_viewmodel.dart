@@ -48,6 +48,7 @@ class VideosViewModel extends Notifier<VideosState> {
       resolution: settings.videoResolution,
       presetIndex: settings.videoPresetIndex,
       targetSizeMb: settings.videoTargetSizeMb,
+      fastEncoding: settings.videoFastEncoding,
     );
   }
 
@@ -155,8 +156,25 @@ class VideosViewModel extends Notifier<VideosState> {
       videoInfo: info,
       videoBytes: bytes,
       isLoading: false,
+      fastEncodingAvailable: false,
     );
     _fitOptionsToVideo();
+    unawaited(_checkFastEncoding(info?.videoCodec, file));
+  }
+
+  /// Finds out, in the background (the first time it tries the hardware), whether
+  /// Fast encoding can be offered for this video.
+  Future<void> _checkFastEncoding(String? codec, File file) async {
+    if (codec == null) return;
+    final available = await ref.read(checkFastEncodingUseCaseProvider)(codec);
+    // The user may have picked another video, or none, in the meantime.
+    if (state.videoFile?.path != file.path) return;
+    state = state.copyWith(fastEncodingAvailable: available);
+  }
+
+  /// Fast encoding on or off for this video.
+  void setFastEncoding(bool enabled) {
+    state = state.copyWith(fastEncoding: enabled);
   }
 
   /// Moves a selection that makes no sense for this video (a bigger resolution
@@ -220,6 +238,7 @@ class VideosViewModel extends Notifier<VideosState> {
         preset: kFfmpegPresets[state.presetIndex].value,
         totalDurationMs: state.preview?.duration.inMilliseconds,
         maxShortSide: state.resolution.shortSide,
+        fastEncoding: state.usesFastEncoding,
         targetBytes: state.mode == VideoMode.targetSize
             ? state.targetSizeMb * 1000000
             : null,
@@ -304,6 +323,7 @@ class VideosViewModel extends Notifier<VideosState> {
       isLoading: false,
       percentComplete: 0,
       eta: null,
+      fastEncodingAvailable: false,
     );
   }
 

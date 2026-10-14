@@ -12,6 +12,7 @@ const _videoQuality = 'settings_video_quality';
 const _videoResolution = 'settings_video_resolution';
 const _videoPreset = 'settings_video_preset';
 const _videoTargetSizeMb = 'settings_video_target_size_mb';
+const _videoFastEncoding = 'settings_video_fast_encoding';
 
 const _allKeys = {
   _imageQuality,
@@ -22,6 +23,7 @@ const _allKeys = {
   _videoResolution,
   _videoPreset,
   _videoTargetSizeMb,
+  _videoFastEncoding,
 };
 
 /// Builds settings from stored values. Missing, wrongly typed or out of range
@@ -57,6 +59,8 @@ AppSettings settingsFromMap(Map<String, Object?> values) {
         AppSettings.maxVideoPresetIndex),
     videoTargetSizeMb:
         intIn(_videoTargetSizeMb, defaults.videoTargetSizeMb, 1, kMaxTargetSizeMb),
+    videoFastEncoding:
+        boolOf(_videoFastEncoding, defaults.videoFastEncoding),
   );
 }
 
@@ -81,5 +85,6 @@ class SharedPrefsSettingsRepository implements SettingsRepository {
     await _prefs.setString(_videoResolution, s.videoResolution.name);
     await _prefs.setInt(_videoPreset, s.videoPresetIndex);
     await _prefs.setInt(_videoTargetSizeMb, s.videoTargetSizeMb);
+    await _prefs.setBool(_videoFastEncoding, s.videoFastEncoding);
   }
 }

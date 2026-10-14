@@ -64,4 +64,72 @@ void main() {
       expect(build(), contains('/my videos/in.mp4'));
     });
   });
+
+  group('hardware encoding', () {
+    List<String> build({
+      String encoder = 'h264_videotoolbox',
+      int? bitrate = 4000,
+      int? maxShortSide,
+    }) =>
+        buildVideoArguments(
+          inputPath: '/my videos/in.mp4',
+          outputPath: '/tmp/out.mp4',
+          videoCodec: 'libx264',
+          crf: 26,
+          preset: 'medium',
+          videoBitrateKbps: bitrate,
+          maxShortSide: maxShortSide,
+          hardwareEncoder: encoder,
+        );
+
+    test('uses the hardware encoder with a bitrate, and no CRF or preset', () {
+      expect(build(), [
+        '-i', '/my videos/in.mp4',
+        '-vcodec', 'h264_videotoolbox',
+        '-b:v', '4000k',
+        '-maxrate', '6000k',
+        '-bufsize', '8000k',
+        '/tmp/out.mp4',
+      ]);
+    });
+
+    test('hardware encoding needs a bitrate', () {
+      expect(() => build(bitrate: null), throwsArgumentError);
+    });
+
+    test('HEVC is tagged so Apple players accept it in an MP4', () {
+      final args = build(encoder: 'hevc_nvenc');
+      expect(args, containsAllInOrder(['-tag:v', 'hvc1']));
+      expect(build(encoder: 'h264_nvenc'), isNot(contains('-tag:v')));
+    });
+
+    test('the scale filter still goes in, before the output', () {
+      final args = build(maxShortSide: 720);
+      expect(args[args.indexOf('-vf') + 1], ffmpegScaleFilter(720));
+      expect(args.last, '/tmp/out.mp4');
+    });
+
+    test('the software command is unchanged when no hardware is asked for', () {
+      final args = buildVideoArguments(
+        inputPath: 'in.mp4',
+        outputPath: 'out.mp4',
+        videoCodec: 'libx264',
+        crf: 26,
+        preset: 'medium',
+      );
+      expect(args, containsAllInOrder(['-crf', '26', '-preset', 'medium']));
+    });
+  });
+
+  test('the probe encodes one second of test video and throws it away', () {
+    expect(buildHardwareProbeArguments('h264_nvenc'), [
+      '-hide_banner',
+      '-f', 'lavfi',
+      '-i', 'testsrc2=duration=1:size=640x360:rate=15',
+      '-vcodec', 'h264_nvenc',
+      '-b:v', '1000k',
+      '-f', 'null',
+      '-',
+    ]);
+  });
 }

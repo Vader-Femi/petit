@@ -52,10 +52,14 @@ class CompressImagesUseCase {
   final ImageCompressor _compressor;
   final MediaSaver _saver;
 
+  /// [concurrency] is how many images are compressed at the same time. With
+  /// more than one, progress reports "images finished so far", and images may
+  /// finish in a different order than they were given.
   Future<ImageBatchResult> call({
     required List<ImageData> images,
     int? globalQuality,
     ImageOptions options = const ImageOptions(),
+    int concurrency = 1,
     required bool Function() isCancelled,
     required void Function(BatchProgress progress) onProgress,
     required void Function(String message) onError,
@@ -64,60 +68,75 @@ class CompressImagesUseCase {
     await _saver.prepare();
 
     final total = images.length;
-    var progress = total == 1 ? 50 : 0;
+    var percent = total == 1 ? 50 : 0;
+    var finished = 0;
     var sizeBefore = 0;
     var sizeAfter = 0;
+    var next = 0;
 
-    for (final (index, image) in images.indexed) {
-      if (isCancelled()) break;
+    void report() => onProgress(BatchProgress(
+          completedSteps: finished,
+          totalSteps: total,
+          percent: percent,
+        ));
 
-      onProgress(BatchProgress(
-        completedSteps: index,
-        totalSteps: total,
-        percent: progress,
-      ));
-
-      final originalSize = await image.imageFile.length();
-      sizeBefore += originalSize;
-
-      if (isCancelled()) break;
-
-      final File compressed;
-      try {
-        compressed = await _compressor.compress(
-          image,
-          quality: globalQuality ?? image.quality,
-          options: options,
-        );
-      } on MediaException catch (e) {
-        sizeBefore -= originalSize;
-        onError(e.message);
-        continue;
-      } catch (e) {
-        sizeBefore -= originalSize;
-        onError("Error compressing image - $e");
-        continue;
-      }
-
-      if (isCancelled()) break;
-
-      try {
-        await _saver.saveImage(compressed.path);
-      } catch (e) {
-        onError("Error ocurred - $e");
-      }
-
-      sizeAfter += await compressed.length();
-
-      if (isCancelled()) break;
-
-      progress = (((index + 1) / total) * 100).round();
-      onProgress(BatchProgress(
-        completedSteps: index + 1,
-        totalSteps: total,
-        percent: progress,
-      ));
+    void finishOne() {
+      finished++;
+      percent = ((finished / total) * 100).round();
+      report();
     }
+
+    // Each worker takes the next image, compresses and saves it, and repeats.
+    // Everything between two awaits runs without interruption, so the shared
+    // counters need no locking.
+    Future<void> worker() async {
+      while (!isCancelled() && next < total) {
+        final image = images[next++];
+
+        report();
+
+        final originalSize = await image.imageFile.length();
+        sizeBefore += originalSize;
+
+        if (isCancelled()) return;
+
+        final File compressed;
+        try {
+          compressed = await _compressor.compress(
+            image,
+            quality: globalQuality ?? image.quality,
+            options: options,
+          );
+        } on MediaException catch (e) {
+          sizeBefore -= originalSize;
+          onError(e.message);
+          finishOne();
+          continue;
+        } catch (e) {
+          sizeBefore -= originalSize;
+          onError("Error compressing image - $e");
+          finishOne();
+          continue;
+        }
+
+        if (isCancelled()) return;
+
+        try {
+          await _saver.saveImage(compressed.path);
+        } catch (e) {
+          onError("Error ocurred - $e");
+        }
+
+        sizeAfter += await compressed.length();
+
+        if (isCancelled()) return;
+
+        finishOne();
+      }
+    }
+
+    final workers = concurrency.clamp(1, total < 1 ? 1 : total).toInt();
+    await Future.wait([for (var i = 0; i < workers; i++) worker()]);
 
     return ImageBatchResult(
       originalBytes: sizeBefore,

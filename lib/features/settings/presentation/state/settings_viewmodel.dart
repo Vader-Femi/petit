@@ -42,6 +42,9 @@ class SettingsViewModel extends Notifier<AppSettings> {
   void setVideoTargetSizeMb(int value) => _apply(state.copyWith(
       videoTargetSizeMb: value.clamp(1, kMaxTargetSizeMb).toInt()));
 
+  void setVideoFastEncoding(bool value) =>
+      _apply(state.copyWith(videoFastEncoding: value));
+
   void resetToDefaults() => _apply(const AppSettings());
 
   void _apply(AppSettings next) {

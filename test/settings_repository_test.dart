@@ -20,6 +20,7 @@ void main() {
         'settings_video_resolution': 'p720',
         'settings_video_preset': 2,
         'settings_video_target_size_mb': 50,
+        'settings_video_fast_encoding': true,
       });
 
       expect(
@@ -33,6 +34,7 @@ void main() {
             videoResolution: VideoResolution.p720,
             videoPresetIndex: 2,
             videoTargetSizeMb: 50,
+            videoFastEncoding: true,
           ));
     });
 
@@ -58,6 +60,7 @@ void main() {
       final s = settingsFromMap({
         'settings_image_quality': 'high',
         'settings_keep_transparency': 1,
+        'settings_video_fast_encoding': 'yes',
         'settings_video_resolution': '4k',
       });
 

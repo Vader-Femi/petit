@@ -16,6 +16,7 @@ class AppSettings {
     this.videoResolution = VideoResolution.original,
     this.videoPresetIndex = 1,
     this.videoTargetSizeMb = 25,
+    this.videoFastEncoding = false,
   });
 
   /// Highest valid index of the encoding speed choices (fast, balanced, slow).
@@ -37,6 +38,9 @@ class AppSettings {
   final int videoPresetIndex;
   final int videoTargetSizeMb;
 
+  /// Use the device's video hardware when it can (faster, somewhat bigger).
+  final bool videoFastEncoding;
+
   ImageOptions get imageOptions => ImageOptions(
         keepTransparency: keepTransparency,
         removeLocation: removeLocation,
@@ -51,6 +55,7 @@ class AppSettings {
     VideoResolution? videoResolution,
     int? videoPresetIndex,
     int? videoTargetSizeMb,
+    bool? videoFastEncoding,
   }) {
     return AppSettings(
       imageQuality: imageQuality ?? this.imageQuality,
@@ -61,6 +66,7 @@ class AppSettings {
       videoResolution: videoResolution ?? this.videoResolution,
       videoPresetIndex: videoPresetIndex ?? this.videoPresetIndex,
       videoTargetSizeMb: videoTargetSizeMb ?? this.videoTargetSizeMb,
+      videoFastEncoding: videoFastEncoding ?? this.videoFastEncoding,
     );
   }
 
@@ -75,7 +81,8 @@ class AppSettings {
           other.videoQuality == videoQuality &&
           other.videoResolution == videoResolution &&
           other.videoPresetIndex == videoPresetIndex &&
-          other.videoTargetSizeMb == videoTargetSizeMb;
+          other.videoTargetSizeMb == videoTargetSizeMb &&
+          other.videoFastEncoding == videoFastEncoding;
 
   @override
   int get hashCode => Object.hash(
@@ -87,5 +94,6 @@ class AppSettings {
         videoResolution,
         videoPresetIndex,
         videoTargetSizeMb,
+        videoFastEncoding,
       );
 }

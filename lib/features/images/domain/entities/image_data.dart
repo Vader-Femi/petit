@@ -10,11 +10,16 @@ class ImageData {
   final int pixelHeight;
   final int quality;
 
+  /// A copy Flutter can draw, for formats it cannot decode (HEIC on desktop).
+  /// Null when [imageFile] can be shown as it is.
+  final File? previewFile;
+
   const ImageData({
     required this.imageFile,
     required this.pixelWidth,
     required this.pixelHeight,
     required this.quality,
+    this.previewFile,
   });
 
   ImageData copyWith({
@@ -22,12 +27,14 @@ class ImageData {
     int? pixelWidth,
     int? pixelHeight,
     int? quality,
+    File? previewFile,
   }) {
     return ImageData(
       imageFile: imageFile ?? this.imageFile,
       pixelWidth: pixelWidth ?? this.pixelWidth,
       pixelHeight: pixelHeight ?? this.pixelHeight,
       quality: quality ?? this.quality,
+      previewFile: previewFile ?? this.previewFile,
     );
   }
 
@@ -38,8 +45,9 @@ class ImageData {
           other.imageFile == imageFile &&
           other.pixelHeight == pixelHeight &&
           other.pixelWidth == pixelWidth &&
-          other.quality == quality;
+          other.quality == quality &&
+          other.previewFile == previewFile;
 
   @override
-  int get hashCode => Object.hash(imageFile, pixelHeight, pixelWidth, quality);
+  int get hashCode => Object.hash(imageFile, pixelHeight, pixelWidth, quality, previewFile);
 }

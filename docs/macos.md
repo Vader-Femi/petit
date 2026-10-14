@@ -45,11 +45,10 @@ bookmarks would remove that extra step.)
 
 ### HEIC photos
 
-HEIC is what iPhones and Macs save by default. Flutter and the bundled FFmpeg cannot read it, so on
-macOS the app asks the system to decode it: `ImageConverter` in `MainFlutterWindow.swift` (ImageIO)
-converts the HEIC to a JPEG, which is then compressed like any other image. Windows and Linux still
-report that HEIC is not supported. The carousel shows a placeholder instead of a preview for HEIC
-files, because Flutter cannot draw them.
+HEIC is what iPhones and Macs save by default. Flutter cannot draw it, so `DesktopHeifConverter` asks the
+system to decode it (`ImageConverter` in `MainFlutterWindow.swift`, ImageIO) and falls back to the bundled
+FFmpeg, which also reads HEIC. The result is a JPEG that is compressed like any other image, and a
+smaller JPEG copy is shown in the carousel as the preview.
 
 ### Bundle identifier
 

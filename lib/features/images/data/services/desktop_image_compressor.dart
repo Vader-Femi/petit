@@ -1,9 +1,7 @@
 import 'dart:io';
 import 'dart:isolate';
 
-import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
-import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_size_getter/file_input.dart';
@@ -17,21 +15,21 @@ import 'package:petit/core/utils/work_dir.dart';
 import 'package:petit/features/images/domain/entities/image_data.dart';
 import 'package:petit/features/images/domain/entities/image_options.dart';
 import 'package:petit/features/images/domain/entities/image_size.dart';
-import 'package:petit/features/images/data/services/macos_image_converter.dart';
+import 'package:petit/features/images/data/services/desktop_heif_converter.dart';
 import 'package:petit/features/images/domain/services/image_compressor.dart';
 
 /// Desktop implementation. JPEG, PNG and WebP are re-encoded as JPEG in pure
 /// Dart (in a background isolate) so `quality` means the same thing as on
 /// mobile. A PNG or WebP that really has transparent pixels stays a (lossless)
 /// PNG instead, because JPEG cannot hold transparency and the pure Dart
-/// package cannot write WebP. HEIC/HEIF is decoded by macOS itself on macOS,
-/// and attempted through FFmpeg elsewhere, with a clear error if the bundled
-/// FFmpeg cannot read it.
+/// package cannot write WebP. JPEGs are written with 4:2:0 chroma, as phones
+/// do. HEIC/HEIF is converted first by [DesktopHeifConverter] (ImageIO on
+/// macOS, the bundled FFmpeg everywhere), with a clear error if that fails.
 class DesktopImageCompressor implements ImageCompressor {
-  DesktopImageCompressor({MacosImageConverter? macosConverter})
-      : _macosConverter = macosConverter ?? MacosImageConverter();
+  DesktopImageCompressor({DesktopHeifConverter? heifConverter})
+      : _heif = heifConverter ?? DesktopHeifConverter();
 
-  final MacosImageConverter _macosConverter;
+  final DesktopHeifConverter _heif;
 
   @override
   Future<ImageSize> readSize(String path) async {
@@ -117,25 +115,9 @@ class DesktopImageCompressor implements ImageCompressor {
   Future<String> _convertHeifToJpeg(
       String source, Directory jobDir, String baseName) async {
     final out = p.join(jobDir.path, '$baseName.jpg');
-
-    // macOS reads HEIC natively; FFmpeg cannot.
-    if (PlatformInfo.isMacOS &&
-        await _macosConverter.convertToJpeg(source, out)) {
-      return out;
-    }
-
-    try {
-      final session = await FFmpegKit.executeWithArguments(
-          ['-y', '-i', source, '-frames:v', '1', '-q:v', '2', out]);
-      final code = await session.getReturnCode();
-      if (ReturnCode.isSuccess(code) && await File(out).exists()) {
-        return out;
-      }
-    } catch (e) {
-      debugPrint('HEIC conversion failed: $e');
-    }
+    if (await _heif.toJpeg(source, out)) return out;
     throw const MediaException(
-        "HEIC/HEIF isn't supported on this platform yet. Convert the image to JPG or PNG first.");
+        "This HEIC/HEIF photo could not be read. Convert it to JPG or PNG first.");
   }
 }
 
@@ -174,6 +156,11 @@ Future<String> _reencode(
   final flat = transparent ? flattenOnWhite(upright) : upright;
   final outPath = '$outBase.jpg';
   await File(outPath)
-      .writeAsBytes(img.encodeJpg(flat, quality: quality.clamp(1, 100).toInt()));
+      .writeAsBytes(img.encodeJpg(flat,
+          quality: quality.clamp(1, 100).toInt(),
+          // 4:2:0, like the phone encoders: a quarter of the colour detail
+          // the eye cannot see, and noticeably smaller files than the 4:4:4
+          // this package writes by default.
+          chroma: img.JpegChroma.yuv420));
   return outPath;
 }

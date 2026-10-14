@@ -25,7 +25,7 @@ Platform implementations (chosen in `service_locator.dart`)
 |---|---|---|
 | `MediaPicker` | `ImagePickerMediaPicker` (image_picker) | `FileSelectorMediaPicker` (OS file dialog) |
 | `MediaSaver` | `GalleryMediaSaver` (gallery) | `FolderMediaSaver` (the remembered "Save to" folder, else a dialog per job) |
-| `ImageCompressor` | `FlutterImageCompressor` (+ HEIC) | `DesktopImageCompressor` (`image` package in an isolate; HEIC via macOS ImageIO on macOS, FFmpeg best effort elsewhere) |
+| `ImageCompressor` | `FlutterImageCompressor` (+ HEIC) | `DesktopImageCompressor` (`image` package in an isolate; HEIC through `DesktopHeifConverter`: macOS ImageIO, then the bundled FFmpeg) |
 | `VideoCompressor` | `FfmpegVideoCompressor` | same (FFmpeg Kit supports all five platforms) |
 | `VideoThumbnailer` | not used | `FfmpegVideoThumbnailer` (Windows, Linux preview) |
 
@@ -216,3 +216,44 @@ compression itself still runs in Flutter; the service only keeps the process ali
   own photos and videos, which continues when they leave the app, and that the notification shows
   progress.
 - Needs `compileSdk` 35 or newer (the `mediaProcessing` manifest value); Flutter's current default is.
+
+## Desktop speed and size
+
+- **Smaller JPEGs.** The desktop encoder now writes JPEG with 4:2:0 chroma, like the phone encoders. The
+  `image` package defaults to 4:4:4, which costs noticeably more bytes for no visible gain; a test
+  checks the saving.
+- **Several images at once.** `CompressImagesUseCase` takes a `concurrency`. Each worker takes the next
+  image, compresses and saves it. Desktop uses half the cores, at most 4 (`PlatformInfo.imageConcurrency`;
+  every image is decoded in full, so memory is the limit); phones stay at 1 because the native encoder
+  already uses several cores. With one worker the progress events are exactly what they were; with more,
+  progress counts finished images and they can finish out of order. Cancelling stops new images from
+  starting.
+- **HEIC on Windows and Linux.** No libheif is needed: the bundled FFmpeg (8.1.2 on every platform in
+  `ffmpeg_kit_flutter_new` 4.6.x) reads HEIC itself, tile grids included since 7.1, and the code already
+  fell back to it. `DesktopHeifConverter` is that path, shared by the compressor and by
+  `DesktopImagePreviewer`, which makes a 1600 px JPEG so the carousel can show a HEIC photo (Flutter
+  cannot draw them on desktop). `ImageData.previewFile` carries it; phones use `NoopImagePreviewer`.
+
+## Fast encoding (video hardware)
+
+The normal encoders (libx264, libx265) run on the CPU and give the smallest files. Most machines also
+have video hardware (VideoToolbox on Apple, MediaCodec on Android, NVENC/QSV/AMF/Media Foundation on
+Windows, NVENC on Linux) that is several times faster but makes somewhat bigger files at the same
+quality. "Fast encoding" lets the user pick that trade; it is off by default (Settings has the default).
+
+- **Detection.** `FfmpegVideoCompressor.hardwareEncoderFor` tries the platform's candidate encoders
+  (`hardwareEncoderCandidates`) by encoding one second of test video and throwing it away. An encoder
+  can be built into FFmpeg without the hardware being there, so only a real encode counts. The answer is
+  remembered per codec for the run. The Videos tab runs the check in the background after a video loads
+  and shows the switch only if something works (VP9 has no hardware encoder, so no switch).
+- **Bitrate.** Hardware encoders have no CRF and no x264 presets, only a bitrate. The quality level is
+  turned into one by `fastEncodingBitrateKbps`: 0.1 bit per pixel at CRF 23, halved every 6 CRF steps,
+  65% of that for HEVC, scaled with the output resolution, and never above 90% of the source's own
+  bitrate. It is an estimate; the point is the right area, not an exact size. A target size uses the
+  bitrate it already worked out.
+- **Safety net.** If the hardware encode fails part way (driver, format, size), `start` deletes the
+  half-written file (FFmpeg will not overwrite it) and runs the normal encode, so asking for hardware
+  can make a job faster but not fail. The result is still dropped in favour of the original if it is not
+  smaller.
+- Presets belong to the software encoder, so the "Encoding speed" box is hidden while Fast encoding is
+  on.

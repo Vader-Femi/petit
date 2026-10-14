@@ -125,6 +125,18 @@ class FakeVideoCompressor implements VideoCompressor {
   void Function(int percent)? progressCallback;
   int? usedBitrateKbps;
   int? usedMaxShortSide;
+  String? usedHardwareEncoder;
+  int? usedHardwareBitrateKbps;
+
+  /// The hardware encoder this "machine" has, or null for none.
+  String? hardwareEncoder;
+  int hardwareChecks = 0;
+
+  @override
+  Future<String?> hardwareEncoderFor(String videoCodec) async {
+    hardwareChecks++;
+    return hardwareEncoder;
+  }
 
   @override
   Future<VideoData> probe(File video) async => VideoData(
@@ -146,10 +158,14 @@ class FakeVideoCompressor implements VideoCompressor {
     required void Function(int percent) onProgress,
     int? videoBitrateKbps,
     int? maxShortSide,
+    String? hardwareEncoder,
+    int? hardwareBitrateKbps,
   }) async {
     progressCallback = onProgress;
     usedBitrateKbps = videoBitrateKbps;
     usedMaxShortSide = maxShortSide;
+    usedHardwareEncoder = hardwareEncoder;
+    usedHardwareBitrateKbps = hardwareBitrateKbps;
     return lastTask = FakeVideoTask();
   }
 }
@@ -273,6 +289,8 @@ class Harness {
         initialSettingsProvider.overrideWithValue(settings),
         settingsRepositoryProvider.overrideWithValue(settingsRepository),
         backgroundKeepAliveProvider.overrideWithValue(keepAlive),
+        // One at a time, so the order of events is the same on every machine.
+        imageConcurrencyProvider.overrideWithValue(1),
         mediaPickerProvider.overrideWithValue(picker),
         workspaceProvider.overrideWithValue(workspace),
         readImagesUseCaseProvider

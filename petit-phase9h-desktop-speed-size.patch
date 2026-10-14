@@ -1,0 +1,1010 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 2afd6bf..678878b 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -54,6 +54,7 @@ jobs:
+           test/compression_progress_view_test.dart
+           test/onboarding_test.dart
+           test/job_keep_alive_test.dart
++          test/heif_arguments_test.dart
+ 
+   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
+   # it runs on demand and for pull requests into the production branch.
+diff --git a/docs/architecture.md b/docs/architecture.md
+index b99367b..e60dd60 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -25,7 +25,7 @@ Platform implementations (chosen in `service_locator.dart`)
+ |---|---|---|
+ | `MediaPicker` | `ImagePickerMediaPicker` (image_picker) | `FileSelectorMediaPicker` (OS file dialog) |
+ | `MediaSaver` | `GalleryMediaSaver` (gallery) | `FolderMediaSaver` (the remembered "Save to" folder, else a dialog per job) |
+-| `ImageCompressor` | `FlutterImageCompressor` (+ HEIC) | `DesktopImageCompressor` (`image` package in an isolate; HEIC via macOS ImageIO on macOS, FFmpeg best effort elsewhere) |
++| `ImageCompressor` | `FlutterImageCompressor` (+ HEIC) | `DesktopImageCompressor` (`image` package in an isolate; HEIC through `DesktopHeifConverter`: macOS ImageIO, then the bundled FFmpeg) |
+ | `VideoCompressor` | `FfmpegVideoCompressor` | same (FFmpeg Kit supports all five platforms) |
+ | `VideoThumbnailer` | not used | `FfmpegVideoThumbnailer` (Windows, Linux preview) |
+ 
+@@ -216,3 +216,20 @@ compression itself still runs in Flutter; the service only keeps the process ali
+   own photos and videos, which continues when they leave the app, and that the notification shows
+   progress.
+ - Needs `compileSdk` 35 or newer (the `mediaProcessing` manifest value); Flutter's current default is.
++
++## Desktop speed and size
++
++- **Smaller JPEGs.** The desktop encoder now writes JPEG with 4:2:0 chroma, like the phone encoders. The
++  `image` package defaults to 4:4:4, which costs noticeably more bytes for no visible gain; a test
++  checks the saving.
++- **Several images at once.** `CompressImagesUseCase` takes a `concurrency`. Each worker takes the next
++  image, compresses and saves it. Desktop uses half the cores, at most 4 (`PlatformInfo.imageConcurrency`;
++  every image is decoded in full, so memory is the limit); phones stay at 1 because the native encoder
++  already uses several cores. With one worker the progress events are exactly what they were; with more,
++  progress counts finished images and they can finish out of order. Cancelling stops new images from
++  starting.
++- **HEIC on Windows and Linux.** No libheif is needed: the bundled FFmpeg (8.1.2 on every platform in
++  `ffmpeg_kit_flutter_new` 4.6.x) reads HEIC itself, tile grids included since 7.1, and the code already
++  fell back to it. `DesktopHeifConverter` is that path, shared by the compressor and by
++  `DesktopImagePreviewer`, which makes a 1600 px JPEG so the carousel can show a HEIC photo (Flutter
++  cannot draw them on desktop). `ImageData.previewFile` carries it; phones use `NoopImagePreviewer`.
+diff --git a/docs/macos.md b/docs/macos.md
+index 93171d9..c544b08 100644
+--- a/docs/macos.md
++++ b/docs/macos.md
+@@ -45,11 +45,10 @@ bookmarks would remove that extra step.)
+ 
+ ### HEIC photos
+ 
+-HEIC is what iPhones and Macs save by default. Flutter and the bundled FFmpeg cannot read it, so on
+-macOS the app asks the system to decode it: `ImageConverter` in `MainFlutterWindow.swift` (ImageIO)
+-converts the HEIC to a JPEG, which is then compressed like any other image. Windows and Linux still
+-report that HEIC is not supported. The carousel shows a placeholder instead of a preview for HEIC
+-files, because Flutter cannot draw them.
++HEIC is what iPhones and Macs save by default. Flutter cannot draw it, so `DesktopHeifConverter` asks the
++system to decode it (`ImageConverter` in `MainFlutterWindow.swift`, ImageIO) and falls back to the bundled
++FFmpeg, which also reads HEIC. The result is a JPEG that is compressed like any other image, and a
++smaller JPEG copy is shown in the carousel as the preview.
+ 
+ ### Bundle identifier
+ 
+diff --git a/lib/core/di/providers.dart b/lib/core/di/providers.dart
+index 6b52394..57fa280 100644
+--- a/lib/core/di/providers.dart
++++ b/lib/core/di/providers.dart
+@@ -9,6 +9,7 @@ import 'package:petit/features/images/domain/usecases/compress_images.dart';
+ import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
+ import 'package:petit/features/images/domain/usecases/read_images.dart';
+ import 'package:petit/common/domain/job_keep_alive.dart';
++import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:petit/common/domain/services/background_keep_alive.dart';
+ import 'package:petit/features/onboarding/domain/services/onboarding_store.dart';
+ import 'package:petit/features/settings/domain/entities/app_settings.dart';
+@@ -57,6 +58,10 @@ final initialOnboardingDoneProvider = Provider<bool>((ref) =>
+     !sl.isRegistered<bool>(instanceName: kOnboardingDoneInstance) ||
+     sl<bool>(instanceName: kOnboardingDoneInstance));
+ 
++/// How many images are compressed at once (see [PlatformInfo.imageConcurrency]).
++final imageConcurrencyProvider =
++    Provider<int>((ref) => PlatformInfo.imageConcurrency);
++
+ final readImagesUseCaseProvider =
+     Provider<ReadImagesUseCase>((ref) => sl<ReadImagesUseCase>());
+ 
+diff --git a/lib/core/utils/platform_utils.dart b/lib/core/utils/platform_utils.dart
+index bdcf20b..c51ac82 100644
+--- a/lib/core/utils/platform_utils.dart
++++ b/lib/core/utils/platform_utils.dart
+@@ -16,6 +16,13 @@ class PlatformInfo {
+   static bool get isMobile => isAndroid || isIOS;
+   static bool get isDesktop => isWindows || isMacOS || isLinux;
+ 
++  /// How many images to compress at the same time. Desktop computers have the
++  /// cores and the memory for a few (each one is decoded in full), while phones
++  /// already use several cores inside the native encoder and have little spare
++  /// memory, so they do one at a time.
++  static int get imageConcurrency =>
++      isDesktop ? (Platform.numberOfProcessors ~/ 2).clamp(1, 4).toInt() : 1;
++
+   /// Firebase Crashlytics has no Windows or Linux implementation.
+   static bool get supportsCrashlytics => !(isWindows || isLinux);
+ 
+diff --git a/lib/features/images/data/services/desktop_heif_converter.dart b/lib/features/images/data/services/desktop_heif_converter.dart
+new file mode 100644
+index 0000000..b3aec46
+--- /dev/null
++++ b/lib/features/images/data/services/desktop_heif_converter.dart
+@@ -0,0 +1,51 @@
++import 'dart:io';
++
++import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
++import 'package:ffmpeg_kit_flutter_new/return_code.dart';
++import 'package:flutter/foundation.dart';
++import 'package:petit/core/utils/platform_utils.dart';
++import 'package:petit/features/images/data/services/heif_arguments.dart';
++import 'package:petit/features/images/data/services/macos_image_converter.dart';
++
++/// Turns HEIC/HEIF photos (what iPhones save) into JPEG on desktop, where
++/// Flutter and the `image` package cannot read them.
++///
++/// macOS asks the system (ImageIO). Everywhere, and as a fallback on macOS,
++/// the bundled FFmpeg is used: FFmpeg 7.1 and newer reads HEIC itself, and the
++/// FFmpeg Kit version this app uses bundles 8.1.2 on every platform, so no
++/// extra native library (such as libheif) is needed.
++class DesktopHeifConverter {
++  DesktopHeifConverter({MacosImageConverter? macosConverter})
++      : _macosConverter = macosConverter ?? MacosImageConverter();
++
++  final MacosImageConverter _macosConverter;
++
++  /// Writes a JPEG of [source] to [outPath]. With [maxLongSide] the picture
++  /// is made smaller (the macOS converter always keeps full size). Returns
++  /// false if the file could not be read.
++  Future<bool> toJpeg(
++    String source,
++    String outPath, {
++    int? maxLongSide,
++  }) async {
++    if (PlatformInfo.isMacOS &&
++        await _macosConverter.convertToJpeg(source, outPath)) {
++      return true;
++    }
++
++    try {
++      final session = await FFmpegKit.executeWithArguments(
++        buildHeifToJpegArguments(
++          inputPath: source,
++          outputPath: outPath,
++          maxLongSide: maxLongSide,
++        ),
++      );
++      final code = await session.getReturnCode();
++      return ReturnCode.isSuccess(code) && await File(outPath).exists();
++    } catch (e) {
++      debugPrint('HEIC conversion failed: $e');
++      return false;
++    }
++  }
++}
+diff --git a/lib/features/images/data/services/desktop_image_compressor.dart b/lib/features/images/data/services/desktop_image_compressor.dart
+index 01a5e95..42be467 100644
+--- a/lib/features/images/data/services/desktop_image_compressor.dart
++++ b/lib/features/images/data/services/desktop_image_compressor.dart
+@@ -1,9 +1,7 @@
+ import 'dart:io';
+ import 'dart:isolate';
+ 
+-import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
+ import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
+-import 'package:ffmpeg_kit_flutter_new/return_code.dart';
+ import 'package:flutter/foundation.dart';
+ import 'package:image/image.dart' as img;
+ import 'package:image_size_getter/file_input.dart';
+@@ -17,21 +15,21 @@ import 'package:petit/core/utils/work_dir.dart';
+ import 'package:petit/features/images/domain/entities/image_data.dart';
+ import 'package:petit/features/images/domain/entities/image_options.dart';
+ import 'package:petit/features/images/domain/entities/image_size.dart';
+-import 'package:petit/features/images/data/services/macos_image_converter.dart';
++import 'package:petit/features/images/data/services/desktop_heif_converter.dart';
+ import 'package:petit/features/images/domain/services/image_compressor.dart';
+ 
+ /// Desktop implementation. JPEG, PNG and WebP are re-encoded as JPEG in pure
+ /// Dart (in a background isolate) so `quality` means the same thing as on
+ /// mobile. A PNG or WebP that really has transparent pixels stays a (lossless)
+ /// PNG instead, because JPEG cannot hold transparency and the pure Dart
+-/// package cannot write WebP. HEIC/HEIF is decoded by macOS itself on macOS,
+-/// and attempted through FFmpeg elsewhere, with a clear error if the bundled
+-/// FFmpeg cannot read it.
++/// package cannot write WebP. JPEGs are written with 4:2:0 chroma, as phones
++/// do. HEIC/HEIF is converted first by [DesktopHeifConverter] (ImageIO on
++/// macOS, the bundled FFmpeg everywhere), with a clear error if that fails.
+ class DesktopImageCompressor implements ImageCompressor {
+-  DesktopImageCompressor({MacosImageConverter? macosConverter})
+-      : _macosConverter = macosConverter ?? MacosImageConverter();
++  DesktopImageCompressor({DesktopHeifConverter? heifConverter})
++      : _heif = heifConverter ?? DesktopHeifConverter();
+ 
+-  final MacosImageConverter _macosConverter;
++  final DesktopHeifConverter _heif;
+ 
+   @override
+   Future<ImageSize> readSize(String path) async {
+@@ -117,25 +115,9 @@ class DesktopImageCompressor implements ImageCompressor {
+   Future<String> _convertHeifToJpeg(
+       String source, Directory jobDir, String baseName) async {
+     final out = p.join(jobDir.path, '$baseName.jpg');
+-
+-    // macOS reads HEIC natively; FFmpeg cannot.
+-    if (PlatformInfo.isMacOS &&
+-        await _macosConverter.convertToJpeg(source, out)) {
+-      return out;
+-    }
+-
+-    try {
+-      final session = await FFmpegKit.executeWithArguments(
+-          ['-y', '-i', source, '-frames:v', '1', '-q:v', '2', out]);
+-      final code = await session.getReturnCode();
+-      if (ReturnCode.isSuccess(code) && await File(out).exists()) {
+-        return out;
+-      }
+-    } catch (e) {
+-      debugPrint('HEIC conversion failed: $e');
+-    }
++    if (await _heif.toJpeg(source, out)) return out;
+     throw const MediaException(
+-        "HEIC/HEIF isn't supported on this platform yet. Convert the image to JPG or PNG first.");
++        "This HEIC/HEIF photo could not be read. Convert it to JPG or PNG first.");
+   }
+ }
+ 
+@@ -174,6 +156,11 @@ Future<String> _reencode(
+   final flat = transparent ? flattenOnWhite(upright) : upright;
+   final outPath = '$outBase.jpg';
+   await File(outPath)
+-      .writeAsBytes(img.encodeJpg(flat, quality: quality.clamp(1, 100).toInt()));
++      .writeAsBytes(img.encodeJpg(flat,
++          quality: quality.clamp(1, 100).toInt(),
++          // 4:2:0, like the phone encoders: a quarter of the colour detail
++          // the eye cannot see, and noticeably smaller files than the 4:4:4
++          // this package writes by default.
++          chroma: img.JpegChroma.yuv420));
+   return outPath;
+ }
+diff --git a/lib/features/images/data/services/desktop_image_previewer.dart b/lib/features/images/data/services/desktop_image_previewer.dart
+new file mode 100644
+index 0000000..2262e92
+--- /dev/null
++++ b/lib/features/images/data/services/desktop_image_previewer.dart
+@@ -0,0 +1,32 @@
++import 'dart:io';
++
++import 'package:path/path.dart' as p;
++import 'package:petit/core/utils/media_formats.dart';
++import 'package:petit/core/utils/work_dir.dart';
++import 'package:petit/features/images/data/services/desktop_heif_converter.dart';
++import 'package:petit/features/images/domain/services/image_previewer.dart';
++
++/// HEIC previews on desktop: a screen-sized JPEG next to the work files.
++class DesktopImagePreviewer implements ImagePreviewer {
++  DesktopImagePreviewer(this._converter);
++
++  /// Big enough for the carousel on a large monitor.
++  static const maxLongSide = 1600;
++
++  final DesktopHeifConverter _converter;
++
++  @override
++  Future<File?> createPreview(String path) async {
++    if (!isHeif(path)) return null;
++
++    try {
++      final jobDir = await createJobDir();
++      final out = p.join(jobDir.path, '${p.basenameWithoutExtension(path)}_preview.jpg');
++      return await _converter.toJpeg(path, out, maxLongSide: maxLongSide)
++          ? File(out)
++          : null;
++    } catch (_) {
++      return null;
++    }
++  }
++}
+diff --git a/lib/features/images/data/services/heif_arguments.dart b/lib/features/images/data/services/heif_arguments.dart
+new file mode 100644
+index 0000000..535139b
+--- /dev/null
++++ b/lib/features/images/data/services/heif_arguments.dart
+@@ -0,0 +1,30 @@
++// Pure Dart (no plugins), so the command line can be unit tested.
++
++/// The FFmpeg command line (without the program name) that turns the first
++/// image of a HEIC/HEIF file into a high quality JPEG.
++///
++/// With [maxLongSide] the picture is scaled down so its longer side has at
++/// most that many pixels (never enlarged), which is what a preview needs.
++/// FFmpeg applies the file's rotation itself. Commas are escaped for FFmpeg's
++/// filter syntax.
++List<String> buildHeifToJpegArguments({
++  required String inputPath,
++  required String outputPath,
++  int? maxLongSide,
++}) {
++  return [
++    '-y',
++    '-i',
++    inputPath,
++    '-frames:v',
++    '1',
++    if (maxLongSide != null) ...[
++      '-vf',
++      'scale=w=if(gt(iw\\,ih)\\,min(iw\\,$maxLongSide)\\,-2)'
++          ':h=if(gt(iw\\,ih)\\,-2\\,min(ih\\,$maxLongSide))',
++    ],
++    '-q:v',
++    '2',
++    outputPath,
++  ];
++}
+diff --git a/lib/features/images/data/services/noop_image_previewer.dart b/lib/features/images/data/services/noop_image_previewer.dart
+new file mode 100644
+index 0000000..0e8ab73
+--- /dev/null
++++ b/lib/features/images/data/services/noop_image_previewer.dart
+@@ -0,0 +1,9 @@
++import 'dart:io';
++
++import 'package:petit/features/images/domain/services/image_previewer.dart';
++
++/// Phones can draw HEIC themselves, so the original is shown as it is.
++class NoopImagePreviewer implements ImagePreviewer {
++  @override
++  Future<File?> createPreview(String path) async => null;
++}
+diff --git a/lib/features/images/domain/entities/image_data.dart b/lib/features/images/domain/entities/image_data.dart
+index 46325d4..9989272 100644
+--- a/lib/features/images/domain/entities/image_data.dart
++++ b/lib/features/images/domain/entities/image_data.dart
+@@ -10,11 +10,16 @@ class ImageData {
+   final int pixelHeight;
+   final int quality;
+ 
++  /// A copy Flutter can draw, for formats it cannot decode (HEIC on desktop).
++  /// Null when [imageFile] can be shown as it is.
++  final File? previewFile;
++
+   const ImageData({
+     required this.imageFile,
+     required this.pixelWidth,
+     required this.pixelHeight,
+     required this.quality,
++    this.previewFile,
+   });
+ 
+   ImageData copyWith({
+@@ -22,12 +27,14 @@ class ImageData {
+     int? pixelWidth,
+     int? pixelHeight,
+     int? quality,
++    File? previewFile,
+   }) {
+     return ImageData(
+       imageFile: imageFile ?? this.imageFile,
+       pixelWidth: pixelWidth ?? this.pixelWidth,
+       pixelHeight: pixelHeight ?? this.pixelHeight,
+       quality: quality ?? this.quality,
++      previewFile: previewFile ?? this.previewFile,
+     );
+   }
+ 
+@@ -38,8 +45,9 @@ class ImageData {
+           other.imageFile == imageFile &&
+           other.pixelHeight == pixelHeight &&
+           other.pixelWidth == pixelWidth &&
+-          other.quality == quality;
++          other.quality == quality &&
++          other.previewFile == previewFile;
+ 
+   @override
+-  int get hashCode => Object.hash(imageFile, pixelHeight, pixelWidth, quality);
++  int get hashCode => Object.hash(imageFile, pixelHeight, pixelWidth, quality, previewFile);
+ }
+diff --git a/lib/features/images/domain/services/image_previewer.dart b/lib/features/images/domain/services/image_previewer.dart
+new file mode 100644
+index 0000000..ed79608
+--- /dev/null
++++ b/lib/features/images/domain/services/image_previewer.dart
+@@ -0,0 +1,9 @@
++import 'dart:io';
++
++/// Makes a picture Flutter can draw for images it cannot decode itself, such
++/// as HEIC on desktop.
++abstract interface class ImagePreviewer {
++  /// A displayable copy of the image at [path], or null when the original can
++  /// be shown as it is, or when no preview could be made.
++  Future<File?> createPreview(String path);
++}
+diff --git a/lib/features/images/domain/usecases/compress_images.dart b/lib/features/images/domain/usecases/compress_images.dart
+index 09987aa..cbef2bd 100644
+--- a/lib/features/images/domain/usecases/compress_images.dart
++++ b/lib/features/images/domain/usecases/compress_images.dart
+@@ -52,10 +52,14 @@ class CompressImagesUseCase {
+   final ImageCompressor _compressor;
+   final MediaSaver _saver;
+ 
++  /// [concurrency] is how many images are compressed at the same time. With
++  /// more than one, progress reports "images finished so far", and images may
++  /// finish in a different order than they were given.
+   Future<ImageBatchResult> call({
+     required List<ImageData> images,
+     int? globalQuality,
+     ImageOptions options = const ImageOptions(),
++    int concurrency = 1,
+     required bool Function() isCancelled,
+     required void Function(BatchProgress progress) onProgress,
+     required void Function(String message) onError,
+@@ -64,61 +68,76 @@ class CompressImagesUseCase {
+     await _saver.prepare();
+ 
+     final total = images.length;
+-    var progress = total == 1 ? 50 : 0;
++    var percent = total == 1 ? 50 : 0;
++    var finished = 0;
+     var sizeBefore = 0;
+     var sizeAfter = 0;
++    var next = 0;
++
++    void report() => onProgress(BatchProgress(
++          completedSteps: finished,
++          totalSteps: total,
++          percent: percent,
++        ));
++
++    void finishOne() {
++      finished++;
++      percent = ((finished / total) * 100).round();
++      report();
++    }
+ 
+-    for (final (index, image) in images.indexed) {
+-      if (isCancelled()) break;
+-
+-      onProgress(BatchProgress(
+-        completedSteps: index,
+-        totalSteps: total,
+-        percent: progress,
+-      ));
+-
+-      final originalSize = await image.imageFile.length();
+-      sizeBefore += originalSize;
+-
+-      if (isCancelled()) break;
+-
+-      final File compressed;
+-      try {
+-        compressed = await _compressor.compress(
+-          image,
+-          quality: globalQuality ?? image.quality,
+-          options: options,
+-        );
+-      } on MediaException catch (e) {
+-        sizeBefore -= originalSize;
+-        onError(e.message);
+-        continue;
+-      } catch (e) {
+-        sizeBefore -= originalSize;
+-        onError("Error compressing image - $e");
+-        continue;
+-      }
+-
+-      if (isCancelled()) break;
+-
+-      try {
+-        await _saver.saveImage(compressed.path);
+-      } catch (e) {
+-        onError("Error ocurred - $e");
++    // Each worker takes the next image, compresses and saves it, and repeats.
++    // Everything between two awaits runs without interruption, so the shared
++    // counters need no locking.
++    Future<void> worker() async {
++      while (!isCancelled() && next < total) {
++        final image = images[next++];
++
++        report();
++
++        final originalSize = await image.imageFile.length();
++        sizeBefore += originalSize;
++
++        if (isCancelled()) return;
++
++        final File compressed;
++        try {
++          compressed = await _compressor.compress(
++            image,
++            quality: globalQuality ?? image.quality,
++            options: options,
++          );
++        } on MediaException catch (e) {
++          sizeBefore -= originalSize;
++          onError(e.message);
++          finishOne();
++          continue;
++        } catch (e) {
++          sizeBefore -= originalSize;
++          onError("Error compressing image - $e");
++          finishOne();
++          continue;
++        }
++
++        if (isCancelled()) return;
++
++        try {
++          await _saver.saveImage(compressed.path);
++        } catch (e) {
++          onError("Error ocurred - $e");
++        }
++
++        sizeAfter += await compressed.length();
++
++        if (isCancelled()) return;
++
++        finishOne();
+       }
+-
+-      sizeAfter += await compressed.length();
+-
+-      if (isCancelled()) break;
+-
+-      progress = (((index + 1) / total) * 100).round();
+-      onProgress(BatchProgress(
+-        completedSteps: index + 1,
+-        totalSteps: total,
+-        percent: progress,
+-      ));
+     }
+ 
++    final workers = concurrency.clamp(1, total < 1 ? 1 : total).toInt();
++    await Future.wait([for (var i = 0; i < workers; i++) worker()]);
++
+     return ImageBatchResult(
+       originalBytes: sizeBefore,
+       compressedBytes: sizeAfter,
+diff --git a/lib/features/images/domain/usecases/read_images.dart b/lib/features/images/domain/usecases/read_images.dart
+index 4e33975..157e55a 100644
+--- a/lib/features/images/domain/usecases/read_images.dart
++++ b/lib/features/images/domain/usecases/read_images.dart
+@@ -1,13 +1,17 @@
+ import 'dart:io';
+ 
+ import 'package:petit/features/images/domain/entities/image_data.dart';
++import 'package:petit/core/utils/media_formats.dart';
+ import 'package:petit/features/images/domain/services/image_compressor.dart';
++import 'package:petit/features/images/domain/services/image_previewer.dart';
+ 
+-/// Turns file paths (picked or shared) into [ImageData] with their size.
++/// Turns file paths (picked or shared) into [ImageData] with their size, and a
++/// preview where the original cannot be drawn.
+ class ReadImagesUseCase {
+-  ReadImagesUseCase(this._compressor);
++  ReadImagesUseCase(this._compressor, [this._previewer]);
+ 
+   final ImageCompressor _compressor;
++  final ImagePreviewer? _previewer;
+ 
+   static const defaultQuality = 50;
+ 
+@@ -18,11 +22,15 @@ class ReadImagesUseCase {
+     final images = <ImageData>[];
+     for (final path in paths) {
+       final size = await _compressor.readSize(path);
++      // Only formats Flutter may not draw need one (HEIC).
++      final preview =
++          isHeif(path) ? await _previewer?.createPreview(path) : null;
+       images.add(ImageData(
+         imageFile: File(path),
+         pixelWidth: size.width,
+         pixelHeight: size.height,
+         quality: quality,
++        previewFile: preview,
+       ));
+     }
+     return images;
+diff --git a/lib/features/images/presentation/pages/images_page.dart b/lib/features/images/presentation/pages/images_page.dart
+index b216d34..3cb82f6 100644
+--- a/lib/features/images/presentation/pages/images_page.dart
++++ b/lib/features/images/presentation/pages/images_page.dart
+@@ -41,7 +41,8 @@ class _ImagesPageState extends ConsumerState<ImagesPage> {
+             return ClipRRect(
+               borderRadius: BorderRadius.circular(12),
+               child: Image.file(
+-                imageData.imageFile,
++                // A converted copy for formats Flutter cannot draw (HEIC).
++                imageData.previewFile ?? imageData.imageFile,
+                 frameBuilder: (BuildContext context, Widget child, int? frame,
+                     bool? wasSynchronouslyLoaded) {
+                   return AnimatedOpacity(
+diff --git a/lib/features/images/presentation/state/images_viewmodel.dart b/lib/features/images/presentation/state/images_viewmodel.dart
+index d764d98..5a8ceed 100644
+--- a/lib/features/images/presentation/state/images_viewmodel.dart
++++ b/lib/features/images/presentation/state/images_viewmodel.dart
+@@ -297,6 +297,7 @@ class ImagesViewModel extends Notifier<ImagesState> {
+         images: List.of(state.pickedImages),
+         globalQuality: state.globalQuality,
+         options: state.options,
++        concurrency: ref.read(imageConcurrencyProvider),
+         isCancelled: () => completer.isCanceled,
+         onProgress: (progress) {
+           eta.update(progress.completedSteps / progress.totalSteps);
+diff --git a/lib/service_locator.dart b/lib/service_locator.dart
+index 3926b92..6aebbd7 100644
+--- a/lib/service_locator.dart
++++ b/lib/service_locator.dart
+@@ -15,9 +15,13 @@ import 'package:petit/common/domain/services/media_saver.dart';
+ import 'package:petit/common/domain/services/output_folder_preference.dart';
+ import 'package:petit/common/domain/services/workspace.dart';
+ import 'package:petit/core/utils/platform_utils.dart';
++import 'package:petit/features/images/data/services/desktop_heif_converter.dart';
+ import 'package:petit/features/images/data/services/desktop_image_compressor.dart';
++import 'package:petit/features/images/data/services/desktop_image_previewer.dart';
+ import 'package:petit/features/images/data/services/flutter_image_compressor.dart';
++import 'package:petit/features/images/data/services/noop_image_previewer.dart';
+ import 'package:petit/features/images/domain/services/image_compressor.dart';
++import 'package:petit/features/images/domain/services/image_previewer.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
+ import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
+ import 'package:petit/features/images/domain/usecases/read_images.dart';
+@@ -84,12 +88,17 @@ void _registerMediaDependencies() {
+     sl.registerLazySingleton<MediaPicker>(() => FileSelectorMediaPicker());
+     sl.registerLazySingleton<MediaSaver>(() =>
+         FolderMediaSaver(sl<FolderPicker>(), sl<OutputFolderPreference>()));
+-    sl.registerLazySingleton<ImageCompressor>(() => DesktopImageCompressor());
++    sl.registerLazySingleton<DesktopHeifConverter>(() => DesktopHeifConverter());
++    sl.registerLazySingleton<ImageCompressor>(
++        () => DesktopImageCompressor(heifConverter: sl<DesktopHeifConverter>()));
++    sl.registerLazySingleton<ImagePreviewer>(
++        () => DesktopImagePreviewer(sl<DesktopHeifConverter>()));
+   } else {
+     // Android and iOS (and the frozen web build, which never resolves these).
+     sl.registerLazySingleton<MediaPicker>(() => ImagePickerMediaPicker());
+     sl.registerLazySingleton<MediaSaver>(() => GalleryMediaSaver());
+     sl.registerLazySingleton<ImageCompressor>(() => FlutterImageCompressor());
++    sl.registerLazySingleton<ImagePreviewer>(() => NoopImagePreviewer());
+   }
+ 
+   // The "Save to" setting (only shown on desktop).
+@@ -104,7 +113,7 @@ void _registerMediaDependencies() {
+ 
+   // Use cases
+   sl.registerLazySingleton<ReadImagesUseCase>(
+-      () => ReadImagesUseCase(sl<ImageCompressor>()));
++      () => ReadImagesUseCase(sl<ImageCompressor>(), sl<ImagePreviewer>()));
+   sl.registerLazySingleton<EstimateImageSizeUseCase>(
+       () => EstimateImageSizeUseCase(sl<ImageCompressor>()));
+   sl.registerLazySingleton<CompressImagesUseCase>(
+diff --git a/test/heif_arguments_test.dart b/test/heif_arguments_test.dart
+new file mode 100644
+index 0000000..620df89
+--- /dev/null
++++ b/test/heif_arguments_test.dart
+@@ -0,0 +1,61 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/features/images/data/services/heif_arguments.dart';
++
++void main() {
++  group('buildHeifToJpegArguments', () {
++    test('converts the first image to a high quality JPEG', () {
++      final args = buildHeifToJpegArguments(
++        inputPath: r'C:\Photos\IMG 0001.HEIC',
++        outputPath: r'C:\work\IMG 0001.jpg',
++      );
++
++      expect(args, [
++        '-y',
++        '-i',
++        r'C:\Photos\IMG 0001.HEIC',
++        '-frames:v',
++        '1',
++        '-q:v',
++        '2',
++        r'C:\work\IMG 0001.jpg',
++      ]);
++    });
++
++    test('keeps paths with spaces as single arguments', () {
++      final args = buildHeifToJpegArguments(
++        inputPath: '/home/me/my photos/a b.heic',
++        outputPath: '/tmp/out dir/a b.jpg',
++      );
++
++      expect(args, contains('/home/me/my photos/a b.heic'));
++      expect(args.last, '/tmp/out dir/a b.jpg');
++    });
++
++    test('has no filter unless a size limit is asked for', () {
++      final args = buildHeifToJpegArguments(
++          inputPath: 'a.heic', outputPath: 'a.jpg');
++      expect(args, isNot(contains('-vf')));
++    });
++
++    test('a size limit adds a filter that only ever shrinks', () {
++      final args = buildHeifToJpegArguments(
++          inputPath: 'a.heic', outputPath: 'a.jpg', maxLongSide: 1600);
++
++      final filter = args[args.indexOf('-vf') + 1];
++      expect(filter, contains('min(iw\\,1600)'));
++      expect(filter, contains('min(ih\\,1600)'));
++      // The filter comes before the output name and after the input.
++      expect(args.indexOf('-vf'), greaterThan(args.indexOf('-i')));
++      expect(args.indexOf('-vf'), lessThan(args.length - 1));
++    });
++
++    test('commas in the filter are escaped for FFmpeg', () {
++      final args = buildHeifToJpegArguments(
++          inputPath: 'a.heic', outputPath: 'a.jpg', maxLongSide: 800);
++      final filter = args[args.indexOf('-vf') + 1];
++
++      // Every comma must be preceded by a backslash.
++      expect(RegExp(r'(?<!\\),').hasMatch(filter), isFalse);
++    });
++  });
++}
+diff --git a/test/helpers/viewmodel_fakes.dart b/test/helpers/viewmodel_fakes.dart
+index ca3f02c..e232cff 100644
+--- a/test/helpers/viewmodel_fakes.dart
++++ b/test/helpers/viewmodel_fakes.dart
+@@ -273,6 +273,8 @@ class Harness {
+         initialSettingsProvider.overrideWithValue(settings),
+         settingsRepositoryProvider.overrideWithValue(settingsRepository),
+         backgroundKeepAliveProvider.overrideWithValue(keepAlive),
++        // One at a time, so the order of events is the same on every machine.
++        imageConcurrencyProvider.overrideWithValue(1),
+         mediaPickerProvider.overrideWithValue(picker),
+         workspaceProvider.overrideWithValue(workspace),
+         readImagesUseCaseProvider
+diff --git a/test/image_processing_test.dart b/test/image_processing_test.dart
+index 62daf75..fada4a3 100644
+--- a/test/image_processing_test.dart
++++ b/test/image_processing_test.dart
+@@ -49,6 +49,27 @@ void main() {
+     });
+   });
+ 
++  group('JPEG chroma', () {
++    test('4:2:0 gives a smaller file than 4:4:4 at the same quality', () {
++      // Colourful detail, like a photo: the case chroma subsampling helps.
++      final photo = img.Image(width: 256, height: 256);
++      for (var y = 0; y < 256; y++) {
++        for (var x = 0; x < 256; x++) {
++          photo.setPixelRgb(x, y, (x * 7 + y * 3) % 256, (x * 5 + y * 11) % 256,
++              (x * 13 + y * 2) % 256);
++        }
++      }
++
++      final full = img.encodeJpg(photo, quality: 70);
++      final sub = img.encodeJpg(photo,
++          quality: 70, chroma: img.JpegChroma.yuv420);
++
++      expect(sub.length, lessThan(full.length * 0.9));
++      final decoded = img.decodeJpg(sub)!;
++      expect([decoded.width, decoded.height], [256, 256]);
++    });
++  });
++
+   group('files', () {
+     late Directory dir;
+ 
+diff --git a/test/image_use_cases_test.dart b/test/image_use_cases_test.dart
+index 832ba1a..9c2d8ba 100644
+--- a/test/image_use_cases_test.dart
++++ b/test/image_use_cases_test.dart
+@@ -1,3 +1,4 @@
++import 'dart:async';
+ import 'dart:io';
+ 
+ import 'package:flutter_test/flutter_test.dart';
+@@ -7,6 +8,7 @@ import 'package:petit/features/images/domain/entities/image_data.dart';
+ import 'package:petit/features/images/domain/entities/image_options.dart';
+ import 'package:petit/features/images/domain/entities/image_size.dart';
+ import 'package:petit/features/images/domain/services/image_compressor.dart';
++import 'package:petit/features/images/domain/services/image_previewer.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
+ import 'package:petit/features/images/domain/usecases/read_images.dart';
+ 
+@@ -39,6 +41,57 @@ class FakeImageCompressor implements ImageCompressor {
+   }
+ }
+ 
++/// Holds every compression open until the test lets it finish, and counts how
++/// many are in flight at once.
++/// Polls until [condition] holds, failing the test if it never does.
++Future<void> waitUntil(bool Function() condition) async {
++  final deadline = DateTime.now().add(const Duration(seconds: 5));
++  while (!condition()) {
++    if (DateTime.now().isAfter(deadline)) fail('Timed out waiting.');
++    await Future<void>.delayed(const Duration(milliseconds: 5));
++  }
++}
++
++class GatedImageCompressor implements ImageCompressor {
++  GatedImageCompressor(this.dir);
++
++  final Directory dir;
++  final gates = <Completer<void>>[];
++  int inFlight = 0;
++  int maxInFlight = 0;
++  int started = 0;
++
++  @override
++  Future<ImageSize> readSize(String path) async => const ImageSize(640, 480);
++
++  @override
++  Future<File> compress(
++    ImageData image, {
++    required int quality,
++    ImageOptions options = const ImageOptions(),
++  }) async {
++    final number = ++started;
++    inFlight++;
++    if (inFlight > maxInFlight) maxInFlight = inFlight;
++    final gate = Completer<void>();
++    gates.add(gate);
++    await gate.future;
++    inFlight--;
++    return File('${dir.path}/${number}_out.bin')
++      ..writeAsBytesSync(List.filled(40, 1));
++  }
++}
++
++class FakePreviewer implements ImagePreviewer {
++  final asked = <String>[];
++
++  @override
++  Future<File?> createPreview(String path) async {
++    asked.add(path);
++    return File('$path.preview.jpg');
++  }
++}
++
+ class FakeSaver implements MediaSaver {
+   FakeSaver({this.declineToPrepare = false});
+ 
+@@ -104,6 +157,37 @@ void main() {
+     });
+   });
+ 
++  group('ReadImagesUseCase previews', () {
++    test('only HEIC photos get a preview', () async {
++      final previewer = FakePreviewer();
++
++      final result = await ReadImagesUseCase(
++          FakeImageCompressor(dir), previewer)(
++        ['/x/a.jpg', '/x/b.HEIC', '/x/c.png', '/x/d.heif'],
++      );
++
++      expect(previewer.asked, ['/x/b.HEIC', '/x/d.heif']);
++      expect(result[0].previewFile, isNull);
++      expect(result[1].previewFile?.path, '/x/b.HEIC.preview.jpg');
++      expect(result[2].previewFile, isNull);
++      expect(result[3].previewFile?.path, '/x/d.heif.preview.jpg');
++    });
++
++    test('works without a previewer', () async {
++      final result =
++          await ReadImagesUseCase(FakeImageCompressor(dir))(['/x/a.heic']);
++      expect(result.single.previewFile, isNull);
++    });
++
++    test('the preview is part of equality', () {
++      final a = ImageData(
++          imageFile: File('a.heic'), pixelWidth: 1, pixelHeight: 1, quality: 1);
++      final b = a.copyWith(previewFile: File('p.jpg'));
++      expect(a, isNot(b));
++      expect(b, b.copyWith());
++    });
++  });
++
+   group('CompressImagesUseCase', () {
+     test('reports progress and totals for two images', () async {
+       final compressor = FakeImageCompressor(dir);
+@@ -209,6 +293,127 @@ void main() {
+       expect(progress, isEmpty);
+     });
+ 
++    group('several at once', () {
++      /// Lets the compressions finish, one by one, as they start. Reading file
++      /// sizes is real I/O, so wait for each start instead of counting turns.
++      Future<void> finishAll(GatedImageCompressor compressor, int count) async {
++        for (var done = 0; done < count; done++) {
++          await waitUntil(() => compressor.gates.length > done);
++          compressor.gates[done].complete();
++        }
++      }
++
++      test('never runs more than the allowed number at a time', () async {
++        final compressor = GatedImageCompressor(dir);
++        final run = CompressImagesUseCase(compressor, FakeSaver())(
++          images: [for (var i = 0; i < 5; i++) makeImage('$i.jpg')],
++          concurrency: 2,
++          isCancelled: () => false,
++          onProgress: (_) {},
++          onError: (_) {},
++        );
++
++        await waitUntil(() => compressor.inFlight == 2);
++        await Future<void>.delayed(const Duration(milliseconds: 50));
++        expect(compressor.started, 2, reason: 'the third waits for a free worker');
++
++        await finishAll(compressor, 5);
++        final result = await run;
++
++        expect(compressor.maxInFlight, 2);
++        expect(result.originalBytes, 500);
++        expect(result.compressedBytes, 200);
++      });
++
++      test('one at a time by default', () async {
++        final compressor = GatedImageCompressor(dir);
++        final run = CompressImagesUseCase(compressor, FakeSaver())(
++          images: [for (var i = 0; i < 3; i++) makeImage('$i.jpg')],
++          isCancelled: () => false,
++          onProgress: (_) {},
++          onError: (_) {},
++        );
++
++        await finishAll(compressor, 3);
++        await run;
++
++        expect(compressor.maxInFlight, 1);
++      });
++
++      test('more workers than images is fine, and zero means one', () async {
++        for (final concurrency in [10, 0, -3]) {
++          final compressor = FakeImageCompressor(dir);
++          final saver = FakeSaver();
++          await CompressImagesUseCase(compressor, saver)(
++            images: [makeImage('a$concurrency.jpg'), makeImage('b$concurrency.jpg')],
++            concurrency: concurrency,
++            isCancelled: () => false,
++            onProgress: (_) {},
++            onError: (_) {},
++          );
++          expect(saver.saved.length, 2, reason: 'concurrency $concurrency');
++        }
++      });
++
++      test('progress counts finished images and ends at 100', () async {
++        final compressor = FakeImageCompressor(dir);
++        final seen = <BatchProgress>[];
++
++        await CompressImagesUseCase(compressor, FakeSaver())(
++          images: [for (var i = 0; i < 4; i++) makeImage('$i.jpg')],
++          concurrency: 3,
++          isCancelled: () => false,
++          onProgress: seen.add,
++          onError: (_) {},
++        );
++
++        final completed = seen.map((p) => p.completedSteps).toList();
++        final sorted = [...completed]..sort();
++        expect(completed, sorted, reason: 'never goes backwards');
++        expect(seen.last.completedSteps, 4);
++        expect(seen.last.percent, 100);
++        expect(seen.every((p) => p.totalSteps == 4), isTrue);
++      });
++
++      test('a failing image does not stop the others', () async {
++        final bad = makeImage('bad.jpg');
++        final errors = <String>[];
++        final saver = FakeSaver();
++
++        final result = await CompressImagesUseCase(
++          FakeImageCompressor(dir, failOn: {bad.imageFile.path}),
++          saver,
++        )(
++          images: [makeImage('a.jpg'), bad, makeImage('c.jpg')],
++          concurrency: 3,
++          isCancelled: () => false,
++          onProgress: (_) {},
++          onError: errors.add,
++        );
++
++        expect(errors, ['boom']);
++        expect(saver.saved.length, 2);
++        expect(result.originalBytes, 200);
++        expect(result.compressedBytes, 80);
++      });
++
++      test('cancelling stops starting new images', () async {
++        final compressor = FakeImageCompressor(dir);
++        final saver = FakeSaver();
++
++        await CompressImagesUseCase(compressor, saver)(
++          images: [for (var i = 0; i < 8; i++) makeImage('$i.jpg')],
++          concurrency: 2,
++          isCancelled: () => saver.saved.isNotEmpty,
++          onProgress: (_) {},
++          onError: (_) {},
++        );
++
++        expect(saver.saved.length, lessThan(8));
++        expect(compressor.qualities.length, lessThan(8));
++      });
++    });
++
+     test('global quality overrides each image quality', () async {
+       final compressor = FakeImageCompressor(dir);
+       await CompressImagesUseCase(compressor, FakeSaver())(

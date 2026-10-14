@@ -9,6 +9,7 @@ import 'package:petit/features/images/domain/usecases/compress_images.dart';
 import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
 import 'package:petit/features/images/domain/usecases/read_images.dart';
 import 'package:petit/common/domain/job_keep_alive.dart';
+import 'package:petit/core/utils/platform_utils.dart';
 import 'package:petit/common/domain/services/background_keep_alive.dart';
 import 'package:petit/features/onboarding/domain/services/onboarding_store.dart';
 import 'package:petit/features/settings/domain/entities/app_settings.dart';
@@ -57,6 +58,10 @@ final initialOnboardingDoneProvider = Provider<bool>((ref) =>
     !sl.isRegistered<bool>(instanceName: kOnboardingDoneInstance) ||
     sl<bool>(instanceName: kOnboardingDoneInstance));
 
+/// How many images are compressed at once (see [PlatformInfo.imageConcurrency]).
+final imageConcurrencyProvider =
+    Provider<int>((ref) => PlatformInfo.imageConcurrency);
+
 final readImagesUseCaseProvider =
     Provider<ReadImagesUseCase>((ref) => sl<ReadImagesUseCase>());
 
@@ -68,6 +73,9 @@ final estimateImageSizeUseCaseProvider = Provider<EstimateImageSizeUseCase>(
 
 final videoCompressorProvider =
     Provider<VideoCompressor>((ref) => sl<VideoCompressor>());
+
+final checkFastEncodingUseCaseProvider = Provider<CheckFastEncodingUseCase>(
+    (ref) => sl<CheckFastEncodingUseCase>());
 
 final compressVideoUseCaseProvider =
     Provider<CompressVideoUseCase>((ref) => sl<CompressVideoUseCase>());

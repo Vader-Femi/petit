@@ -8,12 +8,41 @@ import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:petit/common/domain/media_exception.dart';
+import 'package:petit/core/utils/platform_utils.dart';
 import 'package:petit/core/utils/work_dir.dart';
 import 'package:petit/features/videos/data/services/ffmpeg_arguments.dart';
+import 'package:petit/features/videos/data/services/hardware_encoders.dart';
 import 'package:petit/features/videos/domain/entities/video_data.dart';
 import 'package:petit/features/videos/domain/services/video_compressor.dart';
 
 class FfmpegVideoCompressor implements VideoCompressor {
+  /// Hardware encoder found for each software codec (null: none works). The
+  /// probe runs once per codec per app run.
+  final Map<String, String?> _hardwareEncoders = {};
+
+  @override
+  Future<String?> hardwareEncoderFor(String videoCodec) async {
+    if (_hardwareEncoders.containsKey(videoCodec)) {
+      return _hardwareEncoders[videoCodec];
+    }
+
+    String? found;
+    for (final encoder
+        in hardwareEncoderCandidates(videoCodec, PlatformInfo.osName)) {
+      try {
+        final session = await FFmpegKit.executeWithArguments(
+            buildHardwareProbeArguments(encoder));
+        if (ReturnCode.isSuccess(await session.getReturnCode())) {
+          found = encoder;
+          break;
+        }
+      } catch (e) {
+        debugPrint('Hardware encoder $encoder is not usable: $e');
+      }
+    }
+
+    return _hardwareEncoders[videoCodec] = found;
+  }
   @override
   Future<VideoData> probe(File video) async {
     try {
@@ -68,13 +97,15 @@ class FfmpegVideoCompressor implements VideoCompressor {
     required void Function(int percent) onProgress,
     int? videoBitrateKbps,
     int? maxShortSide,
+    String? hardwareEncoder,
+    int? hardwareBitrateKbps,
   }) async {
     final jobDir = await createJobDir();
     // The job folder is unique, so the name can simply follow the original's.
     final outPath = p.join(
         jobDir.path, '${p.basenameWithoutExtension(input.path)}_compressed.mp4');
 
-    final arguments = buildVideoArguments(
+    final softwareArguments = buildVideoArguments(
       inputPath: input.path,
       outputPath: outPath,
       videoCodec: videoCodec,
@@ -84,40 +115,85 @@ class FfmpegVideoCompressor implements VideoCompressor {
       maxShortSide: maxShortSide,
     );
 
-    final completer = Completer<File>();
+    final useHardware = hardwareEncoder != null && hardwareBitrateKbps != null;
+    final firstArguments = useHardware
+        ? buildVideoArguments(
+            inputPath: input.path,
+            outputPath: outPath,
+            videoCodec: videoCodec,
+            crf: crf,
+            preset: preset,
+            videoBitrateKbps: hardwareBitrateKbps,
+            maxShortSide: maxShortSide,
+            hardwareEncoder: hardwareEncoder,
+          )
+        : softwareArguments;
 
-    final session = await FFmpegKit.executeWithArgumentsAsync(
-      arguments,
-      (session) async {
-        final returnCode = await session.getReturnCode();
-        if (ReturnCode.isSuccess(returnCode)) {
-          completer.complete(File(outPath));
-        } else {
-          completer.completeError(const MediaException('Compression failed.'));
-        }
-      },
-      (log) => debugPrint('FFmpeg log: ${log.getMessage()}'),
-      (statistics) {
-        final progress = statistics.getTime();
-        final percent = (progress / totalDurationMs * 100).clamp(0, 100).toInt();
-        onProgress(percent);
-      },
-    );
+    final task = _FfmpegTask();
 
-    return _FfmpegTask(session, completer.future);
+    Future<void> run(List<String> arguments, {required bool canFallBack}) async {
+      task.session = await FFmpegKit.executeWithArgumentsAsync(
+        arguments,
+        (session) async {
+          final returnCode = await session.getReturnCode();
+          if (ReturnCode.isSuccess(returnCode)) {
+            task.complete(File(outPath));
+          } else if (canFallBack &&
+              !task.cancelled &&
+              !ReturnCode.isCancel(returnCode)) {
+            // The hardware could not do it (driver, format, size): do it the
+            // normal way instead. The half-written file would be refused by
+            // FFmpeg, so it goes first.
+            debugPrint('Hardware encoding failed; using software encoding.');
+            try {
+              final partial = File(outPath);
+              if (await partial.exists()) await partial.delete();
+            } on FileSystemException {
+              // FFmpeg will report it if this matters.
+            }
+            onProgress(0);
+            await run(softwareArguments, canFallBack: false);
+          } else {
+            task.fail(const MediaException('Compression failed.'));
+          }
+        },
+        (log) => debugPrint('FFmpeg log: ${log.getMessage()}'),
+        (statistics) {
+          final progress = statistics.getTime();
+          final percent =
+              (progress / totalDurationMs * 100).clamp(0, 100).toInt();
+          onProgress(percent);
+        },
+      );
+    }
+
+    await run(firstArguments, canFallBack: useHardware);
+
+    return task;
   }
 }
 
+/// The running compression. It can swap its FFmpeg session for another one
+/// (the software retry), so cancelling always reaches the one that is running.
 class _FfmpegTask implements VideoCompressionTask {
-  _FfmpegTask(this._session, this.result);
-
-  final FFmpegSession _session;
+  final _completer = Completer<File>();
+  FFmpegSession? session;
+  bool cancelled = false;
 
   @override
-  final Future<File> result;
+  Future<File> get result => _completer.future;
+
+  void complete(File file) {
+    if (!_completer.isCompleted) _completer.complete(file);
+  }
+
+  void fail(MediaException error) {
+    if (!_completer.isCompleted) _completer.completeError(error);
+  }
 
   @override
   Future<void> cancel() async {
-    await _session.cancel();
+    cancelled = true;
+    await session?.cancel();
   }
 }

@@ -59,6 +59,11 @@ class CompressVideoUseCase {
   /// not larger than that, because videos are never enlarged.
   /// [totalDurationMs] is used for progress; when missing, the probed
   /// duration is used instead.
+  ///
+  /// With [fastEncoding] the video hardware does the work when this machine
+  /// has some that works (see [VideoCompressor.hardwareEncoderFor]); otherwise
+  /// it is quietly done the normal way. Hardware needs a bitrate, so without a
+  /// [targetBytes] one is worked out from the quality level.
   Future<VideoCompressionJob> call({
     required File input,
     required int qualityPercent,
@@ -66,6 +71,7 @@ class CompressVideoUseCase {
     int? totalDurationMs,
     int? maxShortSide,
     int? targetBytes,
+    bool fastEncoding = false,
     required void Function(int percent) onProgress,
     required void Function(String message) onError,
   }) async {
@@ -106,6 +112,24 @@ class CompressVideoUseCase {
     final scaleTo =
         (maxShortSide != null && shortSide > maxShortSide) ? maxShortSide : null;
 
+    String? hardwareEncoder;
+    int? hardwareBitrateKbps;
+    if (fastEncoding) {
+      hardwareEncoder = await _compressor.hardwareEncoderFor(config.vcodec);
+      if (hardwareEncoder != null) {
+        hardwareBitrateKbps = videoBitrateKbps ??
+            fastEncodingBitrateKbps(
+              width: data.pixelWidth!,
+              height: data.pixelHeight!,
+              frameRate: data.frameRate,
+              crf: crf,
+              hevc: config.vcodec == 'libx265',
+              maxShortSide: scaleTo,
+              sourceKbps: await _sourceKbps(input, data.durationMs),
+            );
+      }
+    }
+
     final task = await _compressor.start(
       input: input,
       videoCodec: config.vcodec,
@@ -113,6 +137,8 @@ class CompressVideoUseCase {
       preset: preset,
       videoBitrateKbps: videoBitrateKbps,
       maxShortSide: scaleTo,
+      hardwareEncoder: hardwareEncoder,
+      hardwareBitrateKbps: hardwareBitrateKbps,
       totalDurationMs: _usableDuration(totalDurationMs) ??
           _usableDuration(data.durationMs) ??
           1,
@@ -120,6 +146,12 @@ class CompressVideoUseCase {
     );
 
     return VideoCompressionJob(task, _finish(task, input, onError));
+  }
+
+  /// The video's own average bitrate, or null when its length is unknown.
+  Future<int?> _sourceKbps(File input, int? durationMs) async {
+    if (durationMs == null || durationMs <= 0) return null;
+    return ((await input.length()) * 8 / durationMs).round();
   }
 
   /// Durations of zero (or unknown) would make progress meaningless.
@@ -156,5 +188,23 @@ class CompressVideoUseCase {
       destinationLabel: _saver.videoDestinationLabel,
       destinationFolder: _saver.destinationFolder,
     );
+  }
+}
+
+/// Tells whether Fast encoding (video hardware) can be used for a video of a
+/// given codec on this machine.
+class CheckFastEncodingUseCase {
+  CheckFastEncodingUseCase(this._compressor);
+
+  final VideoCompressor _compressor;
+
+  /// [codec] is the video's codec name as probed (`h264`, `hevc`, ...).
+  Future<bool> call(String codec) async {
+    try {
+      final config = getVcodecConfigFromCodec(codec);
+      return await _compressor.hardwareEncoderFor(config.vcodec) != null;
+    } catch (_) {
+      return false;
+    }
   }
 }

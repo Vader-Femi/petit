@@ -49,6 +49,27 @@ void main() {
     });
   });
 
+  group('JPEG chroma', () {
+    test('4:2:0 gives a smaller file than 4:4:4 at the same quality', () {
+      // Colourful detail, like a photo: the case chroma subsampling helps.
+      final photo = img.Image(width: 256, height: 256);
+      for (var y = 0; y < 256; y++) {
+        for (var x = 0; x < 256; x++) {
+          photo.setPixelRgb(x, y, (x * 7 + y * 3) % 256, (x * 5 + y * 11) % 256,
+              (x * 13 + y * 2) % 256);
+        }
+      }
+
+      final full = img.encodeJpg(photo, quality: 70);
+      final sub = img.encodeJpg(photo,
+          quality: 70, chroma: img.JpegChroma.yuv420);
+
+      expect(sub.length, lessThan(full.length * 0.9));
+      final decoded = img.decodeJpg(sub)!;
+      expect([decoded.width, decoded.height], [256, 256]);
+    });
+  });
+
   group('files', () {
     late Directory dir;
 

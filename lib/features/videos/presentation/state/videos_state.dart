@@ -31,6 +31,8 @@ class VideosState {
     this.crfQuality = 80,
     this.percentComplete = 0,
     this.eta,
+    this.fastEncoding = false,
+    this.fastEncodingAvailable = false,
     this.presetIndex = 1,
     this.isFabOpen = true,
     this.currentJob,
@@ -54,6 +56,15 @@ class VideosState {
 
   /// Time left for the running compression, once it can be told.
   final Duration? eta;
+
+  /// The user chose Fast encoding (video hardware).
+  final bool fastEncoding;
+
+  /// This machine has video hardware that works for the current video.
+  final bool fastEncodingAvailable;
+
+  /// Fast encoding will really be used.
+  bool get usesFastEncoding => fastEncoding && fastEncodingAvailable;
 
   /// Index into the FFmpeg presets ("Desired File Size" slider).
   final int presetIndex;
@@ -122,6 +133,8 @@ class VideosState {
     int? crfQuality,
     int? percentComplete,
     Object? eta = _unset,
+    bool? fastEncoding,
+    bool? fastEncodingAvailable,
     int? presetIndex,
     bool? isFabOpen,
     Object? currentJob = _unset,
@@ -142,6 +155,8 @@ class VideosState {
       crfQuality: crfQuality ?? this.crfQuality,
       percentComplete: percentComplete ?? this.percentComplete,
       eta: identical(eta, _unset) ? this.eta : eta as Duration?,
+      fastEncoding: fastEncoding ?? this.fastEncoding,
+      fastEncodingAvailable: fastEncodingAvailable ?? this.fastEncodingAvailable,
       presetIndex: presetIndex ?? this.presetIndex,
       isFabOpen: isFabOpen ?? this.isFabOpen,
       currentJob: identical(currentJob, _unset)

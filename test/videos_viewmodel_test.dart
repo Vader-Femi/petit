@@ -7,6 +7,7 @@ import 'package:petit/common/data/summary_report.dart';
 import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/core/utils/format_bytes.dart';
 import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+import 'package:petit/features/settings/domain/entities/app_settings.dart';
 import 'package:petit/features/videos/domain/video_bitrate.dart';
 import 'package:petit/features/videos/presentation/state/videos_state.dart';
 import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
@@ -163,6 +164,101 @@ void main() {
       final s = c.read(videosViewModelProvider);
       expect(s.resolution, VideoResolution.p720);
       expect(s.targetSizeMb, 10);
+    });
+  });
+
+  group('fast encoding', () {
+    Future<(ProviderContainer, VideosViewModel)> pick({
+      String? hardware,
+      AppSettings settings = const AppSettings(),
+    }) async {
+      h.videoCompressor.hardwareEncoder = hardware;
+      h.picker.video = h.file('in.mp4', 1000).path;
+      final c = h.container(settings: settings);
+      final vm = c.read(videosViewModelProvider.notifier);
+      await vm.pickVideo();
+      await pumpEventQueue(); // the hardware check runs in the background
+      return (c, vm);
+    }
+
+    test('is offered when the machine has hardware for the video', () async {
+      final (c, _) = await pick(hardware: 'h264_nvenc');
+
+      expect(c.read(videosViewModelProvider).fastEncodingAvailable, isTrue);
+      expect(h.videoCompressor.hardwareChecks, 1);
+    });
+
+    test('is not offered when it has none', () async {
+      final (c, _) = await pick();
+
+      expect(c.read(videosViewModelProvider).fastEncodingAvailable, isFalse);
+    });
+
+    test('choosing it counts only when it is available', () async {
+      final (c, vm) = await pick();
+      vm.setFastEncoding(true);
+
+      final s = c.read(videosViewModelProvider);
+      expect(s.fastEncoding, isTrue);
+      expect(s.usesFastEncoding, isFalse);
+    });
+
+    test('compressing uses the hardware when chosen and available', () async {
+      final (_, vm) = await pick(hardware: 'h264_nvenc');
+      vm.setFastEncoding(true);
+
+      await vm.compressVideo(onComplete: (_) {});
+
+      expect(h.videoCompressor.usedHardwareEncoder, 'h264_nvenc');
+      expect(h.videoCompressor.usedHardwareBitrateKbps, isNotNull);
+    });
+
+    test('compressing uses normal encoding when not chosen', () async {
+      final (_, vm) = await pick(hardware: 'h264_nvenc');
+
+      await vm.compressVideo(onComplete: (_) {});
+
+      expect(h.videoCompressor.usedHardwareEncoder, isNull);
+    });
+
+    test('compressing falls back quietly when it is chosen but not available',
+        () async {
+      final (_, vm) = await pick();
+      vm.setFastEncoding(true);
+
+      await vm.compressVideo(onComplete: (_) {});
+
+      expect(h.videoCompressor.usedHardwareEncoder, isNull);
+      expect(h.videoCompressor.lastTask, isNotNull);
+    });
+
+    test('starts from the default in Settings', () async {
+      final (c, _) = await pick(
+          hardware: 'h264_nvenc',
+          settings: const AppSettings(videoFastEncoding: true));
+
+      expect(c.read(videosViewModelProvider).usesFastEncoding, isTrue);
+    });
+
+    test('removing the video forgets that hardware was found', () async {
+      final (c, vm) = await pick(hardware: 'h264_nvenc');
+
+      vm.removeVideo();
+
+      expect(c.read(videosViewModelProvider).fastEncodingAvailable, isFalse);
+    });
+
+    test('a late answer for a video that is gone is ignored', () async {
+      h.videoCompressor.hardwareEncoder = 'h264_nvenc';
+      h.picker.video = h.file('in.mp4', 1000).path;
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+
+      await vm.pickVideo();
+      vm.removeVideo(); // before the background check answered
+      await pumpEventQueue();
+
+      expect(c.read(videosViewModelProvider).fastEncodingAvailable, isFalse);
     });
   });
 

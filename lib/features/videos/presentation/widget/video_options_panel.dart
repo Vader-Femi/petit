@@ -50,10 +50,38 @@ class VideoOptionsPanel extends ConsumerWidget {
         const SizedBox(height: 12),
         _resolutionBox(context, state, viewModel),
         const SizedBox(height: 12),
-        _speedBox(context, state, viewModel),
+        // Only offered when this machine has video hardware that works.
+        if (state.fastEncodingAvailable) ...[
+          _encodingBox(context, state, viewModel),
+          const SizedBox(height: 12),
+        ],
+        // Presets are for the software encoder; the hardware has none.
+        if (!state.usesFastEncoding) _speedBox(context, state, viewModel),
         _WarningBox(warnings: state.warnings),
         const SaveToTile(),
       ],
+    );
+  }
+
+  Widget _encodingBox(
+    BuildContext context,
+    VideosState state,
+    VideosViewModel viewModel,
+  ) {
+    return _OptionBox(
+      title: 'Encoding',
+      note: state.fastEncoding
+          ? 'Much faster, but files come out somewhat bigger, and a target '
+              'size is less exact. If it does not work on your device, Petit '
+              'switches back by itself.'
+          : 'Best compression: smaller files, but it takes longer.',
+      child: SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Fast encoding'),
+        subtitle: const Text("Use your device's video hardware"),
+        value: state.fastEncoding,
+        onChanged: viewModel.setFastEncoding,
+      ),
     );
   }
 

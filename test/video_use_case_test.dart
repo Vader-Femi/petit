@@ -34,6 +34,18 @@ class FakeVideoCompressor implements VideoCompressor {
   int? usedDurationMs;
   int? usedBitrateKbps;
   int? usedMaxShortSide;
+  String? usedHardwareEncoder;
+  int? usedHardwareBitrateKbps;
+
+  /// The hardware encoder this "machine" has, or null for none.
+  String? hardwareEncoder;
+  final hardwareAskedFor = <String>[];
+
+  @override
+  Future<String?> hardwareEncoderFor(String videoCodec) async {
+    hardwareAskedFor.add(videoCodec);
+    return hardwareEncoder;
+  }
 
   @override
   Future<VideoData> probe(File video) async {
@@ -51,7 +63,11 @@ class FakeVideoCompressor implements VideoCompressor {
     required void Function(int percent) onProgress,
     int? videoBitrateKbps,
     int? maxShortSide,
+    String? hardwareEncoder,
+    int? hardwareBitrateKbps,
   }) async {
+    usedHardwareEncoder = hardwareEncoder;
+    usedHardwareBitrateKbps = hardwareBitrateKbps;
     usedBitrateKbps = videoBitrateKbps;
     usedMaxShortSide = maxShortSide;
     usedCodec = videoCodec;
@@ -312,6 +328,134 @@ void main() {
           throwsA(isA<MediaException>().having(
               (e) => e.message, 'message', startsWith('Could not work out'))),
         );
+      });
+    });
+
+    group('fast encoding', () {
+      // A sparse file: 50 MB on paper, so a 10 s video of 40,000 kbit/s.
+      File bigFile(String name) {
+        final file = File('${dir.path}/$name');
+        final handle = file.openSync(mode: FileMode.write);
+        handle.setPositionSync(50000000 - 1);
+        handle.writeByteSync(0);
+        handle.closeSync();
+        return file;
+      }
+
+      Future<FakeVideoCompressor> run({
+        bool fast = true,
+        String? hardware = 'h264_videotoolbox',
+        String codec = 'h264',
+        File? file,
+        int? maxShortSide,
+        int? targetBytes,
+      }) async {
+        final input = file ?? bigFile('big_${DateTime.now().microsecondsSinceEpoch}.mp4');
+        final compressor = FakeVideoCompressor(
+            data: dataFor(input, codec: codec, durationMs: 10000))
+          ..hardwareEncoder = hardware;
+        await CompressVideoUseCase(compressor, FakeSaver())(
+          input: input,
+          qualityPercent: 80,
+          preset: 'medium',
+          maxShortSide: maxShortSide,
+          targetBytes: targetBytes,
+          fastEncoding: fast,
+          onProgress: (_) {},
+          onError: (_) {},
+        );
+        return compressor;
+      }
+
+      test('is not even looked for unless asked', () async {
+        final compressor = await run(fast: false);
+
+        expect(compressor.hardwareAskedFor, isEmpty);
+        expect(compressor.usedHardwareEncoder, isNull);
+        expect(compressor.usedHardwareBitrateKbps, isNull);
+      });
+
+      test('uses normal encoding when the machine has no hardware for it',
+          () async {
+        final compressor = await run(hardware: null);
+
+        expect(compressor.hardwareAskedFor, ['libx264']);
+        expect(compressor.usedHardwareEncoder, isNull);
+        expect(compressor.usedHardwareBitrateKbps, isNull);
+      });
+
+      test('gives the hardware a bitrate worked out from the quality', () async {
+        final compressor = await run();
+
+        expect(compressor.usedHardwareEncoder, 'h264_videotoolbox');
+        // 1080p30 at CRF 26: 0.1 bit/pixel, halved every 6 steps, see
+        // fast_encoding_test.
+        expect(compressor.usedHardwareBitrateKbps, 4399);
+      });
+
+      test('still passes the normal settings, for the retry', () async {
+        final compressor = await run();
+
+        expect(compressor.usedCodec, 'libx264');
+        expect(compressor.usedCrf, 26);
+        expect(compressor.usedPreset, 'medium');
+        expect(compressor.usedBitrateKbps, isNull,
+            reason: 'quality mode: the retry uses CRF');
+      });
+
+      test('never asks for more than the video already has', () async {
+        // 100 bytes over 10 s: far below what the quality would ask for.
+        final compressor = await run(file: fileOfSize('tiny.mp4', 100));
+
+        expect(compressor.usedHardwareBitrateKbps, 100);
+      });
+
+      test('a smaller resolution needs a smaller bitrate', () async {
+        final compressor = await run(maxShortSide: 540);
+
+        expect(compressor.usedMaxShortSide, 540);
+        expect(compressor.usedHardwareBitrateKbps, 1100); // a quarter of 4399
+      });
+
+      test('a target size is the bitrate for the hardware too', () async {
+        final compressor = await run(targetBytes: 1000000);
+
+        expect(compressor.usedBitrateKbps, 632);
+        expect(compressor.usedHardwareBitrateKbps, 632);
+        expect(compressor.usedHardwareEncoder, 'h264_videotoolbox');
+      });
+
+      test('HEVC videos look for an HEVC encoder', () async {
+        final compressor =
+            await run(codec: 'hevc', hardware: 'hevc_videotoolbox');
+
+        expect(compressor.hardwareAskedFor, ['libx265']);
+        expect(compressor.usedHardwareEncoder, 'hevc_videotoolbox');
+      });
+    });
+
+    group('CheckFastEncodingUseCase', () {
+      test('is true when the machine has hardware for the codec', () async {
+        final compressor = FakeVideoCompressor()..hardwareEncoder = 'h264_nvenc';
+        expect(await CheckFastEncodingUseCase(compressor)('h264'), isTrue);
+        expect(compressor.hardwareAskedFor, ['libx264']);
+      });
+
+      test('is false when it has none', () async {
+        expect(await CheckFastEncodingUseCase(FakeVideoCompressor())('h264'),
+            isFalse);
+      });
+
+      test('maps the probed codec name to the software encoder', () async {
+        final compressor = FakeVideoCompressor();
+        final check = CheckFastEncodingUseCase(compressor);
+
+        await check('hevc');
+        await check('vp9');
+        await check('something-new');
+
+        expect(compressor.hardwareAskedFor,
+            ['libx265', 'libvpx-vp9', 'libx264']);
       });
     });
 

@@ -38,6 +38,7 @@ void main() {
       vm.setVideoResolution(VideoResolution.p720);
       vm.setVideoPresetIndex(2);
       vm.setVideoTargetSizeMb(10);
+      vm.setVideoFastEncoding(true);
 
       const expected = AppSettings(
         imageQuality: 30,
@@ -48,6 +49,7 @@ void main() {
         videoResolution: VideoResolution.p720,
         videoPresetIndex: 2,
         videoTargetSizeMb: 10,
+        videoFastEncoding: true,
       );
       expect(c.read(settingsViewModelProvider), expected);
       expect(h.settingsRepository.saved, expected);

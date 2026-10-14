@@ -12,6 +12,10 @@ String ffmpegScaleFilter(int shortSide) =>
 /// A list, not one string, so paths with spaces work on every OS. Rate control
 /// is either constant quality ([crf]) or, when [videoBitrateKbps] is given, a
 /// target bitrate with a cap and a buffer so the size stays predictable.
+///
+/// With a [hardwareEncoder] (e.g. `h264_videotoolbox`) the video goes through
+/// the device's video hardware: that needs a bitrate ([videoBitrateKbps]), as
+/// hardware encoders have no CRF and no x264-style presets.
 List<String> buildVideoArguments({
   required String inputPath,
   required String outputPath,
@@ -20,7 +24,31 @@ List<String> buildVideoArguments({
   required String preset,
   int? videoBitrateKbps,
   int? maxShortSide,
+  String? hardwareEncoder,
 }) {
+  if (hardwareEncoder != null) {
+    if (videoBitrateKbps == null) {
+      throw ArgumentError.value(
+          videoBitrateKbps, 'videoBitrateKbps', 'hardware encoding needs a bitrate');
+    }
+    return [
+      '-i',
+      inputPath,
+      '-vcodec',
+      hardwareEncoder,
+      '-b:v',
+      '${videoBitrateKbps}k',
+      '-maxrate',
+      '${(videoBitrateKbps * 1.5).round()}k',
+      '-bufsize',
+      '${videoBitrateKbps * 2}k',
+      // Apple's players only accept HEVC in MP4 under this tag.
+      if (hardwareEncoder.startsWith('hevc_')) ...['-tag:v', 'hvc1'],
+      if (maxShortSide != null) ...['-vf', ffmpegScaleFilter(maxShortSide)],
+      outputPath,
+    ];
+  }
+
   return [
     '-i',
     inputPath,
@@ -43,3 +71,21 @@ List<String> buildVideoArguments({
     outputPath,
   ];
 }
+
+/// The FFmpeg command line that tries [encoder] on one second of test video
+/// and throws the result away. Success means this machine can really use it
+/// (an encoder can be built in without the hardware being there).
+List<String> buildHardwareProbeArguments(String encoder) => [
+      '-hide_banner',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc2=duration=1:size=640x360:rate=15',
+      '-vcodec',
+      encoder,
+      '-b:v',
+      '1000k',
+      '-f',
+      'null',
+      '-',
+    ];

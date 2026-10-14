@@ -41,7 +41,8 @@ class _ImagesPageState extends ConsumerState<ImagesPage> {
             return ClipRRect(
               borderRadius: BorderRadius.circular(12),
               child: Image.file(
-                imageData.imageFile,
+                // A converted copy for formats Flutter cannot draw (HEIC).
+                imageData.previewFile ?? imageData.imageFile,
                 frameBuilder: (BuildContext context, Widget child, int? frame,
                     bool? wasSynchronouslyLoaded) {
                   return AnimatedOpacity(

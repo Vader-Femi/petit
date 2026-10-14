@@ -1,0 +1,1391 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 678878b..e10785f 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -55,6 +55,7 @@ jobs:
+           test/onboarding_test.dart
+           test/job_keep_alive_test.dart
+           test/heif_arguments_test.dart
++          test/fast_encoding_test.dart
+ 
+   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
+   # it runs on demand and for pull requests into the production branch.
+diff --git a/docs/architecture.md b/docs/architecture.md
+index e60dd60..159d0ee 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -233,3 +233,27 @@ compression itself still runs in Flutter; the service only keeps the process ali
+   fell back to it. `DesktopHeifConverter` is that path, shared by the compressor and by
+   `DesktopImagePreviewer`, which makes a 1600 px JPEG so the carousel can show a HEIC photo (Flutter
+   cannot draw them on desktop). `ImageData.previewFile` carries it; phones use `NoopImagePreviewer`.
++
++## Fast encoding (video hardware)
++
++The normal encoders (libx264, libx265) run on the CPU and give the smallest files. Most machines also
++have video hardware (VideoToolbox on Apple, MediaCodec on Android, NVENC/QSV/AMF/Media Foundation on
++Windows, NVENC on Linux) that is several times faster but makes somewhat bigger files at the same
++quality. "Fast encoding" lets the user pick that trade; it is off by default (Settings has the default).
++
++- **Detection.** `FfmpegVideoCompressor.hardwareEncoderFor` tries the platform's candidate encoders
++  (`hardwareEncoderCandidates`) by encoding one second of test video and throwing it away. An encoder
++  can be built into FFmpeg without the hardware being there, so only a real encode counts. The answer is
++  remembered per codec for the run. The Videos tab runs the check in the background after a video loads
++  and shows the switch only if something works (VP9 has no hardware encoder, so no switch).
++- **Bitrate.** Hardware encoders have no CRF and no x264 presets, only a bitrate. The quality level is
++  turned into one by `fastEncodingBitrateKbps`: 0.1 bit per pixel at CRF 23, halved every 6 CRF steps,
++  65% of that for HEVC, scaled with the output resolution, and never above 90% of the source's own
++  bitrate. It is an estimate; the point is the right area, not an exact size. A target size uses the
++  bitrate it already worked out.
++- **Safety net.** If the hardware encode fails part way (driver, format, size), `start` deletes the
++  half-written file (FFmpeg will not overwrite it) and runs the normal encode, so asking for hardware
++  can make a job faster but not fail. The result is still dropped in favour of the original if it is not
++  smaller.
++- Presets belong to the software encoder, so the "Encoding speed" box is hidden while Fast encoding is
++  on.
+diff --git a/lib/core/di/providers.dart b/lib/core/di/providers.dart
+index 57fa280..5b5e972 100644
+--- a/lib/core/di/providers.dart
++++ b/lib/core/di/providers.dart
+@@ -74,6 +74,9 @@ final estimateImageSizeUseCaseProvider = Provider<EstimateImageSizeUseCase>(
+ final videoCompressorProvider =
+     Provider<VideoCompressor>((ref) => sl<VideoCompressor>());
+ 
++final checkFastEncodingUseCaseProvider = Provider<CheckFastEncodingUseCase>(
++    (ref) => sl<CheckFastEncodingUseCase>());
++
+ final compressVideoUseCaseProvider =
+     Provider<CompressVideoUseCase>((ref) => sl<CompressVideoUseCase>());
+ 
+diff --git a/lib/core/utils/platform_utils.dart b/lib/core/utils/platform_utils.dart
+index c51ac82..29b714b 100644
+--- a/lib/core/utils/platform_utils.dart
++++ b/lib/core/utils/platform_utils.dart
+@@ -16,6 +16,17 @@ class PlatformInfo {
+   static bool get isMobile => isAndroid || isIOS;
+   static bool get isDesktop => isWindows || isMacOS || isLinux;
+ 
++  /// `macos`, `ios`, `android`, `windows`, `linux` (or `other`), as used to pick
++  /// hardware video encoders.
++  static String get osName {
++    if (isMacOS) return 'macos';
++    if (isIOS) return 'ios';
++    if (isAndroid) return 'android';
++    if (isWindows) return 'windows';
++    if (isLinux) return 'linux';
++    return 'other';
++  }
++
+   /// How many images to compress at the same time. Desktop computers have the
+   /// cores and the memory for a few (each one is decoded in full), while phones
+   /// already use several cores inside the native encoder and have little spare
+diff --git a/lib/features/settings/data/services/shared_prefs_settings_repository.dart b/lib/features/settings/data/services/shared_prefs_settings_repository.dart
+index e5e9992..e55560f 100644
+--- a/lib/features/settings/data/services/shared_prefs_settings_repository.dart
++++ b/lib/features/settings/data/services/shared_prefs_settings_repository.dart
+@@ -12,6 +12,7 @@ const _videoQuality = 'settings_video_quality';
+ const _videoResolution = 'settings_video_resolution';
+ const _videoPreset = 'settings_video_preset';
+ const _videoTargetSizeMb = 'settings_video_target_size_mb';
++const _videoFastEncoding = 'settings_video_fast_encoding';
+ 
+ const _allKeys = {
+   _imageQuality,
+@@ -22,6 +23,7 @@ const _allKeys = {
+   _videoResolution,
+   _videoPreset,
+   _videoTargetSizeMb,
++  _videoFastEncoding,
+ };
+ 
+ /// Builds settings from stored values. Missing, wrongly typed or out of range
+@@ -57,6 +59,8 @@ AppSettings settingsFromMap(Map<String, Object?> values) {
+         AppSettings.maxVideoPresetIndex),
+     videoTargetSizeMb:
+         intIn(_videoTargetSizeMb, defaults.videoTargetSizeMb, 1, kMaxTargetSizeMb),
++    videoFastEncoding:
++        boolOf(_videoFastEncoding, defaults.videoFastEncoding),
+   );
+ }
+ 
+@@ -81,5 +85,6 @@ class SharedPrefsSettingsRepository implements SettingsRepository {
+     await _prefs.setString(_videoResolution, s.videoResolution.name);
+     await _prefs.setInt(_videoPreset, s.videoPresetIndex);
+     await _prefs.setInt(_videoTargetSizeMb, s.videoTargetSizeMb);
++    await _prefs.setBool(_videoFastEncoding, s.videoFastEncoding);
+   }
+ }
+diff --git a/lib/features/settings/domain/entities/app_settings.dart b/lib/features/settings/domain/entities/app_settings.dart
+index 93929f1..00d02b8 100644
+--- a/lib/features/settings/domain/entities/app_settings.dart
++++ b/lib/features/settings/domain/entities/app_settings.dart
+@@ -16,6 +16,7 @@ class AppSettings {
+     this.videoResolution = VideoResolution.original,
+     this.videoPresetIndex = 1,
+     this.videoTargetSizeMb = 25,
++    this.videoFastEncoding = false,
+   });
+ 
+   /// Highest valid index of the encoding speed choices (fast, balanced, slow).
+@@ -37,6 +38,9 @@ class AppSettings {
+   final int videoPresetIndex;
+   final int videoTargetSizeMb;
+ 
++  /// Use the device's video hardware when it can (faster, somewhat bigger).
++  final bool videoFastEncoding;
++
+   ImageOptions get imageOptions => ImageOptions(
+         keepTransparency: keepTransparency,
+         removeLocation: removeLocation,
+@@ -51,6 +55,7 @@ class AppSettings {
+     VideoResolution? videoResolution,
+     int? videoPresetIndex,
+     int? videoTargetSizeMb,
++    bool? videoFastEncoding,
+   }) {
+     return AppSettings(
+       imageQuality: imageQuality ?? this.imageQuality,
+@@ -61,6 +66,7 @@ class AppSettings {
+       videoResolution: videoResolution ?? this.videoResolution,
+       videoPresetIndex: videoPresetIndex ?? this.videoPresetIndex,
+       videoTargetSizeMb: videoTargetSizeMb ?? this.videoTargetSizeMb,
++      videoFastEncoding: videoFastEncoding ?? this.videoFastEncoding,
+     );
+   }
+ 
+@@ -75,7 +81,8 @@ class AppSettings {
+           other.videoQuality == videoQuality &&
+           other.videoResolution == videoResolution &&
+           other.videoPresetIndex == videoPresetIndex &&
+-          other.videoTargetSizeMb == videoTargetSizeMb;
++          other.videoTargetSizeMb == videoTargetSizeMb &&
++          other.videoFastEncoding == videoFastEncoding;
+ 
+   @override
+   int get hashCode => Object.hash(
+@@ -87,5 +94,6 @@ class AppSettings {
+         videoResolution,
+         videoPresetIndex,
+         videoTargetSizeMb,
++        videoFastEncoding,
+       );
+ }
+diff --git a/lib/features/settings/presentation/pages/settings_page.dart b/lib/features/settings/presentation/pages/settings_page.dart
+index 6d1b1a6..17419ca 100644
+--- a/lib/features/settings/presentation/pages/settings_page.dart
++++ b/lib/features/settings/presentation/pages/settings_page.dart
+@@ -143,6 +143,16 @@ class SettingsPage extends ConsumerWidget {
+                     'Slower encoding makes a smaller file for the same quality.',
+                     style: theme.textTheme.bodySmall,
+                   ),
++                  SwitchListTile(
++                    contentPadding: EdgeInsets.zero,
++                    title: const Text('Fast encoding'),
++                    subtitle: const Text(
++                        "Use your device's video hardware when it can. Much "
++                        'faster, but files come out somewhat bigger and a '
++                        'target size is less exact.'),
++                    value: settings.videoFastEncoding,
++                    onChanged: viewModel.setVideoFastEncoding,
++                  ),
+                 ],
+               ),
+ 
+diff --git a/lib/features/settings/presentation/state/settings_viewmodel.dart b/lib/features/settings/presentation/state/settings_viewmodel.dart
+index bf3dca9..6bc2fd0 100644
+--- a/lib/features/settings/presentation/state/settings_viewmodel.dart
++++ b/lib/features/settings/presentation/state/settings_viewmodel.dart
+@@ -42,6 +42,9 @@ class SettingsViewModel extends Notifier<AppSettings> {
+   void setVideoTargetSizeMb(int value) => _apply(state.copyWith(
+       videoTargetSizeMb: value.clamp(1, kMaxTargetSizeMb).toInt()));
+ 
++  void setVideoFastEncoding(bool value) =>
++      _apply(state.copyWith(videoFastEncoding: value));
++
+   void resetToDefaults() => _apply(const AppSettings());
+ 
+   void _apply(AppSettings next) {
+diff --git a/lib/features/videos/data/services/ffmpeg_arguments.dart b/lib/features/videos/data/services/ffmpeg_arguments.dart
+index 4b8ab51..b4de0b0 100644
+--- a/lib/features/videos/data/services/ffmpeg_arguments.dart
++++ b/lib/features/videos/data/services/ffmpeg_arguments.dart
+@@ -12,6 +12,10 @@ String ffmpegScaleFilter(int shortSide) =>
+ /// A list, not one string, so paths with spaces work on every OS. Rate control
+ /// is either constant quality ([crf]) or, when [videoBitrateKbps] is given, a
+ /// target bitrate with a cap and a buffer so the size stays predictable.
++///
++/// With a [hardwareEncoder] (e.g. `h264_videotoolbox`) the video goes through
++/// the device's video hardware: that needs a bitrate ([videoBitrateKbps]), as
++/// hardware encoders have no CRF and no x264-style presets.
+ List<String> buildVideoArguments({
+   required String inputPath,
+   required String outputPath,
+@@ -20,7 +24,31 @@ List<String> buildVideoArguments({
+   required String preset,
+   int? videoBitrateKbps,
+   int? maxShortSide,
++  String? hardwareEncoder,
+ }) {
++  if (hardwareEncoder != null) {
++    if (videoBitrateKbps == null) {
++      throw ArgumentError.value(
++          videoBitrateKbps, 'videoBitrateKbps', 'hardware encoding needs a bitrate');
++    }
++    return [
++      '-i',
++      inputPath,
++      '-vcodec',
++      hardwareEncoder,
++      '-b:v',
++      '${videoBitrateKbps}k',
++      '-maxrate',
++      '${(videoBitrateKbps * 1.5).round()}k',
++      '-bufsize',
++      '${videoBitrateKbps * 2}k',
++      // Apple's players only accept HEVC in MP4 under this tag.
++      if (hardwareEncoder.startsWith('hevc_')) ...['-tag:v', 'hvc1'],
++      if (maxShortSide != null) ...['-vf', ffmpegScaleFilter(maxShortSide)],
++      outputPath,
++    ];
++  }
++
+   return [
+     '-i',
+     inputPath,
+@@ -43,3 +71,21 @@ List<String> buildVideoArguments({
+     outputPath,
+   ];
+ }
++
++/// The FFmpeg command line that tries [encoder] on one second of test video
++/// and throws the result away. Success means this machine can really use it
++/// (an encoder can be built in without the hardware being there).
++List<String> buildHardwareProbeArguments(String encoder) => [
++      '-hide_banner',
++      '-f',
++      'lavfi',
++      '-i',
++      'testsrc2=duration=1:size=640x360:rate=15',
++      '-vcodec',
++      encoder,
++      '-b:v',
++      '1000k',
++      '-f',
++      'null',
++      '-',
++    ];
+diff --git a/lib/features/videos/data/services/ffmpeg_video_compressor.dart b/lib/features/videos/data/services/ffmpeg_video_compressor.dart
+index ed82d80..9d13b8a 100644
+--- a/lib/features/videos/data/services/ffmpeg_video_compressor.dart
++++ b/lib/features/videos/data/services/ffmpeg_video_compressor.dart
+@@ -8,12 +8,41 @@ import 'package:ffmpeg_kit_flutter_new/return_code.dart';
+ import 'package:flutter/foundation.dart';
+ import 'package:path/path.dart' as p;
+ import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:petit/core/utils/work_dir.dart';
+ import 'package:petit/features/videos/data/services/ffmpeg_arguments.dart';
++import 'package:petit/features/videos/data/services/hardware_encoders.dart';
+ import 'package:petit/features/videos/domain/entities/video_data.dart';
+ import 'package:petit/features/videos/domain/services/video_compressor.dart';
+ 
+ class FfmpegVideoCompressor implements VideoCompressor {
++  /// Hardware encoder found for each software codec (null: none works). The
++  /// probe runs once per codec per app run.
++  final Map<String, String?> _hardwareEncoders = {};
++
++  @override
++  Future<String?> hardwareEncoderFor(String videoCodec) async {
++    if (_hardwareEncoders.containsKey(videoCodec)) {
++      return _hardwareEncoders[videoCodec];
++    }
++
++    String? found;
++    for (final encoder
++        in hardwareEncoderCandidates(videoCodec, PlatformInfo.osName)) {
++      try {
++        final session = await FFmpegKit.executeWithArguments(
++            buildHardwareProbeArguments(encoder));
++        if (ReturnCode.isSuccess(await session.getReturnCode())) {
++          found = encoder;
++          break;
++        }
++      } catch (e) {
++        debugPrint('Hardware encoder $encoder is not usable: $e');
++      }
++    }
++
++    return _hardwareEncoders[videoCodec] = found;
++  }
+   @override
+   Future<VideoData> probe(File video) async {
+     try {
+@@ -68,13 +97,15 @@ class FfmpegVideoCompressor implements VideoCompressor {
+     required void Function(int percent) onProgress,
+     int? videoBitrateKbps,
+     int? maxShortSide,
++    String? hardwareEncoder,
++    int? hardwareBitrateKbps,
+   }) async {
+     final jobDir = await createJobDir();
+     // The job folder is unique, so the name can simply follow the original's.
+     final outPath = p.join(
+         jobDir.path, '${p.basenameWithoutExtension(input.path)}_compressed.mp4');
+ 
+-    final arguments = buildVideoArguments(
++    final softwareArguments = buildVideoArguments(
+       inputPath: input.path,
+       outputPath: outPath,
+       videoCodec: videoCodec,
+@@ -84,40 +115,85 @@ class FfmpegVideoCompressor implements VideoCompressor {
+       maxShortSide: maxShortSide,
+     );
+ 
+-    final completer = Completer<File>();
++    final useHardware = hardwareEncoder != null && hardwareBitrateKbps != null;
++    final firstArguments = useHardware
++        ? buildVideoArguments(
++            inputPath: input.path,
++            outputPath: outPath,
++            videoCodec: videoCodec,
++            crf: crf,
++            preset: preset,
++            videoBitrateKbps: hardwareBitrateKbps,
++            maxShortSide: maxShortSide,
++            hardwareEncoder: hardwareEncoder,
++          )
++        : softwareArguments;
++
++    final task = _FfmpegTask();
++
++    Future<void> run(List<String> arguments, {required bool canFallBack}) async {
++      task.session = await FFmpegKit.executeWithArgumentsAsync(
++        arguments,
++        (session) async {
++          final returnCode = await session.getReturnCode();
++          if (ReturnCode.isSuccess(returnCode)) {
++            task.complete(File(outPath));
++          } else if (canFallBack &&
++              !task.cancelled &&
++              !ReturnCode.isCancel(returnCode)) {
++            // The hardware could not do it (driver, format, size): do it the
++            // normal way instead. The half-written file would be refused by
++            // FFmpeg, so it goes first.
++            debugPrint('Hardware encoding failed; using software encoding.');
++            try {
++              final partial = File(outPath);
++              if (await partial.exists()) await partial.delete();
++            } on FileSystemException {
++              // FFmpeg will report it if this matters.
++            }
++            onProgress(0);
++            await run(softwareArguments, canFallBack: false);
++          } else {
++            task.fail(const MediaException('Compression failed.'));
++          }
++        },
++        (log) => debugPrint('FFmpeg log: ${log.getMessage()}'),
++        (statistics) {
++          final progress = statistics.getTime();
++          final percent =
++              (progress / totalDurationMs * 100).clamp(0, 100).toInt();
++          onProgress(percent);
++        },
++      );
++    }
+ 
+-    final session = await FFmpegKit.executeWithArgumentsAsync(
+-      arguments,
+-      (session) async {
+-        final returnCode = await session.getReturnCode();
+-        if (ReturnCode.isSuccess(returnCode)) {
+-          completer.complete(File(outPath));
+-        } else {
+-          completer.completeError(const MediaException('Compression failed.'));
+-        }
+-      },
+-      (log) => debugPrint('FFmpeg log: ${log.getMessage()}'),
+-      (statistics) {
+-        final progress = statistics.getTime();
+-        final percent = (progress / totalDurationMs * 100).clamp(0, 100).toInt();
+-        onProgress(percent);
+-      },
+-    );
++    await run(firstArguments, canFallBack: useHardware);
+ 
+-    return _FfmpegTask(session, completer.future);
++    return task;
+   }
+ }
+ 
++/// The running compression. It can swap its FFmpeg session for another one
++/// (the software retry), so cancelling always reaches the one that is running.
+ class _FfmpegTask implements VideoCompressionTask {
+-  _FfmpegTask(this._session, this.result);
+-
+-  final FFmpegSession _session;
++  final _completer = Completer<File>();
++  FFmpegSession? session;
++  bool cancelled = false;
+ 
+   @override
+-  final Future<File> result;
++  Future<File> get result => _completer.future;
++
++  void complete(File file) {
++    if (!_completer.isCompleted) _completer.complete(file);
++  }
++
++  void fail(MediaException error) {
++    if (!_completer.isCompleted) _completer.completeError(error);
++  }
+ 
+   @override
+   Future<void> cancel() async {
+-    await _session.cancel();
++    cancelled = true;
++    await session?.cancel();
+   }
+ }
+diff --git a/lib/features/videos/data/services/hardware_encoders.dart b/lib/features/videos/data/services/hardware_encoders.dart
+new file mode 100644
+index 0000000..df4c035
+--- /dev/null
++++ b/lib/features/videos/data/services/hardware_encoders.dart
+@@ -0,0 +1,31 @@
++// Pure Dart (no plugins), so it can be unit tested.
++
++/// Hardware encoders worth trying for [softwareCodec] (`libx264` or `libx265`,
++/// as in `CodecConfig.vcodec`) on [os] (`macos`, `ios`, `android`, `windows`
++/// or `linux`), best first. Empty when there is nothing to try, e.g. VP9.
++///
++/// Being in the list does not mean it works: FFmpeg can list an encoder that
++/// needs hardware this machine lacks, so each one is tried before use.
++List<String> hardwareEncoderCandidates(String softwareCodec, String os) {
++  final family = switch (softwareCodec) {
++    'libx264' => 'h264',
++    'libx265' => 'hevc',
++    _ => null,
++  };
++  if (family == null) return const [];
++
++  return switch (os) {
++    'macos' || 'ios' => ['${family}_videotoolbox'],
++    'android' => ['${family}_mediacodec'],
++    // NVIDIA, Intel, AMD, then Windows' own Media Foundation.
++    'windows' => [
++        '${family}_nvenc',
++        '${family}_qsv',
++        '${family}_amf',
++        '${family}_mf',
++      ],
++    // VAAPI and QSV need device set-up on the command line; NVENC does not.
++    'linux' => ['${family}_nvenc'],
++    _ => const [],
++  };
++}
+diff --git a/lib/features/videos/domain/services/video_compressor.dart b/lib/features/videos/domain/services/video_compressor.dart
+index 5412a2a..75309d7 100644
+--- a/lib/features/videos/domain/services/video_compressor.dart
++++ b/lib/features/videos/domain/services/video_compressor.dart
+@@ -15,12 +15,23 @@ abstract interface class VideoCompressor {
+   /// Reads the video's properties. Throws a [MediaException] on failure.
+   Future<VideoData> probe(File video);
+ 
++  /// The name of a hardware encoder (e.g. `h264_videotoolbox`) that works on
++  /// this machine for the software codec [videoCodec] (`libx264`, `libx265`),
++  /// or null when there is none. Slow the first time (it tries them), instant
++  /// after.
++  Future<String?> hardwareEncoderFor(String videoCodec);
++
+   /// Starts compressing [input]. [onProgress] receives 0..100.
+   ///
+   /// With [videoBitrateKbps] the encoder aims for that bitrate (a target file
+   /// size) and [crf] is ignored. With [maxShortSide] the video is scaled so its
+   /// shorter side has that many pixels; callers pass it only when it is smaller
+   /// than the video, because the video is never enlarged.
++  ///
++  /// With a [hardwareEncoder] (from [hardwareEncoderFor]) the work goes to the
++  /// video hardware at [hardwareBitrateKbps]. If that fails part way, the
++  /// compression is run again with the normal settings above, so asking for
++  /// hardware can only make things faster, never break them.
+   Future<VideoCompressionTask> start({
+     required File input,
+     required String videoCodec,
+@@ -30,5 +41,7 @@ abstract interface class VideoCompressor {
+     required void Function(int percent) onProgress,
+     int? videoBitrateKbps,
+     int? maxShortSide,
++    String? hardwareEncoder,
++    int? hardwareBitrateKbps,
+   });
+ }
+diff --git a/lib/features/videos/domain/usecases/compress_video.dart b/lib/features/videos/domain/usecases/compress_video.dart
+index 5f79a89..13ccd9f 100644
+--- a/lib/features/videos/domain/usecases/compress_video.dart
++++ b/lib/features/videos/domain/usecases/compress_video.dart
+@@ -59,6 +59,11 @@ class CompressVideoUseCase {
+   /// not larger than that, because videos are never enlarged.
+   /// [totalDurationMs] is used for progress; when missing, the probed
+   /// duration is used instead.
++  ///
++  /// With [fastEncoding] the video hardware does the work when this machine
++  /// has some that works (see [VideoCompressor.hardwareEncoderFor]); otherwise
++  /// it is quietly done the normal way. Hardware needs a bitrate, so without a
++  /// [targetBytes] one is worked out from the quality level.
+   Future<VideoCompressionJob> call({
+     required File input,
+     required int qualityPercent,
+@@ -66,6 +71,7 @@ class CompressVideoUseCase {
+     int? totalDurationMs,
+     int? maxShortSide,
+     int? targetBytes,
++    bool fastEncoding = false,
+     required void Function(int percent) onProgress,
+     required void Function(String message) onError,
+   }) async {
+@@ -106,6 +112,24 @@ class CompressVideoUseCase {
+     final scaleTo =
+         (maxShortSide != null && shortSide > maxShortSide) ? maxShortSide : null;
+ 
++    String? hardwareEncoder;
++    int? hardwareBitrateKbps;
++    if (fastEncoding) {
++      hardwareEncoder = await _compressor.hardwareEncoderFor(config.vcodec);
++      if (hardwareEncoder != null) {
++        hardwareBitrateKbps = videoBitrateKbps ??
++            fastEncodingBitrateKbps(
++              width: data.pixelWidth!,
++              height: data.pixelHeight!,
++              frameRate: data.frameRate,
++              crf: crf,
++              hevc: config.vcodec == 'libx265',
++              maxShortSide: scaleTo,
++              sourceKbps: await _sourceKbps(input, data.durationMs),
++            );
++      }
++    }
++
+     final task = await _compressor.start(
+       input: input,
+       videoCodec: config.vcodec,
+@@ -113,6 +137,8 @@ class CompressVideoUseCase {
+       preset: preset,
+       videoBitrateKbps: videoBitrateKbps,
+       maxShortSide: scaleTo,
++      hardwareEncoder: hardwareEncoder,
++      hardwareBitrateKbps: hardwareBitrateKbps,
+       totalDurationMs: _usableDuration(totalDurationMs) ??
+           _usableDuration(data.durationMs) ??
+           1,
+@@ -122,6 +148,12 @@ class CompressVideoUseCase {
+     return VideoCompressionJob(task, _finish(task, input, onError));
+   }
+ 
++  /// The video's own average bitrate, or null when its length is unknown.
++  Future<int?> _sourceKbps(File input, int? durationMs) async {
++    if (durationMs == null || durationMs <= 0) return null;
++    return ((await input.length()) * 8 / durationMs).round();
++  }
++
+   /// Durations of zero (or unknown) would make progress meaningless.
+   int? _usableDuration(int? ms) => (ms != null && ms > 0) ? ms : null;
+ 
+@@ -158,3 +190,21 @@ class CompressVideoUseCase {
+     );
+   }
+ }
++
++/// Tells whether Fast encoding (video hardware) can be used for a video of a
++/// given codec on this machine.
++class CheckFastEncodingUseCase {
++  CheckFastEncodingUseCase(this._compressor);
++
++  final VideoCompressor _compressor;
++
++  /// [codec] is the video's codec name as probed (`h264`, `hevc`, ...).
++  Future<bool> call(String codec) async {
++    try {
++      final config = getVcodecConfigFromCodec(codec);
++      return await _compressor.hardwareEncoderFor(config.vcodec) != null;
++    } catch (_) {
++      return false;
++    }
++  }
++}
+diff --git a/lib/features/videos/domain/video_bitrate.dart b/lib/features/videos/domain/video_bitrate.dart
+index 405c06c..0e364b3 100644
+--- a/lib/features/videos/domain/video_bitrate.dart
++++ b/lib/features/videos/domain/video_bitrate.dart
+@@ -37,3 +37,57 @@ int minimumTargetBytes({
+   final seconds = durationMs / 1000;
+   return ((kMinVideoKbps + audioKbps) * 1000 / 8 * seconds / 0.95).round();
+ }
++
++/// Bits per pixel a hardware H.264 encoder needs for roughly the quality of
++/// software x264 at CRF 23. Hardware encoders are less efficient, so this is
++/// above what x264 itself needs (about 0.07).
++const double kFastBitsPerPixel = 0.1;
++
++/// HEVC needs about this share of H.264's bitrate for the same quality.
++const double kHevcBitrateShare = 0.65;
++
++/// The bitrate (kbit/s) to give a hardware encoder so the result looks about
++/// as good as software encoding at the quality level [crf].
++///
++/// Hardware encoders cannot do constant quality (CRF), only a bitrate, so the
++/// level is turned into one: every 6 CRF steps halve it, as with x264.
++/// [crf] is the software CRF (x265's scale runs about 5 higher than x264's for
++/// the same quality, which is why [hevc] shifts it). The result is capped below
++/// the source's own bitrate ([sourceKbps]), because compressing must not ask
++/// for more than the file already has.
++///
++/// An estimate, not a promise: it is meant to make Fast encoding land in the
++/// right area, not to hit a size.
++int fastEncodingBitrateKbps({
++  required int width,
++  required int height,
++  int? frameRate,
++  required int crf,
++  required bool hevc,
++  int? maxShortSide,
++  int? sourceKbps,
++}) {
++  final fps = (frameRate ?? 30).clamp(1, 120);
++
++  var scale = 1.0;
++  final shortSide = math.min(width, height);
++  if (maxShortSide != null && shortSide > maxShortSide) {
++    scale = maxShortSide / shortSide;
++  }
++  final pixelsPerSecond = width * height * scale * scale * fps;
++
++  final h264Crf = hevc ? crf - 5 : crf;
++  var bitsPerPixel = kFastBitsPerPixel * math.pow(2, (23 - h264Crf) / 6);
++  if (hevc) bitsPerPixel *= kHevcBitrateShare;
++
++  final wanted = pixelsPerSecond * bitsPerPixel / 1000;
++
++  final ceiling = math.max(
++    kMinVideoKbps,
++    sourceKbps == null ? kMaxFastKbps : (sourceKbps * 0.9).floor(),
++  );
++  return wanted.round().clamp(kMinVideoKbps, math.min(ceiling, kMaxFastKbps)).toInt();
++}
++
++/// Upper limit for [fastEncodingBitrateKbps], in kbit/s.
++const int kMaxFastKbps = 100000;
+diff --git a/lib/features/videos/presentation/state/videos_state.dart b/lib/features/videos/presentation/state/videos_state.dart
+index 72dda59..6661272 100644
+--- a/lib/features/videos/presentation/state/videos_state.dart
++++ b/lib/features/videos/presentation/state/videos_state.dart
+@@ -31,6 +31,8 @@ class VideosState {
+     this.crfQuality = 80,
+     this.percentComplete = 0,
+     this.eta,
++    this.fastEncoding = false,
++    this.fastEncodingAvailable = false,
+     this.presetIndex = 1,
+     this.isFabOpen = true,
+     this.currentJob,
+@@ -55,6 +57,15 @@ class VideosState {
+   /// Time left for the running compression, once it can be told.
+   final Duration? eta;
+ 
++  /// The user chose Fast encoding (video hardware).
++  final bool fastEncoding;
++
++  /// This machine has video hardware that works for the current video.
++  final bool fastEncodingAvailable;
++
++  /// Fast encoding will really be used.
++  bool get usesFastEncoding => fastEncoding && fastEncodingAvailable;
++
+   /// Index into the FFmpeg presets ("Desired File Size" slider).
+   final int presetIndex;
+   final bool isFabOpen;
+@@ -122,6 +133,8 @@ class VideosState {
+     int? crfQuality,
+     int? percentComplete,
+     Object? eta = _unset,
++    bool? fastEncoding,
++    bool? fastEncodingAvailable,
+     int? presetIndex,
+     bool? isFabOpen,
+     Object? currentJob = _unset,
+@@ -142,6 +155,8 @@ class VideosState {
+       crfQuality: crfQuality ?? this.crfQuality,
+       percentComplete: percentComplete ?? this.percentComplete,
+       eta: identical(eta, _unset) ? this.eta : eta as Duration?,
++      fastEncoding: fastEncoding ?? this.fastEncoding,
++      fastEncodingAvailable: fastEncodingAvailable ?? this.fastEncodingAvailable,
+       presetIndex: presetIndex ?? this.presetIndex,
+       isFabOpen: isFabOpen ?? this.isFabOpen,
+       currentJob: identical(currentJob, _unset)
+diff --git a/lib/features/videos/presentation/state/videos_viewmodel.dart b/lib/features/videos/presentation/state/videos_viewmodel.dart
+index 026b612..f1dc2ba 100644
+--- a/lib/features/videos/presentation/state/videos_viewmodel.dart
++++ b/lib/features/videos/presentation/state/videos_viewmodel.dart
+@@ -48,6 +48,7 @@ class VideosViewModel extends Notifier<VideosState> {
+       resolution: settings.videoResolution,
+       presetIndex: settings.videoPresetIndex,
+       targetSizeMb: settings.videoTargetSizeMb,
++      fastEncoding: settings.videoFastEncoding,
+     );
+   }
+ 
+@@ -155,8 +156,25 @@ class VideosViewModel extends Notifier<VideosState> {
+       videoInfo: info,
+       videoBytes: bytes,
+       isLoading: false,
++      fastEncodingAvailable: false,
+     );
+     _fitOptionsToVideo();
++    unawaited(_checkFastEncoding(info?.videoCodec, file));
++  }
++
++  /// Finds out, in the background (the first time it tries the hardware), whether
++  /// Fast encoding can be offered for this video.
++  Future<void> _checkFastEncoding(String? codec, File file) async {
++    if (codec == null) return;
++    final available = await ref.read(checkFastEncodingUseCaseProvider)(codec);
++    // The user may have picked another video, or none, in the meantime.
++    if (state.videoFile?.path != file.path) return;
++    state = state.copyWith(fastEncodingAvailable: available);
++  }
++
++  /// Fast encoding on or off for this video.
++  void setFastEncoding(bool enabled) {
++    state = state.copyWith(fastEncoding: enabled);
+   }
+ 
+   /// Moves a selection that makes no sense for this video (a bigger resolution
+@@ -220,6 +238,7 @@ class VideosViewModel extends Notifier<VideosState> {
+         preset: kFfmpegPresets[state.presetIndex].value,
+         totalDurationMs: state.preview?.duration.inMilliseconds,
+         maxShortSide: state.resolution.shortSide,
++        fastEncoding: state.usesFastEncoding,
+         targetBytes: state.mode == VideoMode.targetSize
+             ? state.targetSizeMb * 1000000
+             : null,
+@@ -304,6 +323,7 @@ class VideosViewModel extends Notifier<VideosState> {
+       isLoading: false,
+       percentComplete: 0,
+       eta: null,
++      fastEncodingAvailable: false,
+     );
+   }
+ 
+diff --git a/lib/features/videos/presentation/widget/video_options_panel.dart b/lib/features/videos/presentation/widget/video_options_panel.dart
+index a4f0bbb..9580ef6 100644
+--- a/lib/features/videos/presentation/widget/video_options_panel.dart
++++ b/lib/features/videos/presentation/widget/video_options_panel.dart
+@@ -50,13 +50,41 @@ class VideoOptionsPanel extends ConsumerWidget {
+         const SizedBox(height: 12),
+         _resolutionBox(context, state, viewModel),
+         const SizedBox(height: 12),
+-        _speedBox(context, state, viewModel),
++        // Only offered when this machine has video hardware that works.
++        if (state.fastEncodingAvailable) ...[
++          _encodingBox(context, state, viewModel),
++          const SizedBox(height: 12),
++        ],
++        // Presets are for the software encoder; the hardware has none.
++        if (!state.usesFastEncoding) _speedBox(context, state, viewModel),
+         _WarningBox(warnings: state.warnings),
+         const SaveToTile(),
+       ],
+     );
+   }
+ 
++  Widget _encodingBox(
++    BuildContext context,
++    VideosState state,
++    VideosViewModel viewModel,
++  ) {
++    return _OptionBox(
++      title: 'Encoding',
++      note: state.fastEncoding
++          ? 'Much faster, but files come out somewhat bigger, and a target '
++              'size is less exact. If it does not work on your device, Petit '
++              'switches back by itself.'
++          : 'Best compression: smaller files, but it takes longer.',
++      child: SwitchListTile(
++        contentPadding: EdgeInsets.zero,
++        title: const Text('Fast encoding'),
++        subtitle: const Text("Use your device's video hardware"),
++        value: state.fastEncoding,
++        onChanged: viewModel.setFastEncoding,
++      ),
++    );
++  }
++
+   Widget _qualityBox(
+       BuildContext context, VideosState state, VideosViewModel viewModel) {
+     return buildSliderBox(
+diff --git a/lib/service_locator.dart b/lib/service_locator.dart
+index 6aebbd7..07b0b73 100644
+--- a/lib/service_locator.dart
++++ b/lib/service_locator.dart
+@@ -118,6 +118,8 @@ void _registerMediaDependencies() {
+       () => EstimateImageSizeUseCase(sl<ImageCompressor>()));
+   sl.registerLazySingleton<CompressImagesUseCase>(
+       () => CompressImagesUseCase(sl<ImageCompressor>(), sl<MediaSaver>()));
++  sl.registerLazySingleton<CheckFastEncodingUseCase>(
++      () => CheckFastEncodingUseCase(sl<VideoCompressor>()));
+   sl.registerLazySingleton<CompressVideoUseCase>(
+       () => CompressVideoUseCase(sl<VideoCompressor>(), sl<MediaSaver>()));
+ }
+diff --git a/test/fast_encoding_test.dart b/test/fast_encoding_test.dart
+new file mode 100644
+index 0000000..ad50f70
+--- /dev/null
++++ b/test/fast_encoding_test.dart
+@@ -0,0 +1,101 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/features/videos/data/services/hardware_encoders.dart';
++import 'package:petit/features/videos/domain/video_bitrate.dart';
++
++void main() {
++  group('fastEncodingBitrateKbps', () {
++    int kbps({
++      int width = 1920,
++      int height = 1080,
++      int? frameRate = 30,
++      int crf = 23,
++      bool hevc = false,
++      int? maxShortSide,
++      int? sourceKbps,
++    }) =>
++        fastEncodingBitrateKbps(
++          width: width,
++          height: height,
++          frameRate: frameRate,
++          crf: crf,
++          hevc: hevc,
++          maxShortSide: maxShortSide,
++          sourceKbps: sourceKbps,
++        );
++
++    test('1080p30 at CRF 23 gets 0.1 bit per pixel', () {
++      expect(kbps(), 6221); // 62,208,000 pixels/s x 0.1 / 1000
++    });
++
++    test('every 6 CRF steps halve it, and the other way doubles it', () {
++      expect(kbps(crf: 29), 3110);
++      expect(kbps(crf: 35), 1555);
++      expect(kbps(crf: 17), 12442);
++    });
++
++    test('HEVC gets less than H.264 at the same quality', () {
++      // x265's CRF 28 looks like x264's CRF 23, in about 65% of the bits.
++      expect(kbps(crf: 28, hevc: true), 4044);
++      expect(kbps(crf: 28, hevc: true), lessThan(kbps(crf: 23)));
++    });
++
++    test('more pixels or frames need more', () {
++      expect(kbps(frameRate: 60), 12442);
++      expect(kbps(width: 3840, height: 2160), 24883);
++    });
++
++    test('a missing frame rate counts as 30', () {
++      expect(kbps(frameRate: null), kbps(frameRate: 30));
++    });
++
++    test('scaling down is by the shorter side, for any orientation', () {
++      expect(kbps(maxShortSide: 540), 1555); // a quarter of the pixels
++      expect(kbps(width: 1080, height: 1920, maxShortSide: 540), 1555);
++    });
++
++    test('a resolution that would not shrink the video changes nothing', () {
++      expect(kbps(maxShortSide: 1080), kbps());
++      expect(kbps(maxShortSide: 2160), kbps());
++    });
++
++    test('is capped just below the source bitrate', () {
++      expect(kbps(sourceKbps: 4000), 3600);
++      expect(kbps(sourceKbps: 100000), 6221, reason: 'a high cap changes nothing');
++    });
++
++    test('never goes below the floor, even for a tiny source', () {
++      expect(kbps(sourceKbps: 10), kMinVideoKbps);
++      expect(kbps(width: 160, height: 90, crf: 40), kMinVideoKbps);
++    });
++
++    test('never goes above the maximum', () {
++      expect(kbps(width: 7680, height: 4320, frameRate: 120, crf: 10),
++          kMaxFastKbps);
++    });
++  });
++
++  group('hardwareEncoderCandidates', () {
++    test('Apple platforms use VideoToolbox', () {
++      expect(hardwareEncoderCandidates('libx264', 'macos'), ['h264_videotoolbox']);
++      expect(hardwareEncoderCandidates('libx265', 'ios'), ['hevc_videotoolbox']);
++    });
++
++    test('Android uses MediaCodec', () {
++      expect(hardwareEncoderCandidates('libx264', 'android'), ['h264_mediacodec']);
++    });
++
++    test('Windows tries NVIDIA, Intel, AMD, then Media Foundation', () {
++      expect(hardwareEncoderCandidates('libx265', 'windows'),
++          ['hevc_nvenc', 'hevc_qsv', 'hevc_amf', 'hevc_mf']);
++    });
++
++    test('Linux only tries NVENC, which needs no device set-up', () {
++      expect(hardwareEncoderCandidates('libx264', 'linux'), ['h264_nvenc']);
++    });
++
++    test('there is nothing to try for VP9 or unknown systems', () {
++      expect(hardwareEncoderCandidates('libvpx-vp9', 'windows'), isEmpty);
++      expect(hardwareEncoderCandidates('libx264', 'other'), isEmpty);
++    });
++  });
++}
+diff --git a/test/ffmpeg_arguments_test.dart b/test/ffmpeg_arguments_test.dart
+index 50237c7..e68df8c 100644
+--- a/test/ffmpeg_arguments_test.dart
++++ b/test/ffmpeg_arguments_test.dart
+@@ -64,4 +64,72 @@ void main() {
+       expect(build(), contains('/my videos/in.mp4'));
+     });
+   });
++
++  group('hardware encoding', () {
++    List<String> build({
++      String encoder = 'h264_videotoolbox',
++      int? bitrate = 4000,
++      int? maxShortSide,
++    }) =>
++        buildVideoArguments(
++          inputPath: '/my videos/in.mp4',
++          outputPath: '/tmp/out.mp4',
++          videoCodec: 'libx264',
++          crf: 26,
++          preset: 'medium',
++          videoBitrateKbps: bitrate,
++          maxShortSide: maxShortSide,
++          hardwareEncoder: encoder,
++        );
++
++    test('uses the hardware encoder with a bitrate, and no CRF or preset', () {
++      expect(build(), [
++        '-i', '/my videos/in.mp4',
++        '-vcodec', 'h264_videotoolbox',
++        '-b:v', '4000k',
++        '-maxrate', '6000k',
++        '-bufsize', '8000k',
++        '/tmp/out.mp4',
++      ]);
++    });
++
++    test('hardware encoding needs a bitrate', () {
++      expect(() => build(bitrate: null), throwsArgumentError);
++    });
++
++    test('HEVC is tagged so Apple players accept it in an MP4', () {
++      final args = build(encoder: 'hevc_nvenc');
++      expect(args, containsAllInOrder(['-tag:v', 'hvc1']));
++      expect(build(encoder: 'h264_nvenc'), isNot(contains('-tag:v')));
++    });
++
++    test('the scale filter still goes in, before the output', () {
++      final args = build(maxShortSide: 720);
++      expect(args[args.indexOf('-vf') + 1], ffmpegScaleFilter(720));
++      expect(args.last, '/tmp/out.mp4');
++    });
++
++    test('the software command is unchanged when no hardware is asked for', () {
++      final args = buildVideoArguments(
++        inputPath: 'in.mp4',
++        outputPath: 'out.mp4',
++        videoCodec: 'libx264',
++        crf: 26,
++        preset: 'medium',
++      );
++      expect(args, containsAllInOrder(['-crf', '26', '-preset', 'medium']));
++    });
++  });
++
++  test('the probe encodes one second of test video and throws it away', () {
++    expect(buildHardwareProbeArguments('h264_nvenc'), [
++      '-hide_banner',
++      '-f', 'lavfi',
++      '-i', 'testsrc2=duration=1:size=640x360:rate=15',
++      '-vcodec', 'h264_nvenc',
++      '-b:v', '1000k',
++      '-f', 'null',
++      '-',
++    ]);
++  });
+ }
+diff --git a/test/helpers/viewmodel_fakes.dart b/test/helpers/viewmodel_fakes.dart
+index e232cff..8c45899 100644
+--- a/test/helpers/viewmodel_fakes.dart
++++ b/test/helpers/viewmodel_fakes.dart
+@@ -125,6 +125,18 @@ class FakeVideoCompressor implements VideoCompressor {
+   void Function(int percent)? progressCallback;
+   int? usedBitrateKbps;
+   int? usedMaxShortSide;
++  String? usedHardwareEncoder;
++  int? usedHardwareBitrateKbps;
++
++  /// The hardware encoder this "machine" has, or null for none.
++  String? hardwareEncoder;
++  int hardwareChecks = 0;
++
++  @override
++  Future<String?> hardwareEncoderFor(String videoCodec) async {
++    hardwareChecks++;
++    return hardwareEncoder;
++  }
+ 
+   @override
+   Future<VideoData> probe(File video) async => VideoData(
+@@ -146,10 +158,14 @@ class FakeVideoCompressor implements VideoCompressor {
+     required void Function(int percent) onProgress,
+     int? videoBitrateKbps,
+     int? maxShortSide,
++    String? hardwareEncoder,
++    int? hardwareBitrateKbps,
+   }) async {
+     progressCallback = onProgress;
+     usedBitrateKbps = videoBitrateKbps;
+     usedMaxShortSide = maxShortSide;
++    usedHardwareEncoder = hardwareEncoder;
++    usedHardwareBitrateKbps = hardwareBitrateKbps;
+     return lastTask = FakeVideoTask();
+   }
+ }
+diff --git a/test/settings_repository_test.dart b/test/settings_repository_test.dart
+index 7cbe2af..39820bd 100644
+--- a/test/settings_repository_test.dart
++++ b/test/settings_repository_test.dart
+@@ -20,6 +20,7 @@ void main() {
+         'settings_video_resolution': 'p720',
+         'settings_video_preset': 2,
+         'settings_video_target_size_mb': 50,
++        'settings_video_fast_encoding': true,
+       });
+ 
+       expect(
+@@ -33,6 +34,7 @@ void main() {
+             videoResolution: VideoResolution.p720,
+             videoPresetIndex: 2,
+             videoTargetSizeMb: 50,
++            videoFastEncoding: true,
+           ));
+     });
+ 
+@@ -58,6 +60,7 @@ void main() {
+       final s = settingsFromMap({
+         'settings_image_quality': 'high',
+         'settings_keep_transparency': 1,
++        'settings_video_fast_encoding': 'yes',
+         'settings_video_resolution': '4k',
+       });
+ 
+diff --git a/test/settings_viewmodel_test.dart b/test/settings_viewmodel_test.dart
+index ac6ba48..5470616 100644
+--- a/test/settings_viewmodel_test.dart
++++ b/test/settings_viewmodel_test.dart
+@@ -38,6 +38,7 @@ void main() {
+       vm.setVideoResolution(VideoResolution.p720);
+       vm.setVideoPresetIndex(2);
+       vm.setVideoTargetSizeMb(10);
++      vm.setVideoFastEncoding(true);
+ 
+       const expected = AppSettings(
+         imageQuality: 30,
+@@ -48,6 +49,7 @@ void main() {
+         videoResolution: VideoResolution.p720,
+         videoPresetIndex: 2,
+         videoTargetSizeMb: 10,
++        videoFastEncoding: true,
+       );
+       expect(c.read(settingsViewModelProvider), expected);
+       expect(h.settingsRepository.saved, expected);
+diff --git a/test/video_use_case_test.dart b/test/video_use_case_test.dart
+index 07b0daf..0670ddd 100644
+--- a/test/video_use_case_test.dart
++++ b/test/video_use_case_test.dart
+@@ -34,6 +34,18 @@ class FakeVideoCompressor implements VideoCompressor {
+   int? usedDurationMs;
+   int? usedBitrateKbps;
+   int? usedMaxShortSide;
++  String? usedHardwareEncoder;
++  int? usedHardwareBitrateKbps;
++
++  /// The hardware encoder this "machine" has, or null for none.
++  String? hardwareEncoder;
++  final hardwareAskedFor = <String>[];
++
++  @override
++  Future<String?> hardwareEncoderFor(String videoCodec) async {
++    hardwareAskedFor.add(videoCodec);
++    return hardwareEncoder;
++  }
+ 
+   @override
+   Future<VideoData> probe(File video) async {
+@@ -51,7 +63,11 @@ class FakeVideoCompressor implements VideoCompressor {
+     required void Function(int percent) onProgress,
+     int? videoBitrateKbps,
+     int? maxShortSide,
++    String? hardwareEncoder,
++    int? hardwareBitrateKbps,
+   }) async {
++    usedHardwareEncoder = hardwareEncoder;
++    usedHardwareBitrateKbps = hardwareBitrateKbps;
+     usedBitrateKbps = videoBitrateKbps;
+     usedMaxShortSide = maxShortSide;
+     usedCodec = videoCodec;
+@@ -315,6 +331,134 @@ void main() {
+       });
+     });
+ 
++    group('fast encoding', () {
++      // A sparse file: 50 MB on paper, so a 10 s video of 40,000 kbit/s.
++      File bigFile(String name) {
++        final file = File('${dir.path}/$name');
++        final handle = file.openSync(mode: FileMode.write);
++        handle.setPositionSync(50000000 - 1);
++        handle.writeByteSync(0);
++        handle.closeSync();
++        return file;
++      }
++
++      Future<FakeVideoCompressor> run({
++        bool fast = true,
++        String? hardware = 'h264_videotoolbox',
++        String codec = 'h264',
++        File? file,
++        int? maxShortSide,
++        int? targetBytes,
++      }) async {
++        final input = file ?? bigFile('big_${DateTime.now().microsecondsSinceEpoch}.mp4');
++        final compressor = FakeVideoCompressor(
++            data: dataFor(input, codec: codec, durationMs: 10000))
++          ..hardwareEncoder = hardware;
++        await CompressVideoUseCase(compressor, FakeSaver())(
++          input: input,
++          qualityPercent: 80,
++          preset: 'medium',
++          maxShortSide: maxShortSide,
++          targetBytes: targetBytes,
++          fastEncoding: fast,
++          onProgress: (_) {},
++          onError: (_) {},
++        );
++        return compressor;
++      }
++
++      test('is not even looked for unless asked', () async {
++        final compressor = await run(fast: false);
++
++        expect(compressor.hardwareAskedFor, isEmpty);
++        expect(compressor.usedHardwareEncoder, isNull);
++        expect(compressor.usedHardwareBitrateKbps, isNull);
++      });
++
++      test('uses normal encoding when the machine has no hardware for it',
++          () async {
++        final compressor = await run(hardware: null);
++
++        expect(compressor.hardwareAskedFor, ['libx264']);
++        expect(compressor.usedHardwareEncoder, isNull);
++        expect(compressor.usedHardwareBitrateKbps, isNull);
++      });
++
++      test('gives the hardware a bitrate worked out from the quality', () async {
++        final compressor = await run();
++
++        expect(compressor.usedHardwareEncoder, 'h264_videotoolbox');
++        // 1080p30 at CRF 26: 0.1 bit/pixel, halved every 6 steps, see
++        // fast_encoding_test.
++        expect(compressor.usedHardwareBitrateKbps, 4399);
++      });
++
++      test('still passes the normal settings, for the retry', () async {
++        final compressor = await run();
++
++        expect(compressor.usedCodec, 'libx264');
++        expect(compressor.usedCrf, 26);
++        expect(compressor.usedPreset, 'medium');
++        expect(compressor.usedBitrateKbps, isNull,
++            reason: 'quality mode: the retry uses CRF');
++      });
++
++      test('never asks for more than the video already has', () async {
++        // 100 bytes over 10 s: far below what the quality would ask for.
++        final compressor = await run(file: fileOfSize('tiny.mp4', 100));
++
++        expect(compressor.usedHardwareBitrateKbps, 100);
++      });
++
++      test('a smaller resolution needs a smaller bitrate', () async {
++        final compressor = await run(maxShortSide: 540);
++
++        expect(compressor.usedMaxShortSide, 540);
++        expect(compressor.usedHardwareBitrateKbps, 1100); // a quarter of 4399
++      });
++
++      test('a target size is the bitrate for the hardware too', () async {
++        final compressor = await run(targetBytes: 1000000);
++
++        expect(compressor.usedBitrateKbps, 632);
++        expect(compressor.usedHardwareBitrateKbps, 632);
++        expect(compressor.usedHardwareEncoder, 'h264_videotoolbox');
++      });
++
++      test('HEVC videos look for an HEVC encoder', () async {
++        final compressor =
++            await run(codec: 'hevc', hardware: 'hevc_videotoolbox');
++
++        expect(compressor.hardwareAskedFor, ['libx265']);
++        expect(compressor.usedHardwareEncoder, 'hevc_videotoolbox');
++      });
++    });
++
++    group('CheckFastEncodingUseCase', () {
++      test('is true when the machine has hardware for the codec', () async {
++        final compressor = FakeVideoCompressor()..hardwareEncoder = 'h264_nvenc';
++        expect(await CheckFastEncodingUseCase(compressor)('h264'), isTrue);
++        expect(compressor.hardwareAskedFor, ['libx264']);
++      });
++
++      test('is false when it has none', () async {
++        expect(await CheckFastEncodingUseCase(FakeVideoCompressor())('h264'),
++            isFalse);
++      });
++
++      test('maps the probed codec name to the software encoder', () async {
++        final compressor = FakeVideoCompressor();
++        final check = CheckFastEncodingUseCase(compressor);
++
++        await check('hevc');
++        await check('vp9');
++        await check('something-new');
++
++        expect(compressor.hardwareAskedFor,
++            ['libx265', 'libvpx-vp9', 'libx264']);
++      });
++    });
++
+     test('cancel is forwarded to the task', () async {
+       final input = fileOfSize('in.mp4', 500);
+       final compressor = FakeVideoCompressor(data: dataFor(input));
+diff --git a/test/videos_viewmodel_test.dart b/test/videos_viewmodel_test.dart
+index a7d0c8e..255ad5b 100644
+--- a/test/videos_viewmodel_test.dart
++++ b/test/videos_viewmodel_test.dart
+@@ -7,6 +7,7 @@ import 'package:petit/common/data/summary_report.dart';
+ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/core/utils/format_bytes.dart';
+ import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++import 'package:petit/features/settings/domain/entities/app_settings.dart';
+ import 'package:petit/features/videos/domain/video_bitrate.dart';
+ import 'package:petit/features/videos/presentation/state/videos_state.dart';
+ import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
+@@ -166,6 +167,101 @@ void main() {
+     });
+   });
+ 
++  group('fast encoding', () {
++    Future<(ProviderContainer, VideosViewModel)> pick({
++      String? hardware,
++      AppSettings settings = const AppSettings(),
++    }) async {
++      h.videoCompressor.hardwareEncoder = hardware;
++      h.picker.video = h.file('in.mp4', 1000).path;
++      final c = h.container(settings: settings);
++      final vm = c.read(videosViewModelProvider.notifier);
++      await vm.pickVideo();
++      await pumpEventQueue(); // the hardware check runs in the background
++      return (c, vm);
++    }
++
++    test('is offered when the machine has hardware for the video', () async {
++      final (c, _) = await pick(hardware: 'h264_nvenc');
++
++      expect(c.read(videosViewModelProvider).fastEncodingAvailable, isTrue);
++      expect(h.videoCompressor.hardwareChecks, 1);
++    });
++
++    test('is not offered when it has none', () async {
++      final (c, _) = await pick();
++
++      expect(c.read(videosViewModelProvider).fastEncodingAvailable, isFalse);
++    });
++
++    test('choosing it counts only when it is available', () async {
++      final (c, vm) = await pick();
++      vm.setFastEncoding(true);
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.fastEncoding, isTrue);
++      expect(s.usesFastEncoding, isFalse);
++    });
++
++    test('compressing uses the hardware when chosen and available', () async {
++      final (_, vm) = await pick(hardware: 'h264_nvenc');
++      vm.setFastEncoding(true);
++
++      await vm.compressVideo(onComplete: (_) {});
++
++      expect(h.videoCompressor.usedHardwareEncoder, 'h264_nvenc');
++      expect(h.videoCompressor.usedHardwareBitrateKbps, isNotNull);
++    });
++
++    test('compressing uses normal encoding when not chosen', () async {
++      final (_, vm) = await pick(hardware: 'h264_nvenc');
++
++      await vm.compressVideo(onComplete: (_) {});
++
++      expect(h.videoCompressor.usedHardwareEncoder, isNull);
++    });
++
++    test('compressing falls back quietly when it is chosen but not available',
++        () async {
++      final (_, vm) = await pick();
++      vm.setFastEncoding(true);
++
++      await vm.compressVideo(onComplete: (_) {});
++
++      expect(h.videoCompressor.usedHardwareEncoder, isNull);
++      expect(h.videoCompressor.lastTask, isNotNull);
++    });
++
++    test('starts from the default in Settings', () async {
++      final (c, _) = await pick(
++          hardware: 'h264_nvenc',
++          settings: const AppSettings(videoFastEncoding: true));
++
++      expect(c.read(videosViewModelProvider).usesFastEncoding, isTrue);
++    });
++
++    test('removing the video forgets that hardware was found', () async {
++      final (c, vm) = await pick(hardware: 'h264_nvenc');
++
++      vm.removeVideo();
++
++      expect(c.read(videosViewModelProvider).fastEncodingAvailable, isFalse);
++    });
++
++    test('a late answer for a video that is gone is ignored', () async {
++      h.videoCompressor.hardwareEncoder = 'h264_nvenc';
++      h.picker.video = h.file('in.mp4', 1000).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++
++      await vm.pickVideo();
++      vm.removeVideo(); // before the background check answered
++      await pumpEventQueue();
++
++      expect(c.read(videosViewModelProvider).fastEncodingAvailable, isFalse);
++    });
++  });
++
+   group('progress', () {
+     test('reports percent, and has no time left this early', () async {
+       h.picker.video = h.file('in.mp4', 1000).path;

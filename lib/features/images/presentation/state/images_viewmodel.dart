@@ -297,6 +297,7 @@ class ImagesViewModel extends Notifier<ImagesState> {
         images: List.of(state.pickedImages),
         globalQuality: state.globalQuality,
         options: state.options,
+        concurrency: ref.read(imageConcurrencyProvider),
         isCancelled: () => completer.isCanceled,
         onProgress: (progress) {
           eta.update(progress.completedSteps / progress.totalSteps);

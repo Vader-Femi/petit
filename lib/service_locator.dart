@@ -15,9 +15,13 @@ import 'package:petit/common/domain/services/media_saver.dart';
 import 'package:petit/common/domain/services/output_folder_preference.dart';
 import 'package:petit/common/domain/services/workspace.dart';
 import 'package:petit/core/utils/platform_utils.dart';
+import 'package:petit/features/images/data/services/desktop_heif_converter.dart';
 import 'package:petit/features/images/data/services/desktop_image_compressor.dart';
+import 'package:petit/features/images/data/services/desktop_image_previewer.dart';
 import 'package:petit/features/images/data/services/flutter_image_compressor.dart';
+import 'package:petit/features/images/data/services/noop_image_previewer.dart';
 import 'package:petit/features/images/domain/services/image_compressor.dart';
+import 'package:petit/features/images/domain/services/image_previewer.dart';
 import 'package:petit/features/images/domain/usecases/compress_images.dart';
 import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
 import 'package:petit/features/images/domain/usecases/read_images.dart';
@@ -84,12 +88,17 @@ void _registerMediaDependencies() {
     sl.registerLazySingleton<MediaPicker>(() => FileSelectorMediaPicker());
     sl.registerLazySingleton<MediaSaver>(() =>
         FolderMediaSaver(sl<FolderPicker>(), sl<OutputFolderPreference>()));
-    sl.registerLazySingleton<ImageCompressor>(() => DesktopImageCompressor());
+    sl.registerLazySingleton<DesktopHeifConverter>(() => DesktopHeifConverter());
+    sl.registerLazySingleton<ImageCompressor>(
+        () => DesktopImageCompressor(heifConverter: sl<DesktopHeifConverter>()));
+    sl.registerLazySingleton<ImagePreviewer>(
+        () => DesktopImagePreviewer(sl<DesktopHeifConverter>()));
   } else {
     // Android and iOS (and the frozen web build, which never resolves these).
     sl.registerLazySingleton<MediaPicker>(() => ImagePickerMediaPicker());
     sl.registerLazySingleton<MediaSaver>(() => GalleryMediaSaver());
     sl.registerLazySingleton<ImageCompressor>(() => FlutterImageCompressor());
+    sl.registerLazySingleton<ImagePreviewer>(() => NoopImagePreviewer());
   }
 
   // The "Save to" setting (only shown on desktop).
@@ -104,11 +113,13 @@ void _registerMediaDependencies() {
 
   // Use cases
   sl.registerLazySingleton<ReadImagesUseCase>(
-      () => ReadImagesUseCase(sl<ImageCompressor>()));
+      () => ReadImagesUseCase(sl<ImageCompressor>(), sl<ImagePreviewer>()));
   sl.registerLazySingleton<EstimateImageSizeUseCase>(
       () => EstimateImageSizeUseCase(sl<ImageCompressor>()));
   sl.registerLazySingleton<CompressImagesUseCase>(
       () => CompressImagesUseCase(sl<ImageCompressor>(), sl<MediaSaver>()));
+  sl.registerLazySingleton<CheckFastEncodingUseCase>(
+      () => CheckFastEncodingUseCase(sl<VideoCompressor>()));
   sl.registerLazySingleton<CompressVideoUseCase>(
       () => CompressVideoUseCase(sl<VideoCompressor>(), sl<MediaSaver>()));
 }

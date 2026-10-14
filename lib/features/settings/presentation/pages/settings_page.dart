@@ -143,6 +143,16 @@ class SettingsPage extends ConsumerWidget {
                     'Slower encoding makes a smaller file for the same quality.',
                     style: theme.textTheme.bodySmall,
                   ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Fast encoding'),
+                    subtitle: const Text(
+                        "Use your device's video hardware when it can. Much "
+                        'faster, but files come out somewhat bigger and a '
+                        'target size is less exact.'),
+                    value: settings.videoFastEncoding,
+                    onChanged: viewModel.setVideoFastEncoding,
+                  ),
                 ],
               ),
 
