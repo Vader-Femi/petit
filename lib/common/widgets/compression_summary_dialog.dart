@@ -61,6 +61,20 @@ class CompressionSummaryDialog extends StatelessWidget {
               ),
             ),
           ),
+          if (summaryReport.savedPercent <= 0) ...[
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'No space was saved. Nothing came out smaller at these '
+                'settings, so try a lower quality or a smaller target.',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: theme.error,
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 10),
           ClipRRect(
             borderRadius: BorderRadius.circular(12),

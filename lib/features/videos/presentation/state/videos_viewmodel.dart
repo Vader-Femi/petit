@@ -8,9 +8,11 @@ import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/core/di/providers.dart';
 import 'package:petit/core/utils/format_bytes.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+import 'package:petit/common/domain/progress_eta.dart';
 import 'package:petit/features/settings/domain/entities/app_settings.dart';
 import 'package:petit/features/settings/presentation/state/settings_viewmodel.dart';
 import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+import 'package:petit/features/videos/domain/video_bitrate.dart';
 import 'package:petit/features/videos/domain/entities/video_data.dart';
 import 'package:petit/features/videos/domain/entities/video_resolution.dart';
 import 'package:share_handler/share_handler.dart';
@@ -86,7 +88,7 @@ class VideosViewModel extends Notifier<VideosState> {
   }
 
   void setTargetSizeMb(int mb) {
-    state = state.copyWith(targetSizeMb: mb);
+    state = state.copyWith(targetSizeMb: mb.clamp(1, kMaxTargetSizeMb).toInt());
   }
 
   void updateCfrQualitySlider(double value) {
@@ -168,7 +170,13 @@ class VideosViewModel extends Notifier<VideosState> {
     var targetMb = state.targetSizeMb;
     if (!state.canTargetMb(targetMb)) {
       final smaller = kTargetSizeOptionsMb.where(state.canTargetMb);
-      if (smaller.isNotEmpty) targetMb = smaller.last;
+      if (smaller.isNotEmpty) {
+        targetMb = smaller.last;
+      } else if (state.videoBytes != null) {
+        // A video smaller than the smallest preset: half its size, at least 1.
+        final half = (state.videoBytes! / 2000000).floor();
+        targetMb = half < 1 ? 1 : half;
+      }
     }
 
     state = state.copyWith(resolution: resolution, targetSizeMb: targetMb);
@@ -192,7 +200,15 @@ class VideosViewModel extends Notifier<VideosState> {
         return;
       }
 
-      state = state.copyWith(isCompressing: true, percentComplete: 0);
+      // Settings that cannot help are explained in the panel; do not start.
+      final blocking = state.warnings.where((w) => w.blocksStart);
+      if (blocking.isNotEmpty) {
+        showResult(blocking.first.message);
+        return;
+      }
+
+      final eta = ProgressEta()..start();
+      state = state.copyWith(isCompressing: true, percentComplete: 0, eta: null);
 
       final job = await ref.read(compressVideoUseCaseProvider)(
         input: originalFile,
@@ -203,8 +219,10 @@ class VideosViewModel extends Notifier<VideosState> {
         targetBytes: state.mode == VideoMode.targetSize
             ? state.targetSizeMb * 1000000
             : null,
-        onProgress: (percent) =>
-            state = state.copyWith(percentComplete: percent),
+        onProgress: (percent) {
+          eta.update(percent / 100);
+          state = state.copyWith(percentComplete: percent, eta: eta.remaining);
+        },
         onError: showResult,
       );
 
@@ -272,6 +290,7 @@ class VideosViewModel extends Notifier<VideosState> {
       isCompressing: false,
       isLoading: false,
       percentComplete: 0,
+      eta: null,
     );
   }
 

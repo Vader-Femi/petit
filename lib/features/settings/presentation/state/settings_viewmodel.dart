@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:petit/core/di/providers.dart';
 import 'package:petit/features/settings/domain/entities/app_settings.dart';
 import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+import 'package:petit/features/videos/domain/video_bitrate.dart';
 
 final settingsViewModelProvider =
     NotifierProvider<SettingsViewModel, AppSettings>(SettingsViewModel.new);
@@ -38,8 +39,8 @@ class SettingsViewModel extends Notifier<AppSettings> {
       videoPresetIndex:
           value.clamp(0, AppSettings.maxVideoPresetIndex).toInt()));
 
-  void setVideoTargetSizeMb(int value) =>
-      _apply(state.copyWith(videoTargetSizeMb: value));
+  void setVideoTargetSizeMb(int value) => _apply(state.copyWith(
+      videoTargetSizeMb: value.clamp(1, kMaxTargetSizeMb).toInt()));
 
   void resetToDefaults() => _apply(const AppSettings());
 

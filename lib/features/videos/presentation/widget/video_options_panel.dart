@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:petit/common/widgets/save_to_tile.dart';
 import 'package:petit/common/widgets/slider_box.dart';
+import 'package:petit/common/widgets/target_size_field.dart';
 import 'package:petit/core/utils/format_bytes.dart';
 import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+import 'package:petit/features/videos/domain/video_warnings.dart';
 import 'package:petit/features/videos/presentation/state/video_presets.dart';
 import 'package:petit/features/videos/presentation/state/videos_state.dart';
 import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
@@ -49,6 +51,7 @@ class VideoOptionsPanel extends ConsumerWidget {
         _resolutionBox(context, state, viewModel),
         const SizedBox(height: 12),
         _speedBox(context, state, viewModel),
+        _WarningBox(warnings: state.warnings),
         const SaveToTile(),
       ],
     );
@@ -96,19 +99,30 @@ class VideoOptionsPanel extends ConsumerWidget {
     return _OptionBox(
       title: 'Target size',
       note: note,
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 4,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (final mb in kTargetSizeOptionsMb)
-            ChoiceChip(
-              label: Text('$mb MB'),
-              selected: state.targetSizeMb == mb,
-              // Sizes at or above the video's own size would not shrink it.
-              onSelected: state.canTargetMb(mb)
-                  ? (_) => viewModel.setTargetSizeMb(mb)
-                  : null,
-            ),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              for (final mb in kTargetSizeOptionsMb)
+                ChoiceChip(
+                  label: Text('$mb MB'),
+                  selected: state.targetSizeMb == mb,
+                  // Sizes at or above the video's own size would not shrink it.
+                  onSelected: state.canTargetMb(mb)
+                      ? (_) => viewModel.setTargetSizeMb(mb)
+                      : null,
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          TargetSizeField(
+            valueMb: state.targetSizeMb,
+            presets: kTargetSizeOptionsMb,
+            onChanged: viewModel.setTargetSizeMb,
+          ),
         ],
       ),
     );
@@ -159,6 +173,53 @@ class VideoOptionsPanel extends ConsumerWidget {
         divisions: kFfmpegPresets.length - 1,
         label: kFfmpegPresets[state.presetIndex].desc,
         onChanged: (value) => viewModel.setPresetIndex(value.toInt()),
+      ),
+    );
+  }
+}
+
+/// Warnings about choices that are unlikely to make the video smaller. Shown
+/// only when there is something to say.
+class _WarningBox extends StatelessWidget {
+  const _WarningBox({required this.warnings});
+
+  final List<VideoSettingsWarning> warnings;
+
+  @override
+  Widget build(BuildContext context) {
+    if (warnings.isEmpty) return const SizedBox.shrink();
+    final scheme = Theme.of(context).colorScheme;
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+      decoration: BoxDecoration(
+        color: scheme.errorContainer,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final warning in warnings)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.warning_amber_rounded,
+                      size: 20, color: scheme.onErrorContainer),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      warning.message,
+                      style: TextStyle(color: scheme.onErrorContainer),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
       ),
     );
   }

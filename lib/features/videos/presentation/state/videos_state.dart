@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:petit/features/videos/domain/entities/video_data.dart';
 import 'package:petit/features/videos/domain/entities/video_resolution.dart';
 import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+import 'package:petit/features/videos/domain/video_warnings.dart';
 import 'package:petit/features/videos/presentation/preview/video_preview.dart';
 
 const Object _unset = Object();
@@ -29,6 +30,7 @@ class VideosState {
     this.isCompressing = false,
     this.crfQuality = 80,
     this.percentComplete = 0,
+    this.eta,
     this.presetIndex = 1,
     this.isFabOpen = true,
     this.currentJob,
@@ -49,6 +51,9 @@ class VideosState {
   /// "Compression Level" slider, 0..100.
   final int crfQuality;
   final int percentComplete;
+
+  /// Time left for the running compression, once it can be told.
+  final Duration? eta;
 
   /// Index into the FFmpeg presets ("Desired File Size" slider).
   final int presetIndex;
@@ -90,6 +95,20 @@ class VideosState {
     return bytes == null || mb * 1000000 < bytes;
   }
 
+  /// What is wrong with, or risky about, the current choices for this video.
+  /// Empty until a video is picked.
+  List<VideoSettingsWarning> get warnings {
+    if (videoFile == null) return const [];
+    return videoSettingsWarnings(
+      aimsForSize: mode == VideoMode.targetSize,
+      qualityPercent: crfQuality,
+      targetMb: targetSizeMb,
+      downscales: resolution.shortSide != null && canUseResolution(resolution),
+      videoBytes: videoBytes,
+      durationMs: videoInfo?.durationMs,
+    );
+  }
+
   /// True while a video is being loaded or compressed.
   bool get isBusy => isLoading || isCompressing;
 
@@ -102,6 +121,7 @@ class VideosState {
     bool? isCompressing,
     int? crfQuality,
     int? percentComplete,
+    Object? eta = _unset,
     int? presetIndex,
     bool? isFabOpen,
     Object? currentJob = _unset,
@@ -121,6 +141,7 @@ class VideosState {
       isCompressing: isCompressing ?? this.isCompressing,
       crfQuality: crfQuality ?? this.crfQuality,
       percentComplete: percentComplete ?? this.percentComplete,
+      eta: identical(eta, _unset) ? this.eta : eta as Duration?,
       presetIndex: presetIndex ?? this.presetIndex,
       isFabOpen: isFabOpen ?? this.isFabOpen,
       currentJob: identical(currentJob, _unset)

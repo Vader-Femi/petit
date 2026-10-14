@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:petit/features/settings/data/services/shared_prefs_settings_repository.dart';
 import 'package:petit/features/settings/domain/entities/app_settings.dart';
 import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+import 'package:petit/features/videos/domain/video_bitrate.dart';
 
 void main() {
   group('settingsFromMap', () {
@@ -47,6 +48,10 @@ void main() {
       expect(s.videoQuality, 0);
       expect(s.videoPresetIndex, AppSettings.maxVideoPresetIndex);
       expect(s.videoTargetSizeMb, 1);
+      expect(
+          settingsFromMap({'settings_video_target_size_mb': 50000})
+              .videoTargetSizeMb,
+          kMaxTargetSizeMb);
     });
 
     test('wrong types and unknown names keep the defaults', () {

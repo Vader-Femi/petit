@@ -9,6 +9,7 @@ import 'package:petit/common/data/summary_report.dart';
 import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/core/di/providers.dart';
 import 'package:petit/core/utils/format_bytes.dart';
+import 'package:petit/common/domain/progress_eta.dart';
 import 'package:petit/features/images/domain/entities/image_data.dart';
 import 'package:petit/features/images/domain/entities/image_size_estimate.dart';
 import 'package:petit/features/images/domain/usecases/compress_images.dart';
@@ -284,6 +285,8 @@ class ImagesViewModel extends Notifier<ImagesState> {
 
     final totalLength = state.pickedImages.length;
 
+    final eta = ProgressEta()..start();
+
     final ImageBatchResult batch;
     try {
       batch = await ref.read(compressImagesUseCaseProvider)(
@@ -291,13 +294,15 @@ class ImagesViewModel extends Notifier<ImagesState> {
         globalQuality: state.globalQuality,
         options: state.options,
         isCancelled: () => completer.isCanceled,
-        onProgress: (progress) => setLoading(
-          LoadingData(
+        onProgress: (progress) {
+          eta.update(progress.completedSteps / progress.totalSteps);
+          setLoading(LoadingData(
               isLoading: true,
               completedSteps: progress.completedSteps,
               totalSteps: progress.totalSteps,
-              progressCounter: progress.percent),
-        ),
+              progressCounter: progress.percent,
+              eta: eta.remaining));
+        },
         onError: showResult,
       );
     } on MediaException catch (e) {

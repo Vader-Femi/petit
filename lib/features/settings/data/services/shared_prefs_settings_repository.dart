@@ -1,6 +1,7 @@
 import 'package:petit/features/settings/domain/entities/app_settings.dart';
 import 'package:petit/features/settings/domain/services/settings_repository.dart';
 import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+import 'package:petit/features/videos/domain/video_bitrate.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const _imageQuality = 'settings_image_quality';
@@ -55,7 +56,7 @@ AppSettings settingsFromMap(Map<String, Object?> values) {
     videoPresetIndex: intIn(_videoPreset, defaults.videoPresetIndex, 0,
         AppSettings.maxVideoPresetIndex),
     videoTargetSizeMb:
-        intIn(_videoTargetSizeMb, defaults.videoTargetSizeMb, 1, 100000),
+        intIn(_videoTargetSizeMb, defaults.videoTargetSizeMb, 1, kMaxTargetSizeMb),
   );
 }
 

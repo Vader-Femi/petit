@@ -23,12 +23,17 @@ import 'package:petit/features/videos/data/services/ffmpeg_video_thumbnailer.dar
 import 'package:petit/features/videos/domain/services/video_compressor.dart';
 import 'package:petit/features/videos/domain/services/video_thumbnailer.dart';
 import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+import 'package:petit/features/onboarding/data/services/shared_prefs_onboarding_store.dart';
+import 'package:petit/features/onboarding/domain/services/onboarding_store.dart';
 import 'package:petit/features/settings/data/services/shared_prefs_settings_repository.dart';
 import 'package:petit/features/settings/domain/entities/app_settings.dart';
 import 'package:petit/features/settings/domain/services/settings_repository.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 final sl = GetIt.instance;
+
+/// Name under which "welcome screens seen" is registered (a bare bool).
+const kOnboardingDoneInstance = 'onboardingDone';
 
 Future<void> initializeDependencies() async {
 
@@ -48,6 +53,17 @@ Future<void> initializeDependencies() async {
     sl.registerSingleton<AppSettings>(await settingsRepository.load());
   } catch (_) {
     // Start with the defaults; initialSettingsProvider falls back to them.
+  }
+
+  // Whether the welcome screens were seen, read once for the same reason.
+  final onboardingStore = SharedPrefsOnboardingStore(
+      sl<SharedPreferencesAsync>());
+  sl.registerSingleton<OnboardingStore>(onboardingStore);
+  try {
+    sl.registerSingleton<bool>(await onboardingStore.isDone(),
+        instanceName: kOnboardingDoneInstance);
+  } catch (_) {
+    // Treated as seen; see initialOnboardingDoneProvider.
   }
 }
 

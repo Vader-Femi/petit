@@ -1,13 +1,14 @@
 import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/material.dart';
+import 'package:petit/common/widgets/compression_progress_view.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:petit/core/utils/adaptive.dart';
 import 'package:petit/core/utils/platform_utils.dart';
 import 'package:petit/core/utils/shortcut_labels.dart';
 import 'package:petit/features/images/presentation/state/images_state.dart';
+import 'package:petit/features/images/presentation/state/loading_data.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
 import 'package:petit/features/images/presentation/widget/image_options_panel.dart';
-import 'package:step_progress_indicator/step_progress_indicator.dart';
 import '../../../../common/widgets/compression_summary_dialog.dart';
 import '../../../../common/widgets/save_to_tile.dart';
 import '../../../../common/widgets/slider_box.dart';
@@ -109,6 +110,13 @@ class _ImagesPageState extends ConsumerState<ImagesPage> {
           ),
       ],
     );
+  }
+
+  /// "Image 3 of 8": the image being worked on out of the whole batch.
+  static String _stepLabel(LoadingData loading) {
+    final total = loading.totalSteps ?? 1;
+    final current = ((loading.completedSteps ?? 0) + 1).clamp(1, total);
+    return total == 1 ? 'Working on your image' : 'Image $current of $total';
   }
 
   /// "2 of 5", the quality slider and the options under it.
@@ -234,68 +242,19 @@ class _ImagesPageState extends ConsumerState<ImagesPage> {
                   },
                 ),
               ),
-        loading.isLoading
-            ? Container(
-                color: Colors.black.withValues(alpha: 0.85),
-              )
-            : Container(),
-        loading.isLoading
-            ? loading.totalSteps == null
-                ? Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    mainAxisSize: MainAxisSize.max,
-                    children: [
-                      Text("Loading Please Wait"),
-                      SizedBox(height: 5),
-                      CircularProgressIndicator()
-                    ],
-                  )
-                : Container(
-                    width: 100,
-                    height: 100,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.primaryContainer,
-                        borderRadius: BorderRadius.circular(50)),
-                    child: Text(
-                      '${loading.progressCounter}%',
-                      style: TextStyle(
-                          fontSize: 30,
-                          fontWeight: FontWeight.w900,
-                          color: Theme.of(context).colorScheme.primary),
-                    ),
-                  )
-            : Container(),
-        (loading.isLoading && loading.totalSteps != null)
-            ? Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  SizedBox(
-                    height: 40,
-                  ),
-                  CircularStepProgressIndicator(
-                    totalSteps: loading.totalSteps ?? 1,
-                    stepSize: 20,
-                    selectedStepSize: 30,
-                    currentStep: loading.completedSteps ?? 1,
-                    width: 180,
-                    height: 180,
-                    padding: 0.02,
-                    selectedColor: Theme.of(context).colorScheme.primary,
-                    unselectedColor:
-                        Theme.of(context).colorScheme.surfaceContainer,
-                  ),
-                  Text(
-                    "Please keep app open\nwhile compressing",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: Theme.of(context).colorScheme.primary),
-                  ),
-                ],
-              )
-            : Container(),
+        if (loading.isLoading)
+          if (loading.totalSteps == null)
+            const CompressionProgressView(title: 'Loading images')
+          else
+            CompressionProgressView(
+              title: 'Compressing images',
+              percent: loading.progressCounter,
+              detail: _stepLabel(loading),
+              eta: loading.eta,
+              // One or two images are over too quickly for a countdown.
+              showEta: loading.totalSteps! > 2,
+              keepOpenHint: true,
+            ),
       ],
     );
   }

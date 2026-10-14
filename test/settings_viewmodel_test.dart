@@ -60,8 +60,10 @@ void main() {
       vm.setImageQuality(250);
       vm.setVideoQuality(-5);
       vm.setVideoPresetIndex(9);
+      vm.setVideoTargetSizeMb(0);
 
       final s = c.read(settingsViewModelProvider);
+      expect(s.videoTargetSizeMb, 1);
       expect(s.imageQuality, 100);
       expect(s.videoQuality, 0);
       expect(s.videoPresetIndex, AppSettings.maxVideoPresetIndex);

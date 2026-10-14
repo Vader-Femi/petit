@@ -48,6 +48,11 @@ jobs:
           test/image_processing_test.dart
           test/settings_viewmodel_test.dart
           test/settings_repository_test.dart
+          test/video_warnings_test.dart
+          test/target_size_field_test.dart
+          test/progress_eta_test.dart
+          test/compression_progress_view_test.dart
+          test/onboarding_test.dart
 
   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
   # it runs on demand and for pull requests into the production branch.

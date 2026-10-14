@@ -23,6 +23,16 @@ void main() {
   });
   tearDown(() => dir.deleteSync(recursive: true));
 
+  // A sparse file: big on paper, instant to create.
+  File sparseFile(String name, int bytes) {
+    final file = File('${dir.path}/$name');
+    final handle = file.openSync(mode: FileMode.write);
+    handle.setPositionSync(bytes - 1);
+    handle.writeByteSync(0);
+    handle.closeSync();
+    return file;
+  }
+
   group('loading a video', () {
     test('shows the preview and keeps the file', () async {
       final input = h.file('in.mp4', 1000);
@@ -88,16 +98,6 @@ void main() {
   });
 
   group('video information', () {
-    // A sparse file: big on paper, instant to create.
-    File sparseFile(String name, int bytes) {
-      final file = File('${dir.path}/$name');
-      final handle = file.openSync(mode: FileMode.write);
-      handle.setPositionSync(bytes - 1);
-      handle.writeByteSync(0);
-      handle.closeSync();
-      return file;
-    }
-
     test('the video is probed and its size read when it is picked', () async {
       h.picker.video = h.file('in.mp4', 1000).path;
       final c = h.container();
@@ -166,6 +166,113 @@ void main() {
     });
   });
 
+  group('progress', () {
+    test('reports percent, and has no time left this early', () async {
+      h.picker.video = h.file('in.mp4', 1000).path;
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+      await vm.pickVideo();
+      await vm.compressVideo(onComplete: (_) {});
+
+      h.videoCompressor.progressCallback!(40);
+
+      final s = c.read(videosViewModelProvider);
+      expect(s.percentComplete, 40);
+      expect(s.eta, isNull, reason: 'a fraction of a second is too early');
+    });
+
+    test('removing the video clears the time left', () async {
+      h.picker.video = h.file('in.mp4', 1000).path;
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+      await vm.pickVideo();
+
+      vm.removeVideo();
+
+      expect(c.read(videosViewModelProvider).eta, isNull);
+      expect(c.read(videosViewModelProvider).percentComplete, 0);
+    });
+  });
+
+  group('custom target size and warnings', () {
+    test('a typed size is kept, within limits', () {
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+
+      vm.setTargetSizeMb(37);
+      expect(c.read(videosViewModelProvider).targetSizeMb, 37);
+
+      vm.setTargetSizeMb(0);
+      expect(c.read(videosViewModelProvider).targetSizeMb, 1);
+
+      vm.setTargetSizeMb(99999);
+      expect(c.read(videosViewModelProvider).targetSizeMb, kMaxTargetSizeMb);
+    });
+
+    test('a video smaller than the smallest preset gets a size that fits',
+        () async {
+      h.picker.video = sparseFile('small.mp4', 4000000).path; // 4 MB
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+
+      await vm.pickVideo();
+
+      final s = c.read(videosViewModelProvider);
+      expect(s.targetSizeMb, 2, reason: 'half of 4 MB');
+      expect(s.canTargetMb(s.targetSizeMb), isTrue);
+    });
+
+    test('there are no warnings before a video is picked', () {
+      final c = h.container();
+      expect(c.read(videosViewModelProvider).warnings, isEmpty);
+    });
+
+    test('a target that is not smaller than the video is flagged', () async {
+      h.picker.video = sparseFile('big.mp4', 60000000).path;
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+      await vm.pickVideo();
+      vm.setMode(VideoMode.targetSize);
+
+      vm.setTargetSizeMb(50);
+      expect(c.read(videosViewModelProvider).warnings, isEmpty);
+
+      vm.setTargetSizeMb(60);
+      final warnings = c.read(videosViewModelProvider).warnings;
+      expect(warnings.single.blocksStart, isTrue);
+    });
+
+    test('compressing does not start with a target that cannot help',
+        () async {
+      h.picker.video = sparseFile('big.mp4', 60000000).path;
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+      await vm.pickVideo();
+      vm.setMode(VideoMode.targetSize);
+      vm.setTargetSizeMb(100);
+
+      await vm.compressVideo(onComplete: (_) {});
+
+      final s = c.read(videosViewModelProvider);
+      expect(s.isCompressing, isFalse);
+      expect(s.result, contains('not smaller'));
+      expect(h.videoCompressor.lastTask, isNull);
+    });
+
+    test('a warning that only advises does not stop compressing', () async {
+      h.picker.video = sparseFile('big.mp4', 60000000).path;
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+      await vm.pickVideo();
+      vm.updateCfrQualitySlider(0); // Minimal compression
+
+      expect(c.read(videosViewModelProvider).warnings, hasLength(1));
+      await vm.compressVideo(onComplete: (_) {});
+
+      expect(h.videoCompressor.lastTask, isNotNull);
+    });
+  });
+
   group('options reach the compressor', () {
     test('quality mode with a resolution', () async {
       h.picker.video = h.file('in.mp4', 1000).path;
@@ -181,7 +288,7 @@ void main() {
     });
 
     test('target size mode asks for a bitrate that fits the length', () async {
-      h.picker.video = h.file('in.mp4', 1000).path;
+      h.picker.video = sparseFile('big.mp4', 60000000).path; // 60 MB
       final c = h.container();
       final vm = c.read(videosViewModelProvider.notifier);
       await vm.pickVideo();

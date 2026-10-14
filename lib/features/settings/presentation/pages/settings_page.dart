@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:petit/common/widgets/save_to_tile.dart';
+import 'package:petit/common/widgets/target_size_field.dart';
 import 'package:petit/core/utils/platform_utils.dart';
+import 'package:petit/features/onboarding/presentation/pages/onboarding_screen.dart';
 import 'package:petit/features/settings/presentation/state/settings_viewmodel.dart';
 import 'package:petit/features/videos/domain/entities/video_resolution.dart';
 import 'package:petit/features/videos/presentation/state/video_presets.dart';
@@ -95,6 +97,12 @@ class SettingsPage extends ConsumerWidget {
                           ),
                       ],
                     ),
+                    const SizedBox(height: 12),
+                    TargetSizeField(
+                      valueMb: settings.videoTargetSizeMb,
+                      presets: kTargetSizeOptionsMb,
+                      onChanged: viewModel.setVideoTargetSizeMb,
+                    ),
                   ] else
                     _LabeledSlider(
                       label: 'Compression level',
@@ -145,6 +153,26 @@ class SettingsPage extends ConsumerWidget {
                   icon: Icons.folder_outlined,
                   children: [SaveToTile()],
                 ),
+
+              _Section(
+                title: 'About',
+                icon: Icons.info_outline,
+                children: [
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.waving_hand_outlined),
+                    title: const Text('Show the welcome tour'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (routeContext) => OnboardingScreen(
+                          onFinished: () => Navigator.of(routeContext).pop(),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
 
               Align(
                 alignment: Alignment.centerLeft,

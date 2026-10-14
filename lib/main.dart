@@ -11,6 +11,8 @@ import 'package:petit/core/utils/app_scroll_behavior.dart';
 import 'package:petit/core/utils/platform_utils.dart';
 import 'package:share_handler/share_handler.dart';
 import 'package:petit/features/home/presentation/pages/home_screen.dart';
+import 'package:petit/features/onboarding/presentation/pages/onboarding_screen.dart';
+import 'package:petit/features/onboarding/presentation/state/onboarding_viewmodel.dart';
 import 'package:petit/service_locator.dart';
 import 'package:upgrader/upgrader.dart';
 import 'config/routes/app_routes.dart';
@@ -222,6 +224,21 @@ class _MyAppState extends State<MyApp> {
     super.dispose();
   }
 
+  /// The main screen; on iOS wrapped to offer App Store updates.
+  Widget _home() {
+    return PlatformInfo.isIOS
+        ? UpgradeAlert(
+            dialogStyle: UpgradeDialogStyle.material,
+            showIgnore: false,
+            showLater: true,
+            upgrader: Upgrader(
+              durationUntilAlertAgain: const Duration(days: 3),
+            ),
+            child: const HomeScreen(),
+          )
+        : const HomeScreen();
+  }
+
   @override
   Widget build(BuildContext context) {
     return DynamicColorBuilder(
@@ -240,17 +257,20 @@ class _MyAppState extends State<MyApp> {
           navigatorObservers: [if (observer != null) observer!],
           initialRoute: '/',
           onGenerateRoute: AppRoutes.onGenerateRoutes,
-          home: PlatformInfo.isIOS
-              ? UpgradeAlert(
-                  dialogStyle: UpgradeDialogStyle.material,
-                  showIgnore: false,
-                  showLater: true,
-                  upgrader: Upgrader(
-                    durationUntilAlertAgain: const Duration(days: 3),
-                  ),
-                  child: HomeScreen(),
-                )
-              : HomeScreen(),
+          home: Consumer(
+            builder: (context, ref, _) {
+              final seenWelcome = ref.watch(onboardingDoneProvider);
+              return AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                child: seenWelcome
+                    ? _home()
+                    : OnboardingScreen(
+                        onFinished:
+                            ref.read(onboardingDoneProvider.notifier).complete,
+                      ),
+              );
+            },
+          ),
         );
       },
     );

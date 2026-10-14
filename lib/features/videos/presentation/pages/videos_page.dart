@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:petit/common/widgets/compression_progress_view.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:petit/core/utils/adaptive.dart';
 import 'package:petit/core/utils/platform_utils.dart';
@@ -6,7 +7,6 @@ import 'package:petit/core/utils/shortcut_labels.dart';
 import 'package:petit/features/videos/presentation/state/videos_state.dart';
 import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
 import 'package:petit/features/videos/presentation/widget/video_options_panel.dart';
-import 'package:step_progress_indicator/step_progress_indicator.dart';
 import '../../../../common/widgets/compression_summary_dialog.dart';
 
 class VideosPage extends ConsumerStatefulWidget {
@@ -98,53 +98,16 @@ class _VideosPageState extends ConsumerState<VideosPage> {
               fontSize: 18,
             ),
           ),
-        (state.isLoading || state.isCompressing)
-            ? Container(
-                color: Colors.black.withValues(alpha: 0.85),
-              )
-            : Container(),
-        (state.isLoading) ? const CircularProgressIndicator() : Container(),
-        (state.isCompressing)
-            ? Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  SizedBox(
-                    height: 40,
-                  ),
-                  CircularStepProgressIndicator(
-                    totalSteps: 100,
-                    currentStep: state.percentComplete,
-                    stepSize: 10,
-                    selectedColor: Theme.of(context).colorScheme.primary,
-                    unselectedColor:
-                        Theme.of(context).colorScheme.surfaceContainer,
-                    padding: 0,
-                    width: 200,
-                    height: 200,
-                    selectedStepSize: 30,
-                    roundedCap: (_, __) => true,
-                  ),
-                  Text(
-                    "Please keep app open\nwhile compressing",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: Theme.of(context).colorScheme.primary),
-                  ),
-                ],
-              )
-            : Container(),
-        (state.isCompressing)
-            ? Text(
-                "${state.percentComplete}%",
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    fontSize: 50,
-                    fontWeight: FontWeight.w700,
-                    color: Theme.of(context).colorScheme.primary),
-              )
-            : Container(),
+        if (state.isCompressing)
+          CompressionProgressView(
+            title: 'Compressing video',
+            percent: state.percentComplete,
+            eta: state.eta,
+            showEta: true,
+            keepOpenHint: true,
+          )
+        else if (state.isLoading)
+          const CompressionProgressView(title: 'Loading video'),
       ],
     );
   }

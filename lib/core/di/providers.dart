@@ -8,6 +8,7 @@ import 'package:petit/common/domain/services/workspace.dart';
 import 'package:petit/features/images/domain/usecases/compress_images.dart';
 import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
 import 'package:petit/features/images/domain/usecases/read_images.dart';
+import 'package:petit/features/onboarding/domain/services/onboarding_store.dart';
 import 'package:petit/features/settings/domain/entities/app_settings.dart';
 import 'package:petit/features/settings/domain/services/settings_repository.dart';
 import 'package:petit/features/videos/domain/services/video_compressor.dart';
@@ -37,6 +38,15 @@ final settingsRepositoryProvider =
 /// failed). The Settings ViewModel starts from this.
 final initialSettingsProvider = Provider<AppSettings>(
     (ref) => sl.isRegistered<AppSettings>() ? sl<AppSettings>() : const AppSettings());
+
+final onboardingStoreProvider =
+    Provider<OnboardingStore>((ref) => sl<OnboardingStore>());
+
+/// Whether the welcome screens were already seen when the app started. Counts
+/// as seen if that could not be read: better to skip them than to nag.
+final initialOnboardingDoneProvider = Provider<bool>((ref) =>
+    !sl.isRegistered<bool>(instanceName: kOnboardingDoneInstance) ||
+    sl<bool>(instanceName: kOnboardingDoneInstance));
 
 final readImagesUseCaseProvider =
     Provider<ReadImagesUseCase>((ref) => sl<ReadImagesUseCase>());

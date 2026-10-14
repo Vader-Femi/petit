@@ -153,3 +153,39 @@ target size, resolution and encoding speed. On desktop it also shows the "Save t
 - Defaults apply to *new work*: a new selection of images starts at the default quality and options,
   and the Videos tab starts from the video defaults. Changing a default applies at once to a tab that
   has nothing picked, and leaves a selection in progress alone. Changes are saved immediately.
+
+## Custom target size and warnings (videos)
+
+- **Custom size.** Next to the preset chips, `TargetSizeField` takes any whole number of megabytes from 1
+  to `kMaxTargetSizeMb` (9999). The same field is on the Settings tab. It is empty while a preset is
+  chosen. A video smaller than the smallest preset (5 MB) gets half its own size as the starting
+  target.
+- **Warnings.** `videoSettingsWarnings` (pure, in `videos/domain/video_warnings.dart`) looks at the
+  video and the chosen settings. `VideosState.warnings` feeds a warning box in the options panel.
+  - A target that is not smaller than the video **blocks starting** (exact: compressing cannot help).
+  - A target below what the video's length allows (`minimumTargetBytes`: the bitrate floor of
+    100 kbit/s plus audio) is shown as a warning only. The result will be bigger than the target.
+  - In quality mode there is no way to know the result before encoding, so two hints are shown
+    ("may not make it smaller"): Minimal compression, and a video that already averages under
+    1000 kbit/s. Neither shows when the resolution is lowered, which shrinks the file anyway.
+  - Whatever happens, the original is kept when the result is not smaller, and the summary dialog
+    says when no space was saved.
+- Images get the equivalent from the size estimate (see above): the panel says when the original
+  would be kept or the result would be larger.
+
+## Progress screen and welcome screens
+
+- **Progress view.** `CompressionProgressView` (`common/widgets/`) is the overlay both tabs show while
+  working: a ring with the percentage, what is happening ("Image 3 of 8"), the time left, and a
+  reminder to keep the app open. It uses theme colours (the old overlay was hard-coded black) and
+  blocks taps underneath. Loading files shows the same ring, spinning.
+- **Time left.** `ProgressEta` (pure Dart, injectable clock) turns "how far along" into "how long to
+  go". It stays quiet until the job is 3% done and has run 3 seconds, then blends readings so the
+  number does not jump. `formatEta` rounds it ("about 2 minutes left"). Images report progress per
+  image, so the estimate is only shown for batches of 3 or more; video uses FFmpeg's percentage,
+  which is not perfectly linear, so treat it as a guide.
+- **Welcome screens.** `features/onboarding/`: three pages (what Petit does, how to use it, files stay
+  on the device) with Skip / Next / Get started. `OnboardingStore` remembers that they were seen
+  (read once at start-up, like the settings); `main.dart` shows them instead of `HomeScreen` until
+  then. Settings has "Show the welcome tour" to see them again. If the stored answer cannot be read
+  they are skipped.

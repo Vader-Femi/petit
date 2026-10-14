@@ -1,0 +1,955 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 26d5e5f..c5b153b 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -48,6 +48,8 @@ jobs:
+           test/image_processing_test.dart
+           test/settings_viewmodel_test.dart
+           test/settings_repository_test.dart
++          test/video_warnings_test.dart
++          test/target_size_field_test.dart
+ 
+   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
+   # it runs on demand and for pull requests into the production branch.
+diff --git a/docs/architecture.md b/docs/architecture.md
+index 9958753..c78097e 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -153,3 +153,22 @@ target size, resolution and encoding speed. On desktop it also shows the "Save t
+ - Defaults apply to *new work*: a new selection of images starts at the default quality and options,
+   and the Videos tab starts from the video defaults. Changing a default applies at once to a tab that
+   has nothing picked, and leaves a selection in progress alone. Changes are saved immediately.
++
++## Custom target size and warnings (videos)
++
++- **Custom size.** Next to the preset chips, `TargetSizeField` takes any whole number of megabytes from 1
++  to `kMaxTargetSizeMb` (9999). The same field is on the Settings tab. It is empty while a preset is
++  chosen. A video smaller than the smallest preset (5 MB) gets half its own size as the starting
++  target.
++- **Warnings.** `videoSettingsWarnings` (pure, in `videos/domain/video_warnings.dart`) looks at the
++  video and the chosen settings. `VideosState.warnings` feeds a warning box in the options panel.
++  - A target that is not smaller than the video **blocks starting** (exact: compressing cannot help).
++  - A target below what the video's length allows (`minimumTargetBytes`: the bitrate floor of
++    100 kbit/s plus audio) is shown as a warning only. The result will be bigger than the target.
++  - In quality mode there is no way to know the result before encoding, so two hints are shown
++    ("may not make it smaller"): Minimal compression, and a video that already averages under
++    1000 kbit/s. Neither shows when the resolution is lowered, which shrinks the file anyway.
++  - Whatever happens, the original is kept when the result is not smaller, and the summary dialog
++    says when no space was saved.
++- Images get the equivalent from the size estimate (see above): the panel says when the original
++  would be kept or the result would be larger.
+diff --git a/lib/common/widgets/compression_summary_dialog.dart b/lib/common/widgets/compression_summary_dialog.dart
+index 8293071..5d512f5 100644
+--- a/lib/common/widgets/compression_summary_dialog.dart
++++ b/lib/common/widgets/compression_summary_dialog.dart
+@@ -61,6 +61,20 @@ class CompressionSummaryDialog extends StatelessWidget {
+               ),
+             ),
+           ),
++          if (summaryReport.savedPercent <= 0) ...[
++            const SizedBox(height: 10),
++            Align(
++              alignment: Alignment.centerLeft,
++              child: Text(
++                'No space was saved. Nothing came out smaller at these '
++                'settings, so try a lower quality or a smaller target.',
++                style: TextStyle(
++                  fontSize: 13,
++                  color: theme.error,
++                ),
++              ),
++            ),
++          ],
+           const SizedBox(height: 10),
+           ClipRRect(
+             borderRadius: BorderRadius.circular(12),
+diff --git a/lib/common/widgets/target_size_field.dart b/lib/common/widgets/target_size_field.dart
+new file mode 100644
+index 0000000..5e26645
+--- /dev/null
++++ b/lib/common/widgets/target_size_field.dart
+@@ -0,0 +1,84 @@
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:petit/features/videos/domain/video_bitrate.dart';
++
++/// A box for typing a target size in whole megabytes, next to the preset
++/// chips. It stays empty while one of [presets] is chosen and shows the number
++/// when a custom size is in use. Only valid sizes (1 to [kMaxTargetSizeMb])
++/// are reported through [onChanged].
++class TargetSizeField extends StatefulWidget {
++  const TargetSizeField({
++    super.key,
++    required this.valueMb,
++    required this.presets,
++    required this.onChanged,
++  });
++
++  final int valueMb;
++  final List<int> presets;
++  final ValueChanged<int> onChanged;
++
++  @override
++  State<TargetSizeField> createState() => _TargetSizeFieldState();
++}
++
++class _TargetSizeFieldState extends State<TargetSizeField> {
++  late final TextEditingController _controller =
++      TextEditingController(text: _textFor(widget.valueMb));
++
++  String _textFor(int mb) => widget.presets.contains(mb) ? '' : '$mb';
++
++  @override
++  void didUpdateWidget(TargetSizeField oldWidget) {
++    super.didUpdateWidget(oldWidget);
++    // The size changed from outside (a chip, or another video was picked).
++    // Typing also changes it, but then the box already shows that number, and
++    // an empty box that is being retyped must not be refilled.
++    if (widget.valueMb != oldWidget.valueMb &&
++        int.tryParse(_controller.text) != widget.valueMb) {
++      _controller.text = _textFor(widget.valueMb);
++    }
++  }
++
++  @override
++  void dispose() {
++    _controller.dispose();
++    super.dispose();
++  }
++
++  String? get _error {
++    final text = _controller.text;
++    if (text.isEmpty) return null;
++    final mb = int.tryParse(text);
++    if (mb == null || mb < 1) return 'Enter at least 1 MB';
++    return null;
++  }
++
++  void _onChanged(String text) {
++    final mb = int.tryParse(text);
++    if (mb != null && mb >= 1 && mb <= kMaxTargetSizeMb) widget.onChanged(mb);
++    setState(() {}); // refresh the error text
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return SizedBox(
++      width: 200,
++      child: TextField(
++        controller: _controller,
++        keyboardType: TextInputType.number,
++        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
++        maxLength: kMaxTargetSizeMb.toString().length,
++        onChanged: _onChanged,
++        decoration: InputDecoration(
++          labelText: 'Custom size',
++          suffixText: 'MB',
++          counterText: '',
++          isDense: true,
++          errorText: _error,
++          border: const OutlineInputBorder(),
++        ),
++      ),
++    );
++  }
++}
+diff --git a/lib/features/settings/data/services/shared_prefs_settings_repository.dart b/lib/features/settings/data/services/shared_prefs_settings_repository.dart
+index 232e518..e5e9992 100644
+--- a/lib/features/settings/data/services/shared_prefs_settings_repository.dart
++++ b/lib/features/settings/data/services/shared_prefs_settings_repository.dart
+@@ -1,6 +1,7 @@
+ import 'package:petit/features/settings/domain/entities/app_settings.dart';
+ import 'package:petit/features/settings/domain/services/settings_repository.dart';
+ import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++import 'package:petit/features/videos/domain/video_bitrate.dart';
+ import 'package:shared_preferences/shared_preferences.dart';
+ 
+ const _imageQuality = 'settings_image_quality';
+@@ -55,7 +56,7 @@ AppSettings settingsFromMap(Map<String, Object?> values) {
+     videoPresetIndex: intIn(_videoPreset, defaults.videoPresetIndex, 0,
+         AppSettings.maxVideoPresetIndex),
+     videoTargetSizeMb:
+-        intIn(_videoTargetSizeMb, defaults.videoTargetSizeMb, 1, 100000),
++        intIn(_videoTargetSizeMb, defaults.videoTargetSizeMb, 1, kMaxTargetSizeMb),
+   );
+ }
+ 
+diff --git a/lib/features/settings/presentation/pages/settings_page.dart b/lib/features/settings/presentation/pages/settings_page.dart
+index 417b5c0..942f3c4 100644
+--- a/lib/features/settings/presentation/pages/settings_page.dart
++++ b/lib/features/settings/presentation/pages/settings_page.dart
+@@ -1,6 +1,7 @@
+ import 'package:flutter/material.dart';
+ import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:petit/common/widgets/save_to_tile.dart';
++import 'package:petit/common/widgets/target_size_field.dart';
+ import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:petit/features/settings/presentation/state/settings_viewmodel.dart';
+ import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+@@ -95,6 +96,12 @@ class SettingsPage extends ConsumerWidget {
+                           ),
+                       ],
+                     ),
++                    const SizedBox(height: 12),
++                    TargetSizeField(
++                      valueMb: settings.videoTargetSizeMb,
++                      presets: kTargetSizeOptionsMb,
++                      onChanged: viewModel.setVideoTargetSizeMb,
++                    ),
+                   ] else
+                     _LabeledSlider(
+                       label: 'Compression level',
+diff --git a/lib/features/settings/presentation/state/settings_viewmodel.dart b/lib/features/settings/presentation/state/settings_viewmodel.dart
+index 317ba87..bf3dca9 100644
+--- a/lib/features/settings/presentation/state/settings_viewmodel.dart
++++ b/lib/features/settings/presentation/state/settings_viewmodel.dart
+@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:petit/core/di/providers.dart';
+ import 'package:petit/features/settings/domain/entities/app_settings.dart';
+ import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++import 'package:petit/features/videos/domain/video_bitrate.dart';
+ 
+ final settingsViewModelProvider =
+     NotifierProvider<SettingsViewModel, AppSettings>(SettingsViewModel.new);
+@@ -38,8 +39,8 @@ class SettingsViewModel extends Notifier<AppSettings> {
+       videoPresetIndex:
+           value.clamp(0, AppSettings.maxVideoPresetIndex).toInt()));
+ 
+-  void setVideoTargetSizeMb(int value) =>
+-      _apply(state.copyWith(videoTargetSizeMb: value));
++  void setVideoTargetSizeMb(int value) => _apply(state.copyWith(
++      videoTargetSizeMb: value.clamp(1, kMaxTargetSizeMb).toInt()));
+ 
+   void resetToDefaults() => _apply(const AppSettings());
+ 
+diff --git a/lib/features/videos/domain/video_bitrate.dart b/lib/features/videos/domain/video_bitrate.dart
+index 21d28d0..405c06c 100644
+--- a/lib/features/videos/domain/video_bitrate.dart
++++ b/lib/features/videos/domain/video_bitrate.dart
+@@ -20,3 +20,20 @@ int bitrateForTargetSize({
+   final totalKbps = targetBytes * 8 * 0.95 / (durationMs / 1000) / 1000;
+   return math.max(kMinVideoKbps, (totalKbps - audioKbps).round());
+ }
++
++/// Largest target size accepted, in megabytes (1 MB = 1,000,000 bytes).
++const int kMaxTargetSizeMb = 9999;
++
++/// The smallest file [bitrateForTargetSize] can aim for with a clip lasting
++/// [durationMs]: below this the video bitrate stops at [kMinVideoKbps], so
++/// the result is bigger than the target.
++///
++/// That is `(kMinVideoKbps + audioKbps)` kbit/s for the whole clip, plus the
++/// 5% that [bitrateForTargetSize] holds back for the container.
++int minimumTargetBytes({
++  required int durationMs,
++  int audioKbps = kAssumedAudioKbps,
++}) {
++  final seconds = durationMs / 1000;
++  return ((kMinVideoKbps + audioKbps) * 1000 / 8 * seconds / 0.95).round();
++}
+diff --git a/lib/features/videos/domain/video_warnings.dart b/lib/features/videos/domain/video_warnings.dart
+new file mode 100644
+index 0000000..687e359
+--- /dev/null
++++ b/lib/features/videos/domain/video_warnings.dart
+@@ -0,0 +1,82 @@
++import 'package:petit/core/utils/format_bytes.dart';
++import 'package:petit/features/videos/domain/video_bitrate.dart';
++
++/// A compression level (0..100) at or below this is "Minimal": the encoder
++/// aims for near-original quality, which is not always a smaller file.
++const int kMinimalCompressionPercent = 20;
++
++/// A video that already averages less than this (video and audio together) has
++/// little left to squeeze out.
++const int kAlreadySmallKbps = 1000;
++
++/// Something about the chosen settings the user should know before starting.
++class VideoSettingsWarning {
++  const VideoSettingsWarning(this.message, {this.blocksStart = false});
++
++  final String message;
++
++  /// True when starting would be pointless, so the app refuses to start.
++  final bool blocksStart;
++}
++
++/// Warnings about settings that are unlikely to make the video smaller.
++///
++/// There is no way to know the result before encoding, so the quality-based
++/// ones are hints ("may"), and the target-size ones are exact. The app also
++/// keeps the original whenever the result is not smaller.
++///
++/// [downscales] is true when the chosen resolution really makes the picture
++/// smaller, which shrinks the file whatever else is set.
++List<VideoSettingsWarning> videoSettingsWarnings({
++  required bool aimsForSize,
++  required int qualityPercent,
++  required int targetMb,
++  required bool downscales,
++  int? videoBytes,
++  int? durationMs,
++}) {
++  final warnings = <VideoSettingsWarning>[];
++  final seconds = (durationMs != null && durationMs > 0) ? durationMs / 1000 : null;
++
++  if (aimsForSize) {
++    final targetBytes = targetMb * 1000000;
++
++    if (videoBytes != null && targetBytes >= videoBytes) {
++      warnings.add(VideoSettingsWarning(
++        'The target ($targetMb MB) is not smaller than this video '
++        '(${formatBytes(videoBytes)}), so compressing cannot help. '
++        'Choose a smaller size.',
++        blocksStart: true,
++      ));
++    } else if (seconds != null) {
++      final floor = minimumTargetBytes(durationMs: durationMs!);
++      if (targetBytes < floor) {
++        warnings.add(VideoSettingsWarning(
++          'A video this long cannot get below about ${formatBytes(floor)}. '
++          'The result will be that size, at the lowest picture quality.',
++        ));
++      }
++    }
++    return warnings;
++  }
++
++  if (downscales) return warnings;
++
++  if (qualityPercent <= kMinimalCompressionPercent) {
++    warnings.add(const VideoSettingsWarning(
++      'Minimal compression may not make this video smaller. If the result '
++      'is not smaller, the original is kept.',
++    ));
++  } else if (videoBytes != null && seconds != null) {
++    final kbps = videoBytes * 8 / seconds / 1000;
++    if (kbps < kAlreadySmallKbps) {
++      warnings.add(VideoSettingsWarning(
++        'This video is already small (about ${kbps.round()} kbit/s), so '
++        'compressing it again may not shrink it. If the result is not '
++        'smaller, the original is kept.',
++      ));
++    }
++  }
++
++  return warnings;
++}
+diff --git a/lib/features/videos/presentation/state/videos_state.dart b/lib/features/videos/presentation/state/videos_state.dart
+index 681992e..ceef647 100644
+--- a/lib/features/videos/presentation/state/videos_state.dart
++++ b/lib/features/videos/presentation/state/videos_state.dart
+@@ -3,6 +3,7 @@ import 'dart:io';
+ import 'package:petit/features/videos/domain/entities/video_data.dart';
+ import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
++import 'package:petit/features/videos/domain/video_warnings.dart';
+ import 'package:petit/features/videos/presentation/preview/video_preview.dart';
+ 
+ const Object _unset = Object();
+@@ -90,6 +91,20 @@ class VideosState {
+     return bytes == null || mb * 1000000 < bytes;
+   }
+ 
++  /// What is wrong with, or risky about, the current choices for this video.
++  /// Empty until a video is picked.
++  List<VideoSettingsWarning> get warnings {
++    if (videoFile == null) return const [];
++    return videoSettingsWarnings(
++      aimsForSize: mode == VideoMode.targetSize,
++      qualityPercent: crfQuality,
++      targetMb: targetSizeMb,
++      downscales: resolution.shortSide != null && canUseResolution(resolution),
++      videoBytes: videoBytes,
++      durationMs: videoInfo?.durationMs,
++    );
++  }
++
+   /// True while a video is being loaded or compressed.
+   bool get isBusy => isLoading || isCompressing;
+ 
+diff --git a/lib/features/videos/presentation/state/videos_viewmodel.dart b/lib/features/videos/presentation/state/videos_viewmodel.dart
+index 4c972e9..2bb45a7 100644
+--- a/lib/features/videos/presentation/state/videos_viewmodel.dart
++++ b/lib/features/videos/presentation/state/videos_viewmodel.dart
+@@ -11,6 +11,7 @@ import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+ import 'package:petit/features/settings/domain/entities/app_settings.dart';
+ import 'package:petit/features/settings/presentation/state/settings_viewmodel.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
++import 'package:petit/features/videos/domain/video_bitrate.dart';
+ import 'package:petit/features/videos/domain/entities/video_data.dart';
+ import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+ import 'package:share_handler/share_handler.dart';
+@@ -86,7 +87,7 @@ class VideosViewModel extends Notifier<VideosState> {
+   }
+ 
+   void setTargetSizeMb(int mb) {
+-    state = state.copyWith(targetSizeMb: mb);
++    state = state.copyWith(targetSizeMb: mb.clamp(1, kMaxTargetSizeMb).toInt());
+   }
+ 
+   void updateCfrQualitySlider(double value) {
+@@ -168,7 +169,13 @@ class VideosViewModel extends Notifier<VideosState> {
+     var targetMb = state.targetSizeMb;
+     if (!state.canTargetMb(targetMb)) {
+       final smaller = kTargetSizeOptionsMb.where(state.canTargetMb);
+-      if (smaller.isNotEmpty) targetMb = smaller.last;
++      if (smaller.isNotEmpty) {
++        targetMb = smaller.last;
++      } else if (state.videoBytes != null) {
++        // A video smaller than the smallest preset: half its size, at least 1.
++        final half = (state.videoBytes! / 2000000).floor();
++        targetMb = half < 1 ? 1 : half;
++      }
+     }
+ 
+     state = state.copyWith(resolution: resolution, targetSizeMb: targetMb);
+@@ -192,6 +199,13 @@ class VideosViewModel extends Notifier<VideosState> {
+         return;
+       }
+ 
++      // Settings that cannot help are explained in the panel; do not start.
++      final blocking = state.warnings.where((w) => w.blocksStart);
++      if (blocking.isNotEmpty) {
++        showResult(blocking.first.message);
++        return;
++      }
++
+       state = state.copyWith(isCompressing: true, percentComplete: 0);
+ 
+       final job = await ref.read(compressVideoUseCaseProvider)(
+diff --git a/lib/features/videos/presentation/widget/video_options_panel.dart b/lib/features/videos/presentation/widget/video_options_panel.dart
+index 24a170b..a4f0bbb 100644
+--- a/lib/features/videos/presentation/widget/video_options_panel.dart
++++ b/lib/features/videos/presentation/widget/video_options_panel.dart
+@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
+ import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:petit/common/widgets/save_to_tile.dart';
+ import 'package:petit/common/widgets/slider_box.dart';
++import 'package:petit/common/widgets/target_size_field.dart';
+ import 'package:petit/core/utils/format_bytes.dart';
+ import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++import 'package:petit/features/videos/domain/video_warnings.dart';
+ import 'package:petit/features/videos/presentation/state/video_presets.dart';
+ import 'package:petit/features/videos/presentation/state/videos_state.dart';
+ import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
+@@ -49,6 +51,7 @@ class VideoOptionsPanel extends ConsumerWidget {
+         _resolutionBox(context, state, viewModel),
+         const SizedBox(height: 12),
+         _speedBox(context, state, viewModel),
++        _WarningBox(warnings: state.warnings),
+         const SaveToTile(),
+       ],
+     );
+@@ -96,19 +99,30 @@ class VideoOptionsPanel extends ConsumerWidget {
+     return _OptionBox(
+       title: 'Target size',
+       note: note,
+-      child: Wrap(
+-        spacing: 8,
+-        runSpacing: 4,
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
+-          for (final mb in kTargetSizeOptionsMb)
+-            ChoiceChip(
+-              label: Text('$mb MB'),
+-              selected: state.targetSizeMb == mb,
+-              // Sizes at or above the video's own size would not shrink it.
+-              onSelected: state.canTargetMb(mb)
+-                  ? (_) => viewModel.setTargetSizeMb(mb)
+-                  : null,
+-            ),
++          Wrap(
++            spacing: 8,
++            runSpacing: 4,
++            children: [
++              for (final mb in kTargetSizeOptionsMb)
++                ChoiceChip(
++                  label: Text('$mb MB'),
++                  selected: state.targetSizeMb == mb,
++                  // Sizes at or above the video's own size would not shrink it.
++                  onSelected: state.canTargetMb(mb)
++                      ? (_) => viewModel.setTargetSizeMb(mb)
++                      : null,
++                ),
++            ],
++          ),
++          const SizedBox(height: 12),
++          TargetSizeField(
++            valueMb: state.targetSizeMb,
++            presets: kTargetSizeOptionsMb,
++            onChanged: viewModel.setTargetSizeMb,
++          ),
+         ],
+       ),
+     );
+@@ -164,6 +178,53 @@ class VideoOptionsPanel extends ConsumerWidget {
+   }
+ }
+ 
++/// Warnings about choices that are unlikely to make the video smaller. Shown
++/// only when there is something to say.
++class _WarningBox extends StatelessWidget {
++  const _WarningBox({required this.warnings});
++
++  final List<VideoSettingsWarning> warnings;
++
++  @override
++  Widget build(BuildContext context) {
++    if (warnings.isEmpty) return const SizedBox.shrink();
++    final scheme = Theme.of(context).colorScheme;
++
++    return Container(
++      width: double.infinity,
++      margin: const EdgeInsets.only(top: 12),
++      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
++      decoration: BoxDecoration(
++        color: scheme.errorContainer,
++        borderRadius: BorderRadius.circular(16),
++      ),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          for (final warning in warnings)
++            Padding(
++              padding: const EdgeInsets.symmetric(vertical: 2),
++              child: Row(
++                crossAxisAlignment: CrossAxisAlignment.start,
++                children: [
++                  Icon(Icons.warning_amber_rounded,
++                      size: 20, color: scheme.onErrorContainer),
++                  const SizedBox(width: 10),
++                  Expanded(
++                    child: Text(
++                      warning.message,
++                      style: TextStyle(color: scheme.onErrorContainer),
++                    ),
++                  ),
++                ],
++              ),
++            ),
++        ],
++      ),
++    );
++  }
++}
++
+ /// A titled box with the same look as the slider boxes.
+ class _OptionBox extends StatelessWidget {
+   const _OptionBox({required this.title, required this.child, this.note});
+diff --git a/test/settings_repository_test.dart b/test/settings_repository_test.dart
+index 4435ba2..7cbe2af 100644
+--- a/test/settings_repository_test.dart
++++ b/test/settings_repository_test.dart
+@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
+ import 'package:petit/features/settings/data/services/shared_prefs_settings_repository.dart';
+ import 'package:petit/features/settings/domain/entities/app_settings.dart';
+ import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++import 'package:petit/features/videos/domain/video_bitrate.dart';
+ 
+ void main() {
+   group('settingsFromMap', () {
+@@ -47,6 +48,10 @@ void main() {
+       expect(s.videoQuality, 0);
+       expect(s.videoPresetIndex, AppSettings.maxVideoPresetIndex);
+       expect(s.videoTargetSizeMb, 1);
++      expect(
++          settingsFromMap({'settings_video_target_size_mb': 50000})
++              .videoTargetSizeMb,
++          kMaxTargetSizeMb);
+     });
+ 
+     test('wrong types and unknown names keep the defaults', () {
+diff --git a/test/settings_viewmodel_test.dart b/test/settings_viewmodel_test.dart
+index c7402dd..ac6ba48 100644
+--- a/test/settings_viewmodel_test.dart
++++ b/test/settings_viewmodel_test.dart
+@@ -60,8 +60,10 @@ void main() {
+       vm.setImageQuality(250);
+       vm.setVideoQuality(-5);
+       vm.setVideoPresetIndex(9);
++      vm.setVideoTargetSizeMb(0);
+ 
+       final s = c.read(settingsViewModelProvider);
++      expect(s.videoTargetSizeMb, 1);
+       expect(s.imageQuality, 100);
+       expect(s.videoQuality, 0);
+       expect(s.videoPresetIndex, AppSettings.maxVideoPresetIndex);
+diff --git a/test/target_size_field_test.dart b/test/target_size_field_test.dart
+new file mode 100644
+index 0000000..0bed954
+--- /dev/null
++++ b/test/target_size_field_test.dart
+@@ -0,0 +1,123 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/common/widgets/target_size_field.dart';
++
++const _presets = [5, 10, 25];
++
++/// A parent that owns the size, like the real screens do.
++class _Host extends StatefulWidget {
++  const _Host({required this.start});
++
++  final int start;
++
++  @override
++  State<_Host> createState() => _HostState();
++}
++
++class _HostState extends State<_Host> {
++  late int value = widget.start;
++  final reported = <int>[];
++
++  @override
++  Widget build(BuildContext context) {
++    return MaterialApp(
++      home: Scaffold(
++        body: Column(
++          children: [
++            TargetSizeField(
++              valueMb: value,
++              presets: _presets,
++              onChanged: (mb) => setState(() {
++                value = mb;
++                reported.add(mb);
++              }),
++            ),
++            TextButton(
++              onPressed: () => setState(() => value = 10),
++              child: const Text('pick 10'),
++            ),
++            TextButton(
++              onPressed: () => setState(() => value = 42),
++              child: const Text('set 42'),
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++}
++
++String _text(WidgetTester tester) =>
++    tester.widget<TextField>(find.byType(TextField)).controller!.text;
++
++void main() {
++  testWidgets('is empty while a preset is chosen', (tester) async {
++    await tester.pumpWidget(const _Host(start: 25));
++    expect(_text(tester), '');
++  });
++
++  testWidgets('shows a custom size', (tester) async {
++    await tester.pumpWidget(const _Host(start: 42));
++    expect(_text(tester), '42');
++  });
++
++  testWidgets('typing reports the size', (tester) async {
++    await tester.pumpWidget(const _Host(start: 25));
++
++    await tester.enterText(find.byType(TextField), '37');
++    await tester.pump();
++
++    final host = tester.state<_HostState>(find.byType(_Host));
++    expect(host.value, 37);
++    expect(_text(tester), '37');
++  });
++
++  testWidgets('only digits are accepted', (tester) async {
++    await tester.pumpWidget(const _Host(start: 25));
++
++    await tester.enterText(find.byType(TextField), '1a2.5');
++    await tester.pump();
++
++    expect(_text(tester), '125');
++  });
++
++  testWidgets('zero is not reported and shows a message', (tester) async {
++    await tester.pumpWidget(const _Host(start: 25));
++
++    await tester.enterText(find.byType(TextField), '0');
++    await tester.pump();
++
++    final host = tester.state<_HostState>(find.byType(_Host));
++    expect(host.reported, isEmpty);
++    expect(host.value, 25);
++    expect(find.text('Enter at least 1 MB'), findsOneWidget);
++  });
++
++  testWidgets('clearing the box is left alone', (tester) async {
++    await tester.pumpWidget(const _Host(start: 42));
++
++    await tester.enterText(find.byType(TextField), '');
++    await tester.pump();
++
++    expect(_text(tester), '');
++    expect(find.text('Enter at least 1 MB'), findsNothing);
++  });
++
++  testWidgets('choosing a preset empties the box', (tester) async {
++    await tester.pumpWidget(const _Host(start: 42));
++
++    await tester.tap(find.text('pick 10'));
++    await tester.pump();
++
++    expect(_text(tester), '');
++  });
++
++  testWidgets('a size set from outside is shown', (tester) async {
++    await tester.pumpWidget(const _Host(start: 25));
++
++    await tester.tap(find.text('set 42'));
++    await tester.pump();
++
++    expect(_text(tester), '42');
++  });
++}
+diff --git a/test/video_warnings_test.dart b/test/video_warnings_test.dart
+new file mode 100644
+index 0000000..108b2ff
+--- /dev/null
++++ b/test/video_warnings_test.dart
+@@ -0,0 +1,109 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/features/videos/domain/video_bitrate.dart';
++import 'package:petit/features/videos/domain/video_warnings.dart';
++
++List<VideoSettingsWarning> warningsFor({
++  bool aimsForSize = false,
++  int qualityPercent = 80,
++  int targetMb = 25,
++  bool downscales = false,
++  int? videoBytes = 100000000,
++  int? durationMs = 60000,
++}) =>
++    videoSettingsWarnings(
++      aimsForSize: aimsForSize,
++      qualityPercent: qualityPercent,
++      targetMb: targetMb,
++      downscales: downscales,
++      videoBytes: videoBytes,
++      durationMs: durationMs,
++    );
++
++void main() {
++  group('minimumTargetBytes', () {
++    test('is the size at the lowest bitrate', () {
++      // 100 + 128 kbit/s for 60 s, plus the 5% held back: 1,800,000 bytes.
++      expect(minimumTargetBytes(durationMs: 60000), 1800000);
++    });
++
++    test('is where bitrateForTargetSize stops going lower', () {
++      final floor = minimumTargetBytes(durationMs: 60000);
++      expect(bitrateForTargetSize(targetBytes: floor, durationMs: 60000),
++          kMinVideoKbps);
++      expect(bitrateForTargetSize(targetBytes: floor ~/ 2, durationMs: 60000),
++          kMinVideoKbps);
++      expect(
++          bitrateForTargetSize(targetBytes: floor * 2, durationMs: 60000),
++          greaterThan(kMinVideoKbps));
++    });
++  });
++
++  group('target size', () {
++    test('no warning for a sensible target', () {
++      expect(warningsFor(aimsForSize: true, targetMb: 25), isEmpty);
++    });
++
++    test('a target that is not smaller than the video blocks starting', () {
++      final w = warningsFor(aimsForSize: true, targetMb: 100);
++      expect(w.single.blocksStart, isTrue);
++      expect(w.single.message, contains('100 MB'));
++    });
++
++    test('a target far below what the length allows is a warning only', () {
++      final w = warningsFor(aimsForSize: true, targetMb: 1, durationMs: 600000);
++      expect(w.single.blocksStart, isFalse);
++      expect(w.single.message, contains('cannot get below'));
++    });
++
++    test('unknown size and length give no target warnings', () {
++      expect(
++          warningsFor(
++              aimsForSize: true,
++              targetMb: 1,
++              videoBytes: null,
++              durationMs: null),
++          isEmpty);
++    });
++
++    test('quality hints are not shown while aiming for a size', () {
++      expect(
++          warningsFor(aimsForSize: true, qualityPercent: 0, targetMb: 25),
++          isEmpty);
++    });
++  });
++
++  group('quality', () {
++    test('no warning at the recommended level', () {
++      expect(warningsFor(qualityPercent: 80), isEmpty);
++    });
++
++    test('minimal compression may not shrink the video', () {
++      final w = warningsFor(qualityPercent: 20);
++      expect(w.single.blocksStart, isFalse);
++      expect(w.single.message, contains('Minimal'));
++    });
++
++    test('a video that is already small may not shrink', () {
++      // 1,000,000 bytes over 60 s is about 133 kbit/s.
++      final w = warningsFor(videoBytes: 1000000);
++      expect(w.single.message, contains('already small'));
++      expect(w.single.blocksStart, isFalse);
++    });
++
++    test('a normal bitrate gets no warning', () {
++      // 100,000,000 bytes over 60 s is about 13,300 kbit/s.
++      expect(warningsFor(videoBytes: 100000000), isEmpty);
++    });
++
++    test('a smaller resolution is itself a reason to expect a smaller file',
++        () {
++      expect(warningsFor(qualityPercent: 0, downscales: true), isEmpty);
++      expect(warningsFor(videoBytes: 1000000, downscales: true), isEmpty);
++    });
++
++    test('without a length only the level can warn', () {
++      expect(warningsFor(videoBytes: 1000000, durationMs: null), isEmpty);
++      expect(warningsFor(qualityPercent: 10, durationMs: null), hasLength(1));
++    });
++  });
++}
+diff --git a/test/videos_viewmodel_test.dart b/test/videos_viewmodel_test.dart
+index 6a6576d..29c5393 100644
+--- a/test/videos_viewmodel_test.dart
++++ b/test/videos_viewmodel_test.dart
+@@ -23,6 +23,16 @@ void main() {
+   });
+   tearDown(() => dir.deleteSync(recursive: true));
+ 
++  // A sparse file: big on paper, instant to create.
++  File sparseFile(String name, int bytes) {
++    final file = File('${dir.path}/$name');
++    final handle = file.openSync(mode: FileMode.write);
++    handle.setPositionSync(bytes - 1);
++    handle.writeByteSync(0);
++    handle.closeSync();
++    return file;
++  }
++
+   group('loading a video', () {
+     test('shows the preview and keeps the file', () async {
+       final input = h.file('in.mp4', 1000);
+@@ -88,16 +98,6 @@ void main() {
+   });
+ 
+   group('video information', () {
+-    // A sparse file: big on paper, instant to create.
+-    File sparseFile(String name, int bytes) {
+-      final file = File('${dir.path}/$name');
+-      final handle = file.openSync(mode: FileMode.write);
+-      handle.setPositionSync(bytes - 1);
+-      handle.writeByteSync(0);
+-      handle.closeSync();
+-      return file;
+-    }
+-
+     test('the video is probed and its size read when it is picked', () async {
+       h.picker.video = h.file('in.mp4', 1000).path;
+       final c = h.container();
+@@ -166,6 +166,85 @@ void main() {
+     });
+   });
+ 
++  group('custom target size and warnings', () {
++    test('a typed size is kept, within limits', () {
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++
++      vm.setTargetSizeMb(37);
++      expect(c.read(videosViewModelProvider).targetSizeMb, 37);
++
++      vm.setTargetSizeMb(0);
++      expect(c.read(videosViewModelProvider).targetSizeMb, 1);
++
++      vm.setTargetSizeMb(99999);
++      expect(c.read(videosViewModelProvider).targetSizeMb, kMaxTargetSizeMb);
++    });
++
++    test('a video smaller than the smallest preset gets a size that fits',
++        () async {
++      h.picker.video = sparseFile('small.mp4', 4000000).path; // 4 MB
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++
++      await vm.pickVideo();
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.targetSizeMb, 2, reason: 'half of 4 MB');
++      expect(s.canTargetMb(s.targetSizeMb), isTrue);
++    });
++
++    test('there are no warnings before a video is picked', () {
++      final c = h.container();
++      expect(c.read(videosViewModelProvider).warnings, isEmpty);
++    });
++
++    test('a target that is not smaller than the video is flagged', () async {
++      h.picker.video = sparseFile('big.mp4', 60000000).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      await vm.pickVideo();
++      vm.setMode(VideoMode.targetSize);
++
++      vm.setTargetSizeMb(50);
++      expect(c.read(videosViewModelProvider).warnings, isEmpty);
++
++      vm.setTargetSizeMb(60);
++      final warnings = c.read(videosViewModelProvider).warnings;
++      expect(warnings.single.blocksStart, isTrue);
++    });
++
++    test('compressing does not start with a target that cannot help',
++        () async {
++      h.picker.video = sparseFile('big.mp4', 60000000).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      await vm.pickVideo();
++      vm.setMode(VideoMode.targetSize);
++      vm.setTargetSizeMb(100);
++
++      await vm.compressVideo(onComplete: (_) {});
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.isCompressing, isFalse);
++      expect(s.result, contains('not smaller'));
++      expect(h.videoCompressor.lastTask, isNull);
++    });
++
++    test('a warning that only advises does not stop compressing', () async {
++      h.picker.video = sparseFile('big.mp4', 60000000).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      await vm.pickVideo();
++      vm.updateCfrQualitySlider(0); // Minimal compression
++
++      expect(c.read(videosViewModelProvider).warnings, hasLength(1));
++      await vm.compressVideo(onComplete: (_) {});
++
++      expect(h.videoCompressor.lastTask, isNotNull);
++    });
++  });
++
+   group('options reach the compressor', () {
+     test('quality mode with a resolution', () async {
+       h.picker.video = h.file('in.mp4', 1000).path;
+@@ -181,7 +260,7 @@ void main() {
+     });
+ 
+     test('target size mode asks for a bitrate that fits the length', () async {
+-      h.picker.video = h.file('in.mp4', 1000).path;
++      h.picker.video = sparseFile('big.mp4', 60000000).path; // 60 MB
+       final c = h.container();
+       final vm = c.read(videosViewModelProvider.notifier);
+       await vm.pickVideo();

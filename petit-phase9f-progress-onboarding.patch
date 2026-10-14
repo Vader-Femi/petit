@@ -1,0 +1,1495 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index c5b153b..04a7bec 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -50,6 +50,9 @@ jobs:
+           test/settings_repository_test.dart
+           test/video_warnings_test.dart
+           test/target_size_field_test.dart
++          test/progress_eta_test.dart
++          test/compression_progress_view_test.dart
++          test/onboarding_test.dart
+ 
+   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
+   # it runs on demand and for pull requests into the production branch.
+diff --git a/docs/architecture.md b/docs/architecture.md
+index c78097e..fb42c4b 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -172,3 +172,20 @@ target size, resolution and encoding speed. On desktop it also shows the "Save t
+     says when no space was saved.
+ - Images get the equivalent from the size estimate (see above): the panel says when the original
+   would be kept or the result would be larger.
++
++## Progress screen and welcome screens
++
++- **Progress view.** `CompressionProgressView` (`common/widgets/`) is the overlay both tabs show while
++  working: a ring with the percentage, what is happening ("Image 3 of 8"), the time left, and a
++  reminder to keep the app open. It uses theme colours (the old overlay was hard-coded black) and
++  blocks taps underneath. Loading files shows the same ring, spinning.
++- **Time left.** `ProgressEta` (pure Dart, injectable clock) turns "how far along" into "how long to
++  go". It stays quiet until the job is 3% done and has run 3 seconds, then blends readings so the
++  number does not jump. `formatEta` rounds it ("about 2 minutes left"). Images report progress per
++  image, so the estimate is only shown for batches of 3 or more; video uses FFmpeg's percentage,
++  which is not perfectly linear, so treat it as a guide.
++- **Welcome screens.** `features/onboarding/`: three pages (what Petit does, how to use it, files stay
++  on the device) with Skip / Next / Get started. `OnboardingStore` remembers that they were seen
++  (read once at start-up, like the settings); `main.dart` shows them instead of `HomeScreen` until
++  then. Settings has "Show the welcome tour" to see them again. If the stored answer cannot be read
++  they are skipped.
+diff --git a/lib/common/domain/progress_eta.dart b/lib/common/domain/progress_eta.dart
+new file mode 100644
+index 0000000..4d44b29
+--- /dev/null
++++ b/lib/common/domain/progress_eta.dart
+@@ -0,0 +1,60 @@
++/// Works out how long a job has left from how far along it is.
++///
++/// Plain Dart: the clock is injected so it can be tested. Early readings are
++/// too noisy to show (a job that is 1% done after one second says little), so
++/// [remaining] stays null until the job is a few percent in and has run for a
++/// few seconds. After that each reading is blended with the earlier ones, so
++/// the number does not jump around.
++class ProgressEta {
++  ProgressEta({DateTime Function()? now}) : _now = now ?? DateTime.now;
++
++  /// Smallest fraction done before an estimate is made.
++  static const double minFraction = 0.03;
++
++  /// Shortest running time before an estimate is made.
++  static const Duration minElapsed = Duration(seconds: 3);
++
++  /// Weight of the newest reading when blending (0..1).
++  static const double _newWeight = 0.3;
++
++  final DateTime Function() _now;
++  DateTime? _startedAt;
++  Duration? _remaining;
++
++  /// Time left, or null while it is too early to tell.
++  Duration? get remaining => _remaining;
++
++  /// Starts the clock and forgets any earlier readings.
++  void start() {
++    _startedAt = _now();
++    _remaining = null;
++  }
++
++  /// Records that the job is [fraction] (0..1) done.
++  void update(double fraction) {
++    final startedAt = _startedAt;
++    if (startedAt == null) return;
++
++    final done = fraction.clamp(0.0, 1.0).toDouble();
++    if (done >= 1.0) {
++      _remaining = Duration.zero;
++      return;
++    }
++
++    final elapsed = _now().difference(startedAt);
++    if (done < minFraction || elapsed < minElapsed) return;
++
++    final raw = elapsed.inMicroseconds * (1 - done) / done;
++    final previous = _remaining;
++    final blended = previous == null
++        ? raw
++        : previous.inMicroseconds * (1 - _newWeight) + raw * _newWeight;
++    _remaining = Duration(microseconds: blended.round());
++  }
++
++  /// Forgets everything; [remaining] is null again.
++  void reset() {
++    _startedAt = null;
++    _remaining = null;
++  }
++}
+diff --git a/lib/common/widgets/compression_progress_view.dart b/lib/common/widgets/compression_progress_view.dart
+new file mode 100644
+index 0000000..eee224c
+--- /dev/null
++++ b/lib/common/widgets/compression_progress_view.dart
+@@ -0,0 +1,129 @@
++import 'package:flutter/material.dart';
++import 'package:petit/core/utils/format_eta.dart';
++
++/// Full-area overlay shown while files are loading or compressing: a ring with
++/// the percentage, what is happening, the time left, and a reminder to keep
++/// the app open. Blocks taps on what is underneath.
++///
++/// Leave [percent] null for work with no measurable progress (loading files);
++/// the ring then spins.
++class CompressionProgressView extends StatelessWidget {
++  const CompressionProgressView({
++    super.key,
++    required this.title,
++    this.percent,
++    this.detail,
++    this.eta,
++    this.showEta = false,
++    this.keepOpenHint = false,
++  });
++
++  /// "Compressing video", "Loading images", ...
++  final String title;
++
++  /// 0..100, or null for an endless spinner.
++  final int? percent;
++
++  /// A second line, e.g. "Image 3 of 8".
++  final String? detail;
++
++  /// Time left, once known.
++  final Duration? eta;
++
++  /// Show a time-left line ("Estimating time..." until [eta] is known). Off
++  /// for jobs too short for it to mean anything.
++  final bool showEta;
++
++  /// Remind the user to keep the app open.
++  final bool keepOpenHint;
++
++  @override
++  Widget build(BuildContext context) {
++    final theme = Theme.of(context);
++    final scheme = theme.colorScheme;
++    final value = percent == null ? null : (percent! / 100).clamp(0.0, 1.0);
++
++    return Positioned.fill(
++      child: Semantics(
++        container: true,
++        liveRegion: true,
++        label: percent == null ? title : '$title, $percent percent',
++        child: AbsorbPointer(
++          child: ColoredBox(
++            color: scheme.surface.withValues(alpha: 0.94),
++            child: Center(
++              child: Padding(
++                padding: const EdgeInsets.all(24),
++                child: Column(
++                  mainAxisSize: MainAxisSize.min,
++                  children: [
++                    SizedBox(
++                      width: 200,
++                      height: 200,
++                      child: Stack(
++                        alignment: Alignment.center,
++                        children: [
++                          SizedBox.expand(
++                            child: CircularProgressIndicator(
++                              value: value,
++                              strokeWidth: 14,
++                              strokeCap: StrokeCap.round,
++                              backgroundColor:
++                                  scheme.surfaceContainerHighest,
++                            ),
++                          ),
++                          if (percent != null)
++                            Text(
++                              '$percent%',
++                              style: theme.textTheme.displayMedium?.copyWith(
++                                fontWeight: FontWeight.w700,
++                                color: scheme.primary,
++                              ),
++                            ),
++                        ],
++                      ),
++                    ),
++                    const SizedBox(height: 28),
++                    Text(
++                      title,
++                      textAlign: TextAlign.center,
++                      style: theme.textTheme.titleLarge,
++                    ),
++                    if (detail != null) ...[
++                      const SizedBox(height: 4),
++                      Text(
++                        detail!,
++                        textAlign: TextAlign.center,
++                        style: theme.textTheme.bodyLarge,
++                      ),
++                    ],
++                    if (showEta) ...[
++                      const SizedBox(height: 12),
++                      Text(
++                        eta == null ? 'Estimating time...' : formatEta(eta!),
++                        textAlign: TextAlign.center,
++                        style: theme.textTheme.bodyMedium?.copyWith(
++                          color: scheme.onSurfaceVariant,
++                        ),
++                      ),
++                    ],
++                    if (keepOpenHint) ...[
++                      const SizedBox(height: 20),
++                      Text(
++                        'Please keep the app open while compressing',
++                        textAlign: TextAlign.center,
++                        style: theme.textTheme.labelLarge?.copyWith(
++                          color: scheme.primary,
++                        ),
++                      ),
++                    ],
++                  ],
++                ),
++              ),
++            ),
++          ),
++        ),
++      ),
++    );
++  }
++}
+diff --git a/lib/core/di/providers.dart b/lib/core/di/providers.dart
+index 4ee03e1..32e07ac 100644
+--- a/lib/core/di/providers.dart
++++ b/lib/core/di/providers.dart
+@@ -8,6 +8,7 @@ import 'package:petit/common/domain/services/workspace.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
+ import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
+ import 'package:petit/features/images/domain/usecases/read_images.dart';
++import 'package:petit/features/onboarding/domain/services/onboarding_store.dart';
+ import 'package:petit/features/settings/domain/entities/app_settings.dart';
+ import 'package:petit/features/settings/domain/services/settings_repository.dart';
+ import 'package:petit/features/videos/domain/services/video_compressor.dart';
+@@ -38,6 +39,15 @@ final settingsRepositoryProvider =
+ final initialSettingsProvider = Provider<AppSettings>(
+     (ref) => sl.isRegistered<AppSettings>() ? sl<AppSettings>() : const AppSettings());
+ 
++final onboardingStoreProvider =
++    Provider<OnboardingStore>((ref) => sl<OnboardingStore>());
++
++/// Whether the welcome screens were already seen when the app started. Counts
++/// as seen if that could not be read: better to skip them than to nag.
++final initialOnboardingDoneProvider = Provider<bool>((ref) =>
++    !sl.isRegistered<bool>(instanceName: kOnboardingDoneInstance) ||
++    sl<bool>(instanceName: kOnboardingDoneInstance));
++
+ final readImagesUseCaseProvider =
+     Provider<ReadImagesUseCase>((ref) => sl<ReadImagesUseCase>());
+ 
+diff --git a/lib/core/utils/format_eta.dart b/lib/core/utils/format_eta.dart
+new file mode 100644
+index 0000000..8cc9940
+--- /dev/null
++++ b/lib/core/utils/format_eta.dart
+@@ -0,0 +1,21 @@
++/// A friendly "time left" for [remaining], e.g. `about 2 minutes left`.
++///
++/// Rounded on purpose: a countdown that claims to know the second is a lie.
++String formatEta(Duration remaining) {
++  final seconds = remaining.inSeconds;
++  if (seconds < 10) return 'a few seconds left';
++
++  if (seconds < 60) {
++    final rounded = (seconds / 5).round() * 5;
++    if (rounded < 60) return 'about $rounded seconds left';
++    return 'about 1 minute left';
++  }
++
++  final minutes = (seconds / 60).ceil();
++  if (minutes == 1) return 'about 1 minute left';
++  if (minutes < 60) return 'about $minutes minutes left';
++
++  final hours = minutes ~/ 60;
++  final rest = minutes % 60;
++  return rest == 0 ? 'about $hours h left' : 'about $hours h $rest min left';
++}
+diff --git a/lib/features/images/presentation/pages/images_page.dart b/lib/features/images/presentation/pages/images_page.dart
+index f2c2cac..907ae65 100644
+--- a/lib/features/images/presentation/pages/images_page.dart
++++ b/lib/features/images/presentation/pages/images_page.dart
+@@ -1,13 +1,14 @@
+ import 'package:carousel_slider/carousel_slider.dart';
+ import 'package:flutter/material.dart';
++import 'package:petit/common/widgets/compression_progress_view.dart';
+ import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:petit/core/utils/adaptive.dart';
+ import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:petit/core/utils/shortcut_labels.dart';
+ import 'package:petit/features/images/presentation/state/images_state.dart';
++import 'package:petit/features/images/presentation/state/loading_data.dart';
+ import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+ import 'package:petit/features/images/presentation/widget/image_options_panel.dart';
+-import 'package:step_progress_indicator/step_progress_indicator.dart';
+ import '../../../../common/widgets/compression_summary_dialog.dart';
+ import '../../../../common/widgets/save_to_tile.dart';
+ import '../../../../common/widgets/slider_box.dart';
+@@ -111,6 +112,13 @@ class _ImagesPageState extends ConsumerState<ImagesPage> {
+     );
+   }
+ 
++  /// "Image 3 of 8": the image being worked on out of the whole batch.
++  static String _stepLabel(LoadingData loading) {
++    final total = loading.totalSteps ?? 1;
++    final current = ((loading.completedSteps ?? 0) + 1).clamp(1, total);
++    return total == 1 ? 'Working on your image' : 'Image $current of $total';
++  }
++
+   /// "2 of 5", the quality slider and the options under it.
+   List<Widget> _buildControls(
+     BuildContext context,
+@@ -234,68 +242,19 @@ class _ImagesPageState extends ConsumerState<ImagesPage> {
+                   },
+                 ),
+               ),
+-        loading.isLoading
+-            ? Container(
+-                color: Colors.black.withValues(alpha: 0.85),
+-              )
+-            : Container(),
+-        loading.isLoading
+-            ? loading.totalSteps == null
+-                ? Column(
+-                    mainAxisAlignment: MainAxisAlignment.center,
+-                    mainAxisSize: MainAxisSize.max,
+-                    children: [
+-                      Text("Loading Please Wait"),
+-                      SizedBox(height: 5),
+-                      CircularProgressIndicator()
+-                    ],
+-                  )
+-                : Container(
+-                    width: 100,
+-                    height: 100,
+-                    alignment: Alignment.center,
+-                    decoration: BoxDecoration(
+-                        color: Theme.of(context).colorScheme.primaryContainer,
+-                        borderRadius: BorderRadius.circular(50)),
+-                    child: Text(
+-                      '${loading.progressCounter}%',
+-                      style: TextStyle(
+-                          fontSize: 30,
+-                          fontWeight: FontWeight.w900,
+-                          color: Theme.of(context).colorScheme.primary),
+-                    ),
+-                  )
+-            : Container(),
+-        (loading.isLoading && loading.totalSteps != null)
+-            ? Column(
+-                mainAxisAlignment: MainAxisAlignment.center,
+-                children: [
+-                  SizedBox(
+-                    height: 40,
+-                  ),
+-                  CircularStepProgressIndicator(
+-                    totalSteps: loading.totalSteps ?? 1,
+-                    stepSize: 20,
+-                    selectedStepSize: 30,
+-                    currentStep: loading.completedSteps ?? 1,
+-                    width: 180,
+-                    height: 180,
+-                    padding: 0.02,
+-                    selectedColor: Theme.of(context).colorScheme.primary,
+-                    unselectedColor:
+-                        Theme.of(context).colorScheme.surfaceContainer,
+-                  ),
+-                  Text(
+-                    "Please keep app open\nwhile compressing",
+-                    textAlign: TextAlign.center,
+-                    style: TextStyle(
+-                        fontSize: 15,
+-                        fontWeight: FontWeight.w700,
+-                        color: Theme.of(context).colorScheme.primary),
+-                  ),
+-                ],
+-              )
+-            : Container(),
++        if (loading.isLoading)
++          if (loading.totalSteps == null)
++            const CompressionProgressView(title: 'Loading images')
++          else
++            CompressionProgressView(
++              title: 'Compressing images',
++              percent: loading.progressCounter,
++              detail: _stepLabel(loading),
++              eta: loading.eta,
++              // One or two images are over too quickly for a countdown.
++              showEta: loading.totalSteps! > 2,
++              keepOpenHint: true,
++            ),
+       ],
+     );
+   }
+diff --git a/lib/features/images/presentation/state/images_viewmodel.dart b/lib/features/images/presentation/state/images_viewmodel.dart
+index cd08b85..de1a8d0 100644
+--- a/lib/features/images/presentation/state/images_viewmodel.dart
++++ b/lib/features/images/presentation/state/images_viewmodel.dart
+@@ -9,6 +9,7 @@ import 'package:petit/common/data/summary_report.dart';
+ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/core/di/providers.dart';
+ import 'package:petit/core/utils/format_bytes.dart';
++import 'package:petit/common/domain/progress_eta.dart';
+ import 'package:petit/features/images/domain/entities/image_data.dart';
+ import 'package:petit/features/images/domain/entities/image_size_estimate.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
+@@ -284,6 +285,8 @@ class ImagesViewModel extends Notifier<ImagesState> {
+ 
+     final totalLength = state.pickedImages.length;
+ 
++    final eta = ProgressEta()..start();
++
+     final ImageBatchResult batch;
+     try {
+       batch = await ref.read(compressImagesUseCaseProvider)(
+@@ -291,13 +294,15 @@ class ImagesViewModel extends Notifier<ImagesState> {
+         globalQuality: state.globalQuality,
+         options: state.options,
+         isCancelled: () => completer.isCanceled,
+-        onProgress: (progress) => setLoading(
+-          LoadingData(
++        onProgress: (progress) {
++          eta.update(progress.completedSteps / progress.totalSteps);
++          setLoading(LoadingData(
+               isLoading: true,
+               completedSteps: progress.completedSteps,
+               totalSteps: progress.totalSteps,
+-              progressCounter: progress.percent),
+-        ),
++              progressCounter: progress.percent,
++              eta: eta.remaining));
++        },
+         onError: showResult,
+       );
+     } on MediaException catch (e) {
+diff --git a/lib/features/images/presentation/state/loading_data.dart b/lib/features/images/presentation/state/loading_data.dart
+index 3900be7..168f7f2 100644
+--- a/lib/features/images/presentation/state/loading_data.dart
++++ b/lib/features/images/presentation/state/loading_data.dart
+@@ -5,23 +5,29 @@ class LoadingData {
+   final int? completedSteps;
+   final bool isLoading;
+ 
++  /// Time left for the job, once it can be told.
++  final Duration? eta;
++
+   const LoadingData({
+     this.progressCounter,
+     this.totalSteps,
+     this.completedSteps,
+     required this.isLoading,
++    this.eta,
+   });
+ 
+   LoadingData copyWith(
+       {int? progressCounter,
+       int? totalSteps,
+       int? completedSteps,
+-      bool? isLoading}) {
++      bool? isLoading,
++      Duration? eta}) {
+     return LoadingData(
+       progressCounter: progressCounter ?? this.progressCounter,
+       totalSteps: totalSteps ?? this.totalSteps,
+       completedSteps: completedSteps ?? this.completedSteps,
+       isLoading: isLoading ?? this.isLoading,
++      eta: eta ?? this.eta,
+     );
+   }
+ 
+@@ -32,9 +38,10 @@ class LoadingData {
+           other.progressCounter == progressCounter &&
+           other.totalSteps == totalSteps &&
+           other.completedSteps == completedSteps &&
+-          other.isLoading == isLoading;
++          other.isLoading == isLoading &&
++          other.eta == eta;
+ 
+   @override
+   int get hashCode =>
+-      Object.hash(progressCounter, totalSteps, completedSteps, isLoading);
++      Object.hash(progressCounter, totalSteps, completedSteps, isLoading, eta);
+ }
+diff --git a/lib/features/onboarding/data/services/shared_prefs_onboarding_store.dart b/lib/features/onboarding/data/services/shared_prefs_onboarding_store.dart
+new file mode 100644
+index 0000000..e6228fb
+--- /dev/null
++++ b/lib/features/onboarding/data/services/shared_prefs_onboarding_store.dart
+@@ -0,0 +1,16 @@
++import 'package:petit/features/onboarding/domain/services/onboarding_store.dart';
++import 'package:shared_preferences/shared_preferences.dart';
++
++const _onboardingDone = 'onboarding_done';
++
++class SharedPrefsOnboardingStore implements OnboardingStore {
++  SharedPrefsOnboardingStore(this._prefs);
++
++  final SharedPreferencesAsync _prefs;
++
++  @override
++  Future<bool> isDone() async => await _prefs.getBool(_onboardingDone) ?? false;
++
++  @override
++  Future<void> markDone() => _prefs.setBool(_onboardingDone, true);
++}
+diff --git a/lib/features/onboarding/domain/services/onboarding_store.dart b/lib/features/onboarding/domain/services/onboarding_store.dart
+new file mode 100644
+index 0000000..e52b2c8
+--- /dev/null
++++ b/lib/features/onboarding/domain/services/onboarding_store.dart
+@@ -0,0 +1,6 @@
++/// Remembers whether the welcome screens have been seen.
++abstract interface class OnboardingStore {
++  Future<bool> isDone();
++
++  Future<void> markDone();
++}
+diff --git a/lib/features/onboarding/presentation/pages/onboarding_screen.dart b/lib/features/onboarding/presentation/pages/onboarding_screen.dart
+new file mode 100644
+index 0000000..ec7c89d
+--- /dev/null
++++ b/lib/features/onboarding/presentation/pages/onboarding_screen.dart
+@@ -0,0 +1,187 @@
++import 'package:flutter/material.dart';
++import 'package:petit/core/utils/platform_utils.dart';
++
++/// The welcome screens: what Petit does, how to use it, and that files stay on
++/// the device. Shown once on first launch, and again from Settings.
++///
++/// [onFinished] runs when the user reaches the end or skips.
++class OnboardingScreen extends StatefulWidget {
++  const OnboardingScreen({super.key, required this.onFinished});
++
++  final VoidCallback onFinished;
++
++  @override
++  State<OnboardingScreen> createState() => _OnboardingScreenState();
++}
++
++class _OnboardingScreenState extends State<OnboardingScreen> {
++  final _controller = PageController();
++  int _page = 0;
++
++  static const _pageAnimation = Duration(milliseconds: 300);
++
++  List<_WelcomePage> get _pages => [
++        const _WelcomePage(
++          icon: Icons.compress,
++          title: 'Welcome to Petit',
++          body: 'Make photos and videos much smaller, so they are quicker to '
++              'send and take up less space, without losing what matters.',
++        ),
++        _WelcomePage(
++          icon: Icons.tune,
++          title: 'Pick, preview, compress',
++          body: PlatformInfo.isDesktop
++              ? 'Add files, or drop them anywhere in the window. Petit shows '
++                  'how big each image will be before you compress, and '
++                  'warns you about settings that will not help.'
++              : 'Add files, or share them to Petit from your gallery. It '
++                  'shows how big each image will be before you compress, and '
++                  'warns you about settings that will not help.',
++        ),
++        const _WelcomePage(
++          icon: Icons.lock_outline,
++          title: 'Your files stay yours',
++          body: 'Everything is compressed on this device and nothing is '
++              'uploaded. Your originals are never changed. Choose your '
++              'favourite settings once, in the Settings tab.',
++        ),
++      ];
++
++  bool get _isLast => _page == _pages.length - 1;
++
++  void _next() {
++    if (_isLast) {
++      widget.onFinished();
++    } else {
++      _controller.nextPage(duration: _pageAnimation, curve: Curves.easeOut);
++    }
++  }
++
++  @override
++  void dispose() {
++    _controller.dispose();
++    super.dispose();
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final pages = _pages;
++    final scheme = Theme.of(context).colorScheme;
++
++    return Scaffold(
++      body: SafeArea(
++        child: Center(
++          child: ConstrainedBox(
++            constraints: const BoxConstraints(maxWidth: 560),
++            child: Column(
++              children: [
++                Align(
++                  alignment: Alignment.centerRight,
++                  child: Padding(
++                    padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
++                    // Keeps its space on the last page so nothing jumps.
++                    child: Opacity(
++                      opacity: _isLast ? 0 : 1,
++                      child: TextButton(
++                        onPressed: _isLast ? null : widget.onFinished,
++                        child: const Text('Skip'),
++                      ),
++                    ),
++                  ),
++                ),
++                Expanded(
++                  child: PageView(
++                    controller: _controller,
++                    onPageChanged: (index) => setState(() => _page = index),
++                    children: pages,
++                  ),
++                ),
++                Row(
++                  mainAxisAlignment: MainAxisAlignment.center,
++                  children: [
++                    for (var i = 0; i < pages.length; i++)
++                      AnimatedContainer(
++                        duration: _pageAnimation,
++                        margin: const EdgeInsets.symmetric(horizontal: 4),
++                        width: i == _page ? 24 : 8,
++                        height: 8,
++                        decoration: BoxDecoration(
++                          color: i == _page
++                              ? scheme.primary
++                              : scheme.outlineVariant,
++                          borderRadius: BorderRadius.circular(4),
++                        ),
++                      ),
++                  ],
++                ),
++                Padding(
++                  padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
++                  child: SizedBox(
++                    width: double.infinity,
++                    child: FilledButton(
++                      onPressed: _next,
++                      child: Padding(
++                        padding: const EdgeInsets.symmetric(vertical: 6),
++                        child: Text(_isLast ? 'Get started' : 'Next'),
++                      ),
++                    ),
++                  ),
++                ),
++              ],
++            ),
++          ),
++        ),
++      ),
++    );
++  }
++}
++
++class _WelcomePage extends StatelessWidget {
++  const _WelcomePage({
++    required this.icon,
++    required this.title,
++    required this.body,
++  });
++
++  final IconData icon;
++  final String title;
++  final String body;
++
++  @override
++  Widget build(BuildContext context) {
++    final theme = Theme.of(context);
++    final scheme = theme.colorScheme;
++
++    return Padding(
++      padding: const EdgeInsets.symmetric(horizontal: 32),
++      child: Column(
++        mainAxisAlignment: MainAxisAlignment.center,
++        children: [
++          Container(
++            width: 140,
++            height: 140,
++            decoration: BoxDecoration(
++              color: scheme.primaryContainer,
++              shape: BoxShape.circle,
++            ),
++            child: Icon(icon, size: 64, color: scheme.onPrimaryContainer),
++          ),
++          const SizedBox(height: 40),
++          Text(
++            title,
++            textAlign: TextAlign.center,
++            style: theme.textTheme.headlineMedium
++                ?.copyWith(fontWeight: FontWeight.w700),
++          ),
++          const SizedBox(height: 16),
++          Text(
++            body,
++            textAlign: TextAlign.center,
++            style: theme.textTheme.bodyLarge
++                ?.copyWith(color: scheme.onSurfaceVariant),
++          ),
++        ],
++      ),
++    );
++  }
++}
+diff --git a/lib/features/onboarding/presentation/state/onboarding_viewmodel.dart b/lib/features/onboarding/presentation/state/onboarding_viewmodel.dart
+new file mode 100644
+index 0000000..c961ad0
+--- /dev/null
++++ b/lib/features/onboarding/presentation/state/onboarding_viewmodel.dart
+@@ -0,0 +1,31 @@
++import 'dart:async';
++
++import 'package:flutter/foundation.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:petit/core/di/providers.dart';
++
++final onboardingDoneProvider =
++    NotifierProvider<OnboardingViewModel, bool>(OnboardingViewModel.new);
++
++/// ViewModel of the welcome screens. Its state is whether they have been seen:
++/// false only on the very first launch.
++class OnboardingViewModel extends Notifier<bool> {
++  @override
++  bool build() => ref.read(initialOnboardingDoneProvider);
++
++  /// The user finished or skipped the welcome screens.
++  void complete() {
++    if (state) return;
++    state = true;
++    unawaited(_save());
++  }
++
++  Future<void> _save() async {
++    try {
++      await ref.read(onboardingStoreProvider).markDone();
++    } catch (e) {
++      // Worst case the welcome screens show once more next launch.
++      debugPrint('Could not remember the welcome screens: $e');
++    }
++  }
++}
+diff --git a/lib/features/settings/presentation/pages/settings_page.dart b/lib/features/settings/presentation/pages/settings_page.dart
+index 942f3c4..6d1b1a6 100644
+--- a/lib/features/settings/presentation/pages/settings_page.dart
++++ b/lib/features/settings/presentation/pages/settings_page.dart
+@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:petit/common/widgets/save_to_tile.dart';
+ import 'package:petit/common/widgets/target_size_field.dart';
+ import 'package:petit/core/utils/platform_utils.dart';
++import 'package:petit/features/onboarding/presentation/pages/onboarding_screen.dart';
+ import 'package:petit/features/settings/presentation/state/settings_viewmodel.dart';
+ import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+ import 'package:petit/features/videos/presentation/state/video_presets.dart';
+@@ -153,6 +154,26 @@ class SettingsPage extends ConsumerWidget {
+                   children: [SaveToTile()],
+                 ),
+ 
++              _Section(
++                title: 'About',
++                icon: Icons.info_outline,
++                children: [
++                  ListTile(
++                    contentPadding: EdgeInsets.zero,
++                    leading: const Icon(Icons.waving_hand_outlined),
++                    title: const Text('Show the welcome tour'),
++                    trailing: const Icon(Icons.chevron_right),
++                    onTap: () => Navigator.of(context).push(
++                      MaterialPageRoute<void>(
++                        builder: (routeContext) => OnboardingScreen(
++                          onFinished: () => Navigator.of(routeContext).pop(),
++                        ),
++                      ),
++                    ),
++                  ),
++                ],
++              ),
++
+               Align(
+                 alignment: Alignment.centerLeft,
+                 child: TextButton.icon(
+diff --git a/lib/features/videos/presentation/pages/videos_page.dart b/lib/features/videos/presentation/pages/videos_page.dart
+index 265fa25..d57c4a7 100644
+--- a/lib/features/videos/presentation/pages/videos_page.dart
++++ b/lib/features/videos/presentation/pages/videos_page.dart
+@@ -1,4 +1,5 @@
+ import 'package:flutter/material.dart';
++import 'package:petit/common/widgets/compression_progress_view.dart';
+ import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:petit/core/utils/adaptive.dart';
+ import 'package:petit/core/utils/platform_utils.dart';
+@@ -6,7 +7,6 @@ import 'package:petit/core/utils/shortcut_labels.dart';
+ import 'package:petit/features/videos/presentation/state/videos_state.dart';
+ import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
+ import 'package:petit/features/videos/presentation/widget/video_options_panel.dart';
+-import 'package:step_progress_indicator/step_progress_indicator.dart';
+ import '../../../../common/widgets/compression_summary_dialog.dart';
+ 
+ class VideosPage extends ConsumerStatefulWidget {
+@@ -98,53 +98,16 @@ class _VideosPageState extends ConsumerState<VideosPage> {
+               fontSize: 18,
+             ),
+           ),
+-        (state.isLoading || state.isCompressing)
+-            ? Container(
+-                color: Colors.black.withValues(alpha: 0.85),
+-              )
+-            : Container(),
+-        (state.isLoading) ? const CircularProgressIndicator() : Container(),
+-        (state.isCompressing)
+-            ? Column(
+-                mainAxisAlignment: MainAxisAlignment.center,
+-                children: [
+-                  SizedBox(
+-                    height: 40,
+-                  ),
+-                  CircularStepProgressIndicator(
+-                    totalSteps: 100,
+-                    currentStep: state.percentComplete,
+-                    stepSize: 10,
+-                    selectedColor: Theme.of(context).colorScheme.primary,
+-                    unselectedColor:
+-                        Theme.of(context).colorScheme.surfaceContainer,
+-                    padding: 0,
+-                    width: 200,
+-                    height: 200,
+-                    selectedStepSize: 30,
+-                    roundedCap: (_, __) => true,
+-                  ),
+-                  Text(
+-                    "Please keep app open\nwhile compressing",
+-                    textAlign: TextAlign.center,
+-                    style: TextStyle(
+-                        fontSize: 15,
+-                        fontWeight: FontWeight.w700,
+-                        color: Theme.of(context).colorScheme.primary),
+-                  ),
+-                ],
+-              )
+-            : Container(),
+-        (state.isCompressing)
+-            ? Text(
+-                "${state.percentComplete}%",
+-                textAlign: TextAlign.center,
+-                style: TextStyle(
+-                    fontSize: 50,
+-                    fontWeight: FontWeight.w700,
+-                    color: Theme.of(context).colorScheme.primary),
+-              )
+-            : Container(),
++        if (state.isCompressing)
++          CompressionProgressView(
++            title: 'Compressing video',
++            percent: state.percentComplete,
++            eta: state.eta,
++            showEta: true,
++            keepOpenHint: true,
++          )
++        else if (state.isLoading)
++          const CompressionProgressView(title: 'Loading video'),
+       ],
+     );
+   }
+diff --git a/lib/features/videos/presentation/state/videos_state.dart b/lib/features/videos/presentation/state/videos_state.dart
+index ceef647..72dda59 100644
+--- a/lib/features/videos/presentation/state/videos_state.dart
++++ b/lib/features/videos/presentation/state/videos_state.dart
+@@ -30,6 +30,7 @@ class VideosState {
+     this.isCompressing = false,
+     this.crfQuality = 80,
+     this.percentComplete = 0,
++    this.eta,
+     this.presetIndex = 1,
+     this.isFabOpen = true,
+     this.currentJob,
+@@ -51,6 +52,9 @@ class VideosState {
+   final int crfQuality;
+   final int percentComplete;
+ 
++  /// Time left for the running compression, once it can be told.
++  final Duration? eta;
++
+   /// Index into the FFmpeg presets ("Desired File Size" slider).
+   final int presetIndex;
+   final bool isFabOpen;
+@@ -117,6 +121,7 @@ class VideosState {
+     bool? isCompressing,
+     int? crfQuality,
+     int? percentComplete,
++    Object? eta = _unset,
+     int? presetIndex,
+     bool? isFabOpen,
+     Object? currentJob = _unset,
+@@ -136,6 +141,7 @@ class VideosState {
+       isCompressing: isCompressing ?? this.isCompressing,
+       crfQuality: crfQuality ?? this.crfQuality,
+       percentComplete: percentComplete ?? this.percentComplete,
++      eta: identical(eta, _unset) ? this.eta : eta as Duration?,
+       presetIndex: presetIndex ?? this.presetIndex,
+       isFabOpen: isFabOpen ?? this.isFabOpen,
+       currentJob: identical(currentJob, _unset)
+diff --git a/lib/features/videos/presentation/state/videos_viewmodel.dart b/lib/features/videos/presentation/state/videos_viewmodel.dart
+index 2bb45a7..0cbfb62 100644
+--- a/lib/features/videos/presentation/state/videos_viewmodel.dart
++++ b/lib/features/videos/presentation/state/videos_viewmodel.dart
+@@ -8,6 +8,7 @@ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/core/di/providers.dart';
+ import 'package:petit/core/utils/format_bytes.dart';
+ import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
++import 'package:petit/common/domain/progress_eta.dart';
+ import 'package:petit/features/settings/domain/entities/app_settings.dart';
+ import 'package:petit/features/settings/presentation/state/settings_viewmodel.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+@@ -206,7 +207,8 @@ class VideosViewModel extends Notifier<VideosState> {
+         return;
+       }
+ 
+-      state = state.copyWith(isCompressing: true, percentComplete: 0);
++      final eta = ProgressEta()..start();
++      state = state.copyWith(isCompressing: true, percentComplete: 0, eta: null);
+ 
+       final job = await ref.read(compressVideoUseCaseProvider)(
+         input: originalFile,
+@@ -217,8 +219,10 @@ class VideosViewModel extends Notifier<VideosState> {
+         targetBytes: state.mode == VideoMode.targetSize
+             ? state.targetSizeMb * 1000000
+             : null,
+-        onProgress: (percent) =>
+-            state = state.copyWith(percentComplete: percent),
++        onProgress: (percent) {
++          eta.update(percent / 100);
++          state = state.copyWith(percentComplete: percent, eta: eta.remaining);
++        },
+         onError: showResult,
+       );
+ 
+@@ -286,6 +290,7 @@ class VideosViewModel extends Notifier<VideosState> {
+       isCompressing: false,
+       isLoading: false,
+       percentComplete: 0,
++      eta: null,
+     );
+   }
+ 
+diff --git a/lib/main.dart b/lib/main.dart
+index 7b64b58..2d908c4 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -11,6 +11,8 @@ import 'package:petit/core/utils/app_scroll_behavior.dart';
+ import 'package:petit/core/utils/platform_utils.dart';
+ import 'package:share_handler/share_handler.dart';
+ import 'package:petit/features/home/presentation/pages/home_screen.dart';
++import 'package:petit/features/onboarding/presentation/pages/onboarding_screen.dart';
++import 'package:petit/features/onboarding/presentation/state/onboarding_viewmodel.dart';
+ import 'package:petit/service_locator.dart';
+ import 'package:upgrader/upgrader.dart';
+ import 'config/routes/app_routes.dart';
+@@ -222,6 +224,21 @@ class _MyAppState extends State<MyApp> {
+     super.dispose();
+   }
+ 
++  /// The main screen; on iOS wrapped to offer App Store updates.
++  Widget _home() {
++    return PlatformInfo.isIOS
++        ? UpgradeAlert(
++            dialogStyle: UpgradeDialogStyle.material,
++            showIgnore: false,
++            showLater: true,
++            upgrader: Upgrader(
++              durationUntilAlertAgain: const Duration(days: 3),
++            ),
++            child: const HomeScreen(),
++          )
++        : const HomeScreen();
++  }
++
+   @override
+   Widget build(BuildContext context) {
+     return DynamicColorBuilder(
+@@ -240,17 +257,20 @@ class _MyAppState extends State<MyApp> {
+           navigatorObservers: [if (observer != null) observer!],
+           initialRoute: '/',
+           onGenerateRoute: AppRoutes.onGenerateRoutes,
+-          home: PlatformInfo.isIOS
+-              ? UpgradeAlert(
+-                  dialogStyle: UpgradeDialogStyle.material,
+-                  showIgnore: false,
+-                  showLater: true,
+-                  upgrader: Upgrader(
+-                    durationUntilAlertAgain: const Duration(days: 3),
+-                  ),
+-                  child: HomeScreen(),
+-                )
+-              : HomeScreen(),
++          home: Consumer(
++            builder: (context, ref, _) {
++              final seenWelcome = ref.watch(onboardingDoneProvider);
++              return AnimatedSwitcher(
++                duration: const Duration(milliseconds: 300),
++                child: seenWelcome
++                    ? _home()
++                    : OnboardingScreen(
++                        onFinished:
++                            ref.read(onboardingDoneProvider.notifier).complete,
++                      ),
++              );
++            },
++          ),
+         );
+       },
+     );
+diff --git a/lib/service_locator.dart b/lib/service_locator.dart
+index b58fb8e..137d21b 100644
+--- a/lib/service_locator.dart
++++ b/lib/service_locator.dart
+@@ -23,6 +23,8 @@ import 'package:petit/features/videos/data/services/ffmpeg_video_thumbnailer.dar
+ import 'package:petit/features/videos/domain/services/video_compressor.dart';
+ import 'package:petit/features/videos/domain/services/video_thumbnailer.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
++import 'package:petit/features/onboarding/data/services/shared_prefs_onboarding_store.dart';
++import 'package:petit/features/onboarding/domain/services/onboarding_store.dart';
+ import 'package:petit/features/settings/data/services/shared_prefs_settings_repository.dart';
+ import 'package:petit/features/settings/domain/entities/app_settings.dart';
+ import 'package:petit/features/settings/domain/services/settings_repository.dart';
+@@ -30,6 +32,9 @@ import 'package:shared_preferences/shared_preferences.dart';
+ 
+ final sl = GetIt.instance;
+ 
++/// Name under which "welcome screens seen" is registered (a bare bool).
++const kOnboardingDoneInstance = 'onboardingDone';
++
+ Future<void> initializeDependencies() async {
+ 
+   //Pref
+@@ -49,6 +54,17 @@ Future<void> initializeDependencies() async {
+   } catch (_) {
+     // Start with the defaults; initialSettingsProvider falls back to them.
+   }
++
++  // Whether the welcome screens were seen, read once for the same reason.
++  final onboardingStore = SharedPrefsOnboardingStore(
++      sl<SharedPreferencesAsync>());
++  sl.registerSingleton<OnboardingStore>(onboardingStore);
++  try {
++    sl.registerSingleton<bool>(await onboardingStore.isDone(),
++        instanceName: kOnboardingDoneInstance);
++  } catch (_) {
++    // Treated as seen; see initialOnboardingDoneProvider.
++  }
+ }
+ 
+ /// Platform services are registered here, so the ViewModels and use cases
+diff --git a/test/compression_progress_view_test.dart b/test/compression_progress_view_test.dart
+new file mode 100644
+index 0000000..71cbe5e
+--- /dev/null
++++ b/test/compression_progress_view_test.dart
+@@ -0,0 +1,101 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/common/widgets/compression_progress_view.dart';
++
++Future<void> _show(WidgetTester tester, CompressionProgressView view) {
++  return tester.pumpWidget(MaterialApp(
++    home: Scaffold(body: Stack(children: [view])),
++  ));
++}
++
++void main() {
++  testWidgets('shows the title, percent and detail', (tester) async {
++    await _show(
++      tester,
++      const CompressionProgressView(
++        title: 'Compressing images',
++        percent: 42,
++        detail: 'Image 3 of 8',
++      ),
++    );
++
++    expect(find.text('Compressing images'), findsOneWidget);
++    expect(find.text('42%'), findsOneWidget);
++    expect(find.text('Image 3 of 8'), findsOneWidget);
++  });
++
++  testWidgets('says it is estimating until the time left is known',
++      (tester) async {
++    await _show(
++      tester,
++      const CompressionProgressView(
++          title: 'Compressing video', percent: 5, showEta: true),
++    );
++    expect(find.text('Estimating time...'), findsOneWidget);
++
++    await _show(
++      tester,
++      const CompressionProgressView(
++        title: 'Compressing video',
++        percent: 50,
++        showEta: true,
++        eta: Duration(minutes: 2),
++      ),
++    );
++    expect(find.text('about 2 minutes left'), findsOneWidget);
++    expect(find.text('Estimating time...'), findsNothing);
++  });
++
++  testWidgets('has no time line unless asked for', (tester) async {
++    await _show(
++      tester,
++      const CompressionProgressView(title: 'Compressing images', percent: 50),
++    );
++    expect(find.textContaining('left'), findsNothing);
++    expect(find.text('Estimating time...'), findsNothing);
++  });
++
++  testWidgets('without a percent it is an endless spinner', (tester) async {
++    await _show(tester, const CompressionProgressView(title: 'Loading video'));
++
++    final indicator = tester
++        .widget<CircularProgressIndicator>(find.byType(CircularProgressIndicator));
++    expect(indicator.value, isNull);
++    expect(find.textContaining('%'), findsNothing);
++  });
++
++  testWidgets('shows the keep-open reminder only when asked', (tester) async {
++    await _show(
++      tester,
++      const CompressionProgressView(
++          title: 'Compressing', percent: 1, keepOpenHint: true),
++    );
++    expect(find.textContaining('keep the app open'), findsOneWidget);
++
++    await _show(
++      tester,
++      const CompressionProgressView(title: 'Compressing', percent: 1),
++    );
++    expect(find.textContaining('keep the app open'), findsNothing);
++  });
++
++  testWidgets('blocks taps on what is underneath', (tester) async {
++    var tapped = false;
++    await tester.pumpWidget(MaterialApp(
++      home: Scaffold(
++        body: Stack(children: [
++          Positioned.fill(
++            child: GestureDetector(
++              behavior: HitTestBehavior.opaque,
++              onTap: () => tapped = true,
++            ),
++          ),
++          const CompressionProgressView(title: 'Compressing', percent: 1),
++        ]),
++      ),
++    ));
++
++    await tester.tapAt(const Offset(10, 10));
++    expect(tapped, isFalse);
++  });
++}
+diff --git a/test/onboarding_test.dart b/test/onboarding_test.dart
+new file mode 100644
+index 0000000..0881e39
+--- /dev/null
++++ b/test/onboarding_test.dart
+@@ -0,0 +1,139 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/core/di/providers.dart';
++import 'package:petit/features/onboarding/domain/services/onboarding_store.dart';
++import 'package:petit/features/onboarding/presentation/pages/onboarding_screen.dart';
++import 'package:petit/features/onboarding/presentation/state/onboarding_viewmodel.dart';
++
++class _FakeStore implements OnboardingStore {
++  int marked = 0;
++  bool fail = false;
++
++  @override
++  Future<bool> isDone() async => marked > 0;
++
++  @override
++  Future<void> markDone() async {
++    marked++;
++    if (fail) throw StateError('disk full');
++  }
++}
++
++void main() {
++  group('OnboardingViewModel', () {
++    ProviderContainer containerWith(bool alreadySeen, _FakeStore store) =>
++        ProviderContainer.test(overrides: [
++          initialOnboardingDoneProvider.overrideWithValue(alreadySeen),
++          onboardingStoreProvider.overrideWithValue(store),
++        ]);
++
++    test('starts from whether it was seen at launch', () {
++      expect(
++          containerWith(false, _FakeStore()).read(onboardingDoneProvider),
++          isFalse);
++      expect(containerWith(true, _FakeStore()).read(onboardingDoneProvider),
++          isTrue);
++    });
++
++    test('completing it is remembered', () {
++      final store = _FakeStore();
++      final c = containerWith(false, store);
++
++      c.read(onboardingDoneProvider.notifier).complete();
++
++      expect(c.read(onboardingDoneProvider), isTrue);
++      expect(store.marked, 1);
++    });
++
++    test('completing twice saves once', () {
++      final store = _FakeStore();
++      final c = containerWith(false, store);
++
++      c.read(onboardingDoneProvider.notifier).complete();
++      c.read(onboardingDoneProvider.notifier).complete();
++
++      expect(store.marked, 1);
++    });
++
++    test('a failed save still lets the user in', () async {
++      final store = _FakeStore()..fail = true;
++      final c = containerWith(false, store);
++
++      c.read(onboardingDoneProvider.notifier).complete();
++      await Future<void>.delayed(Duration.zero);
++
++      expect(c.read(onboardingDoneProvider), isTrue);
++    });
++
++    test('without a stored answer the screens are skipped', () {
++      // Nothing is registered with get_it in tests, as when reading failed.
++      final c = ProviderContainer.test();
++      expect(c.read(onboardingDoneProvider), isTrue);
++    });
++  });
++
++  group('OnboardingScreen', () {
++    Future<void> show(WidgetTester tester, VoidCallback onFinished) {
++      return tester.pumpWidget(MaterialApp(
++        home: OnboardingScreen(onFinished: onFinished),
++      ));
++    }
++
++    testWidgets('starts on the welcome page', (tester) async {
++      await show(tester, () {});
++      expect(find.text('Welcome to Petit'), findsOneWidget);
++      expect(find.text('Next'), findsOneWidget);
++      expect(find.text('Skip'), findsOneWidget);
++    });
++
++    testWidgets('Next moves through the pages to Get started', (tester) async {
++      var finished = 0;
++      await show(tester, () => finished++);
++
++      await tester.tap(find.text('Next'));
++      await tester.pumpAndSettle();
++      expect(find.text('Pick, preview, compress'), findsOneWidget);
++
++      await tester.tap(find.text('Next'));
++      await tester.pumpAndSettle();
++      expect(find.text('Your files stay yours'), findsOneWidget);
++      expect(find.text('Get started'), findsOneWidget);
++      expect(finished, 0);
++
++      await tester.tap(find.text('Get started'));
++      expect(finished, 1);
++    });
++
++    testWidgets('Skip finishes at once', (tester) async {
++      var finished = 0;
++      await show(tester, () => finished++);
++
++      await tester.tap(find.text('Skip'));
++
++      expect(finished, 1);
++    });
++
++    testWidgets('Skip cannot be used on the last page', (tester) async {
++      var finished = 0;
++      await show(tester, () => finished++);
++      await tester.tap(find.text('Next'));
++      await tester.pumpAndSettle();
++      await tester.tap(find.text('Next'));
++      await tester.pumpAndSettle();
++
++      await tester.tap(find.text('Skip'), warnIfMissed: false);
++
++      expect(finished, 0);
++    });
++
++    testWidgets('swiping works too', (tester) async {
++      await show(tester, () {});
++
++      await tester.fling(find.byType(PageView), const Offset(-400, 0), 1000);
++      await tester.pumpAndSettle();
++
++      expect(find.text('Pick, preview, compress'), findsOneWidget);
++    });
++  });
++}
+diff --git a/test/progress_eta_test.dart b/test/progress_eta_test.dart
+new file mode 100644
+index 0000000..d65e3ca
+--- /dev/null
++++ b/test/progress_eta_test.dart
+@@ -0,0 +1,124 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/common/domain/progress_eta.dart';
++import 'package:petit/core/utils/format_eta.dart';
++import 'package:petit/features/images/presentation/state/loading_data.dart';
++
++void main() {
++  group('ProgressEta', () {
++    late DateTime clock;
++    late ProgressEta eta;
++
++    setUp(() {
++      clock = DateTime(2026, 1, 1);
++      eta = ProgressEta(now: () => clock);
++    });
++
++    void pass(int seconds) => clock = clock.add(Duration(seconds: seconds));
++
++    test('knows nothing before it is started', () {
++      eta.update(0.5);
++      expect(eta.remaining, isNull);
++    });
++
++    test('is silent while it is too early to tell', () {
++      eta.start();
++      pass(1);
++      eta.update(0.5); // far along, but only one second of data
++      expect(eta.remaining, isNull);
++
++      pass(10);
++      eta.update(0.01); // plenty of time, but barely started
++      expect(eta.remaining, isNull);
++    });
++
++    test('works out the time left from the pace so far', () {
++      eta.start();
++      pass(10);
++      eta.update(0.25); // 10 s for a quarter: 30 s to go
++      expect(eta.remaining, const Duration(seconds: 30));
++    });
++
++    test('blends later readings instead of jumping', () {
++      eta.start();
++      pass(10);
++      eta.update(0.25); // reading 30 s
++      pass(10);
++      eta.update(0.30); // raw: 20 s * 0.7 / 0.3 = 46.67 s
++
++      final seconds = eta.remaining!.inMilliseconds / 1000;
++      // 70% of 30 s plus 30% of 46.67 s.
++      expect(seconds, closeTo(35.0, 0.01));
++    });
++
++    test('is zero once the job is done', () {
++      eta.start();
++      pass(10);
++      eta.update(0.5);
++      eta.update(1.0);
++      expect(eta.remaining, Duration.zero);
++    });
++
++    test('start forgets the previous job', () {
++      eta.start();
++      pass(10);
++      eta.update(0.5);
++      expect(eta.remaining, isNotNull);
++
++      eta.start();
++      expect(eta.remaining, isNull);
++    });
++
++    test('reset forgets everything', () {
++      eta.start();
++      pass(10);
++      eta.update(0.5);
++      eta.reset();
++      expect(eta.remaining, isNull);
++      pass(10);
++      eta.update(0.5);
++      expect(eta.remaining, isNull, reason: 'not started again');
++    });
++  });
++
++  group('formatEta', () {
++    test('a few seconds', () {
++      expect(formatEta(Duration.zero), 'a few seconds left');
++      expect(formatEta(const Duration(seconds: 9)), 'a few seconds left');
++    });
++
++    test('seconds are rounded to five', () {
++      expect(formatEta(const Duration(seconds: 10)), 'about 10 seconds left');
++      expect(formatEta(const Duration(seconds: 33)), 'about 35 seconds left');
++    });
++
++    test('nearly a minute reads as a minute', () {
++      expect(formatEta(const Duration(seconds: 58)), 'about 1 minute left');
++      expect(formatEta(const Duration(seconds: 60)), 'about 1 minute left');
++    });
++
++    test('minutes round up', () {
++      expect(formatEta(const Duration(seconds: 61)), 'about 2 minutes left');
++      expect(formatEta(const Duration(minutes: 5)), 'about 5 minutes left');
++      expect(
++          formatEta(const Duration(minutes: 5, seconds: 1)),
++          'about 6 minutes left');
++    });
++
++    test('hours', () {
++      expect(formatEta(const Duration(hours: 2)), 'about 2 h left');
++      expect(formatEta(const Duration(hours: 1, minutes: 20)),
++          'about 1 h 20 min left');
++    });
++  });
++
++  group('LoadingData eta', () {
++    test('is part of equality', () {
++      const a = LoadingData(isLoading: true, eta: Duration(seconds: 5));
++      const b = LoadingData(isLoading: true, eta: Duration(seconds: 5));
++      const c = LoadingData(isLoading: true, eta: Duration(seconds: 6));
++      expect(a, b);
++      expect(a.hashCode, b.hashCode);
++      expect(a, isNot(c));
++    });
++  });
++}
+diff --git a/test/videos_viewmodel_test.dart b/test/videos_viewmodel_test.dart
+index 29c5393..c820933 100644
+--- a/test/videos_viewmodel_test.dart
++++ b/test/videos_viewmodel_test.dart
+@@ -166,6 +166,34 @@ void main() {
+     });
+   });
+ 
++  group('progress', () {
++    test('reports percent, and has no time left this early', () async {
++      h.picker.video = h.file('in.mp4', 1000).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      await vm.pickVideo();
++      await vm.compressVideo(onComplete: (_) {});
++
++      h.videoCompressor.progressCallback!(40);
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.percentComplete, 40);
++      expect(s.eta, isNull, reason: 'a fraction of a second is too early');
++    });
++
++    test('removing the video clears the time left', () async {
++      h.picker.video = h.file('in.mp4', 1000).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      await vm.pickVideo();
++
++      vm.removeVideo();
++
++      expect(c.read(videosViewModelProvider).eta, isNull);
++      expect(c.read(videosViewModelProvider).percentComplete, 0);
++    });
++  });
++
+   group('custom target size and warnings', () {
+     test('a typed size is kept, within limits', () {
+       final c = h.container();
