@@ -28,6 +28,7 @@ class _VideosPageState extends ConsumerState<VideosPage> {
     final preview = state.preview;
 
     return Stack(
+      fit: StackFit.expand,
       alignment: Alignment.center,
       children: [
         if (preview != null && preview.isInitialized)
@@ -89,13 +90,15 @@ class _VideosPageState extends ConsumerState<VideosPage> {
             ),
           )
         else
-          Text(
-            PlatformInfo.isDesktop
-                ? "Add a video and start compressing\nor drop it anywhere in this window"
-                : "Add a video and start compressing",
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 18,
+          Center(
+            child: Text(
+              PlatformInfo.isDesktop
+                  ? "Add a video and start compressing\nor drop it anywhere in this window"
+                  : "Add a video and start compressing",
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 18,
+              ),
             ),
           ),
         if (state.isCompressing)

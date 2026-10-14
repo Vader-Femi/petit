@@ -20,7 +20,6 @@ import '../../../../common/data/shared_media_details.dart';
 import '../../../../core/constants/consts.dart';
 import '../../../../service_locator.dart';
 import '../../../images/presentation/pages/images_page.dart';
-import '../../../images/presentation/widget/intro_carousel_dialog.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key, this.sharedMedia});
@@ -40,7 +39,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void initState() {
     super.initState();
 
-    _checkFirstLaunch();
     if (!kIsWeb) {
     if (Platform.isAndroid) {
       if (!kDebugMode) {
@@ -50,27 +48,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
 
     _handleSharedAttachment();
-  }
-
-  Future<void> _checkFirstLaunch() async {
-    var prefs = sl.call<SharedPreferencesAsync>();
-    final hasSeenDialog =
-        await prefs.getBool(Consts.hasSeenIntroDialog) ?? false;
-
-    if (!hasSeenDialog) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _showIntroDialogCarousel();
-      });
-      await prefs.setBool(Consts.hasSeenIntroDialog, true);
-    }
-  }
-
-  void _showIntroDialogCarousel() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const IntroCarouselDialog(),
-    );
   }
 
   Future<void> _checkAndroidFlexibleUpdate() async {

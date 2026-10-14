@@ -186,16 +186,19 @@ class _ImagesPageState extends ConsumerState<ImagesPage> {
     final loading = state.loading;
 
     return Stack(
+      fit: StackFit.expand,
       alignment: Alignment.center,
       children: [
         state.pickedImages.isEmpty
-            ? Text(
-                PlatformInfo.isDesktop
-                    ? "Add images and start compressing\nor drop them anywhere in this window"
-                    : "Add images and start compressing",
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 18,
+            ? Center(
+                child: Text(
+                  PlatformInfo.isDesktop
+                      ? "Add images and start compressing\nor drop them anywhere in this window"
+                      : "Add images and start compressing",
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 18,
+                  ),
                 ),
               )
             : Padding(
