@@ -189,3 +189,30 @@ target size, resolution and encoding speed. On desktop it also shows the "Save t
   (read once at start-up, like the settings); `main.dart` shows them instead of `HomeScreen` until
   then. Settings has "Show the welcome tour" to see them again. If the stored answer cannot be read
   they are skipped.
+
+## Compressing in the background (Android)
+
+Without help, Android may freeze or kill the app soon after the user leaves it, which would end a long
+compression. While a job runs, Petit now runs a **foreground service** (`CompressionService.kt`) with a
+progress notification and a partial wake lock (so the CPU keeps going with the screen off). The
+compression itself still runs in Flutter; the service only keeps the process alive and shows progress.
+
+- **Dart side.** `BackgroundKeepAlive` (domain interface) has an Android implementation that talks to
+  `MainActivity` over the `com.outsidetheide.petit/keep_alive` method channel, and a no-op one for every
+  other platform (desktop apps keep running; iOS does not allow long background work).
+  `JobKeepAlive` wraps it for the ViewModels: it never lets a notification problem stop a job, asks for
+  the notification permission once, and thins out progress updates (at most one a second, 100% always).
+  Both ViewModels start it when a job starts and end it when the job finishes, fails or is cancelled.
+- **Android side.** `MainActivity` handles `start`, `update`, `stop` and `requestNotificationPermission`
+  (Android 13+). The service uses the `mediaProcessing` type on Android 15+ and `dataSync` before that;
+  the manifest declares both, with their permissions, plus `POST_NOTIFICATIONS` and `WAKE_LOCK`.
+  `stopWithTask` is on: swiping Petit away from the recent apps ends the job (its Flutter side is gone
+  by then), so the service must not outlive it. Declining the notification permission does not stop
+  background compression, it only hides the notification.
+- **Limits.** Android 15 caps `mediaProcessing`/`dataSync` services at about 6 hours; the wake lock
+  expires after 3 hours as a safety net. The job is not resumed if the system kills the app anyway.
+- **Play Console.** Apps that declare foreground service types must describe them in the Play Console
+  ("Foreground service permissions" on the App content page): explain that Petit compresses the user's
+  own photos and videos, which continues when they leave the app, and that the notification shows
+  progress.
+- Needs `compileSdk` 35 or newer (the `mediaProcessing` manifest value); Flutter's current default is.

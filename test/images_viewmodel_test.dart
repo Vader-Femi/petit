@@ -215,6 +215,60 @@ void main() {
     });
   });
 
+  group('background', () {
+    test('keeps the app alive while compressing, and lets go afterwards',
+        () async {
+      h.picker.images = [h.file('a.jpg', 100).path, h.file('b.jpg', 100).path];
+      final c = h.container();
+      final vm = c.read(imagesViewModelProvider.notifier);
+      await vm.pickImages();
+
+      await vm.compressAllSelectedImages();
+
+      final calls = h.keepAlive.calls;
+      expect(calls.first, 'permission');
+      expect(calls[1], 'start:Compressing images');
+      expect(calls.any((call) => call.startsWith('update:')), isTrue);
+      expect(calls.last, 'stop');
+    });
+
+    test('lets go when saving is declined', () async {
+      h.picker.images = [h.file('a.jpg', 100).path];
+      h.saver.declineToPrepare = true;
+      final c = h.container();
+      final vm = c.read(imagesViewModelProvider.notifier);
+      await vm.pickImages();
+
+      final report = await vm.compressAllSelectedImages();
+
+      expect(report, isNull);
+      expect(h.keepAlive.calls.last, 'stop');
+    });
+
+    test('a broken keep-alive does not stop the compression', () async {
+      h.keepAlive.failWith = StateError('no service');
+      h.picker.images = [h.file('a.jpg', 100).path];
+      final c = h.container();
+      final vm = c.read(imagesViewModelProvider.notifier);
+      await vm.pickImages();
+
+      final report = await vm.compressAllSelectedImages();
+
+      expect(report, isNotNull);
+    });
+
+    test('names the image being worked on', () async {
+      h.picker.images = [h.file('a.jpg', 100).path, h.file('b.jpg', 100).path];
+      final c = h.container();
+      final vm = c.read(imagesViewModelProvider.notifier);
+      await vm.pickImages();
+
+      await vm.compressAllSelectedImages();
+
+      expect(h.keepAlive.calls, contains('update:0:Image 1 of 2'));
+    });
+  });
+
   group('clearing', () {
     test('clearPickedImages empties the selection', () async {
       h.picker.images = [h.file('a.jpg', 100).path];

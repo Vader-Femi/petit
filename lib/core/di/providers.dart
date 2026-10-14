@@ -8,6 +8,8 @@ import 'package:petit/common/domain/services/workspace.dart';
 import 'package:petit/features/images/domain/usecases/compress_images.dart';
 import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
 import 'package:petit/features/images/domain/usecases/read_images.dart';
+import 'package:petit/common/domain/job_keep_alive.dart';
+import 'package:petit/common/domain/services/background_keep_alive.dart';
 import 'package:petit/features/onboarding/domain/services/onboarding_store.dart';
 import 'package:petit/features/settings/domain/entities/app_settings.dart';
 import 'package:petit/features/settings/domain/services/settings_repository.dart';
@@ -38,6 +40,13 @@ final settingsRepositoryProvider =
 /// failed). The Settings ViewModel starts from this.
 final initialSettingsProvider = Provider<AppSettings>(
     (ref) => sl.isRegistered<AppSettings>() ? sl<AppSettings>() : const AppSettings());
+
+final backgroundKeepAliveProvider = Provider<BackgroundKeepAlive>(
+    (ref) => sl<BackgroundKeepAlive>());
+
+/// Keeps the app alive for the one compression job that runs at a time.
+final jobKeepAliveProvider = Provider<JobKeepAlive>(
+    (ref) => JobKeepAlive(ref.watch(backgroundKeepAliveProvider)));
 
 final onboardingStoreProvider =
     Provider<OnboardingStore>((ref) => sl<OnboardingStore>());

@@ -1,0 +1,1070 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 04a7bec..2afd6bf 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -53,6 +53,7 @@ jobs:
+           test/progress_eta_test.dart
+           test/compression_progress_view_test.dart
+           test/onboarding_test.dart
++          test/job_keep_alive_test.dart
+ 
+   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
+   # it runs on demand and for pull requests into the production branch.
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index f8b1487..725b66a 100644
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -2,6 +2,16 @@
+ 
+     <uses-permission android:name="android.permission.INTERNET"/>
+ 
++    <!-- Keep compressing when the user leaves the app: a foreground service with
++         a progress notification (see CompressionService). Android 14+ wants the
++         service type's own permission; Android 15 added mediaProcessing, older
++         versions use dataSync. -->
++    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
++    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
++    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING"/>
++    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
++    <uses-permission android:name="android.permission.WAKE_LOCK"/>
++
+     <application
+         android:name="${applicationName}"
+         android:icon="@mipmap/ic_launcher"
+@@ -50,6 +60,14 @@
+             </intent-filter>
+ 
+         </activity>
++        <!-- stopWithTask: swiping Petit away from the recent apps ends the job (its
++             Flutter side is gone by then), so the service must not outlive it. -->
++        <service
++            android:name=".CompressionService"
++            android:exported="false"
++            android:foregroundServiceType="dataSync|mediaProcessing"
++            android:stopWithTask="true" />
++
+         <!-- Don't delete the meta-data below.
+              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+         <meta-data
+diff --git a/android/app/src/main/kotlin/com/outsidetheide/petit/CompressionService.kt b/android/app/src/main/kotlin/com/outsidetheide/petit/CompressionService.kt
+new file mode 100644
+index 0000000..00ee04e
+--- /dev/null
++++ b/android/app/src/main/kotlin/com/outsidetheide/petit/CompressionService.kt
+@@ -0,0 +1,165 @@
++package com.outsidetheide.petit
++
++import android.app.Notification
++import android.app.NotificationChannel
++import android.app.NotificationManager
++import android.app.PendingIntent
++import android.app.Service
++import android.content.Context
++import android.content.Intent
++import android.content.pm.ServiceInfo
++import android.os.Build
++import android.os.IBinder
++import android.os.PowerManager
++
++/**
++ * Keeps Petit running while it compresses in the background.
++ *
++ * A foreground service (with its notification) stops Android from killing the
++ * app when the user switches away, and a partial wake lock stops the CPU
++ * sleeping with the screen off. The compression itself still runs in Flutter;
++ * this only keeps the process alive and shows progress.
++ *
++ * Driven from [MainActivity] through a method channel: [begin] / [update] /
++ * [end].
++ */
++class CompressionService : Service() {
++
++    private var wakeLock: PowerManager.WakeLock? = null
++
++    override fun onBind(intent: Intent?): IBinder? = null
++
++    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
++        val title = intent?.getStringExtra(EXTRA_TITLE) ?: "Compressing"
++        val text = intent?.getStringExtra(EXTRA_TEXT) ?: ""
++        instance = this
++        createChannel()
++        val notification = buildNotification(title, text, percent = 0, indeterminate = true)
++        startAsForeground(notification)
++        acquireWakeLock()
++        currentTitle = title
++        // If the system restarts the service after killing it, the job is gone
++        // with the process, so there is nothing to resume.
++        return START_NOT_STICKY
++    }
++
++    override fun onDestroy() {
++        releaseWakeLock()
++        if (instance === this) instance = null
++        super.onDestroy()
++    }
++
++    private fun startAsForeground(notification: Notification) {
++        when {
++            // Android 15+: the type made for this job.
++            Build.VERSION.SDK_INT >= 35 ->
++                startForeground(NOTIFICATION_ID, notification, TYPE_MEDIA_PROCESSING)
++            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
++                startForeground(
++                    NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
++                )
++            else -> startForeground(NOTIFICATION_ID, notification)
++        }
++    }
++
++    private fun createChannel() {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
++        val channel = NotificationChannel(
++            CHANNEL_ID,
++            "Compression progress",
++            // Low: shown, but silent. The progress bar is the point.
++            NotificationManager.IMPORTANCE_LOW
++        ).apply {
++            description = "Shows while Petit is compressing your files"
++            setShowBadge(false)
++        }
++        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
++    }
++
++    private fun buildNotification(
++        title: String,
++        text: String,
++        percent: Int,
++        indeterminate: Boolean
++    ): Notification {
++        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++            Notification.Builder(this, CHANNEL_ID)
++        } else {
++            @Suppress("DEPRECATION")
++            Notification.Builder(this)
++        }
++
++        val openApp = packageManager.getLaunchIntentForPackage(packageName)?.let {
++            PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE)
++        }
++
++        return builder
++            .setSmallIcon(R.drawable.ic_notification)
++            .setContentTitle(title)
++            .setContentText(text)
++            .setProgress(100, percent, indeterminate)
++            .setOngoing(true)
++            .setOnlyAlertOnce(true)
++            .setContentIntent(openApp)
++            .build()
++    }
++
++    private fun updateNotification(percent: Int, text: String) {
++        val notification = buildNotification(currentTitle, text, percent, indeterminate = false)
++        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification)
++    }
++
++    private fun acquireWakeLock() {
++        if (wakeLock?.isHeld == true) return
++        val power = getSystemService(Context.POWER_SERVICE) as PowerManager
++        wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "petit:compression").apply {
++            // A safety net so a lost job can never hold the CPU awake forever.
++            acquire(WAKE_LOCK_TIMEOUT_MS)
++        }
++    }
++
++    private fun releaseWakeLock() {
++        wakeLock?.takeIf { it.isHeld }?.release()
++        wakeLock = null
++    }
++
++    companion object {
++        private const val CHANNEL_ID = "petit_compression"
++        private const val NOTIFICATION_ID = 4711
++        private const val EXTRA_TITLE = "title"
++        private const val EXTRA_TEXT = "text"
++        private const val WAKE_LOCK_TIMEOUT_MS = 3L * 60 * 60 * 1000
++
++        // ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING (API 35), written
++        // out so this compiles whichever compileSdk the project uses.
++        private const val TYPE_MEDIA_PROCESSING = 0x00002000
++
++        @Volatile
++        private var instance: CompressionService? = null
++
++        @Volatile
++        private var currentTitle: String = "Compressing"
++
++        /** Starts the service. Call while the app is in the foreground. */
++        fun begin(context: Context, title: String, text: String) {
++            val intent = Intent(context, CompressionService::class.java)
++                .putExtra(EXTRA_TITLE, title)
++                .putExtra(EXTRA_TEXT, text)
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++                context.startForegroundService(intent)
++            } else {
++                context.startService(intent)
++            }
++        }
++
++        /** Moves the progress bar. Ignored when the service is not running. */
++        fun update(percent: Int, text: String) {
++            instance?.updateNotification(percent.coerceIn(0, 100), text)
++        }
++
++        /** Stops the service and removes its notification. */
++        fun end(context: Context) {
++            context.stopService(Intent(context, CompressionService::class.java))
++        }
++    }
++}
+diff --git a/android/app/src/main/kotlin/com/outsidetheide/petit/MainActivity.kt b/android/app/src/main/kotlin/com/outsidetheide/petit/MainActivity.kt
+index 534f547..c4c9034 100644
+--- a/android/app/src/main/kotlin/com/outsidetheide/petit/MainActivity.kt
++++ b/android/app/src/main/kotlin/com/outsidetheide/petit/MainActivity.kt
+@@ -1,5 +1,89 @@
+ package com.outsidetheide.petit
+ 
++import android.Manifest
++import android.content.pm.PackageManager
++import android.os.Build
+ import io.flutter.embedding.android.FlutterActivity
++import io.flutter.embedding.engine.FlutterEngine
++import io.flutter.plugin.common.MethodChannel
+ 
+-class MainActivity: FlutterActivity()
++class MainActivity : FlutterActivity() {
++
++    private var pendingPermissionResult: MethodChannel.Result? = null
++
++    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
++        super.configureFlutterEngine(flutterEngine)
++
++        // Keeps Petit alive while it compresses in the background. The Dart
++        // side is AndroidBackgroundKeepAlive.
++        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, KEEP_ALIVE_CHANNEL)
++            .setMethodCallHandler { call, result ->
++                when (call.method) {
++                    "start" -> {
++                        CompressionService.begin(
++                            applicationContext,
++                            call.argument<String>("title") ?: "Compressing",
++                            call.argument<String>("text") ?: ""
++                        )
++                        result.success(null)
++                    }
++
++                    "update" -> {
++                        CompressionService.update(
++                            call.argument<Int>("percent") ?: 0,
++                            call.argument<String>("text") ?: ""
++                        )
++                        result.success(null)
++                    }
++
++                    "stop" -> {
++                        CompressionService.end(applicationContext)
++                        result.success(null)
++                    }
++
++                    "requestNotificationPermission" -> requestNotificationPermission(result)
++
++                    else -> result.notImplemented()
++                }
++            }
++    }
++
++    /** Android 13+ asks before showing notifications; older versions never do. */
++    private fun requestNotificationPermission(result: MethodChannel.Result) {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
++            result.success(true)
++            return
++        }
++        val granted = checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
++            PackageManager.PERMISSION_GRANTED
++        if (granted) {
++            result.success(true)
++            return
++        }
++        if (pendingPermissionResult != null) {
++            // A question is already on screen.
++            result.success(false)
++            return
++        }
++        pendingPermissionResult = result
++        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_REQUEST)
++    }
++
++    override fun onRequestPermissionsResult(
++        requestCode: Int,
++        permissions: Array<out String>,
++        grantResults: IntArray
++    ) {
++        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
++        if (requestCode == NOTIFICATION_REQUEST) {
++            val granted = grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
++            pendingPermissionResult?.success(granted)
++            pendingPermissionResult = null
++        }
++    }
++
++    private companion object {
++        const val KEEP_ALIVE_CHANNEL = "com.outsidetheide.petit/keep_alive"
++        const val NOTIFICATION_REQUEST = 4712
++    }
++}
+diff --git a/docs/architecture.md b/docs/architecture.md
+index fb42c4b..b99367b 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -189,3 +189,30 @@ target size, resolution and encoding speed. On desktop it also shows the "Save t
+   (read once at start-up, like the settings); `main.dart` shows them instead of `HomeScreen` until
+   then. Settings has "Show the welcome tour" to see them again. If the stored answer cannot be read
+   they are skipped.
++
++## Compressing in the background (Android)
++
++Without help, Android may freeze or kill the app soon after the user leaves it, which would end a long
++compression. While a job runs, Petit now runs a **foreground service** (`CompressionService.kt`) with a
++progress notification and a partial wake lock (so the CPU keeps going with the screen off). The
++compression itself still runs in Flutter; the service only keeps the process alive and shows progress.
++
++- **Dart side.** `BackgroundKeepAlive` (domain interface) has an Android implementation that talks to
++  `MainActivity` over the `com.outsidetheide.petit/keep_alive` method channel, and a no-op one for every
++  other platform (desktop apps keep running; iOS does not allow long background work).
++  `JobKeepAlive` wraps it for the ViewModels: it never lets a notification problem stop a job, asks for
++  the notification permission once, and thins out progress updates (at most one a second, 100% always).
++  Both ViewModels start it when a job starts and end it when the job finishes, fails or is cancelled.
++- **Android side.** `MainActivity` handles `start`, `update`, `stop` and `requestNotificationPermission`
++  (Android 13+). The service uses the `mediaProcessing` type on Android 15+ and `dataSync` before that;
++  the manifest declares both, with their permissions, plus `POST_NOTIFICATIONS` and `WAKE_LOCK`.
++  `stopWithTask` is on: swiping Petit away from the recent apps ends the job (its Flutter side is gone
++  by then), so the service must not outlive it. Declining the notification permission does not stop
++  background compression, it only hides the notification.
++- **Limits.** Android 15 caps `mediaProcessing`/`dataSync` services at about 6 hours; the wake lock
++  expires after 3 hours as a safety net. The job is not resumed if the system kills the app anyway.
++- **Play Console.** Apps that declare foreground service types must describe them in the Play Console
++  ("Foreground service permissions" on the App content page): explain that Petit compresses the user's
++  own photos and videos, which continues when they leave the app, and that the notification shows
++  progress.
++- Needs `compileSdk` 35 or newer (the `mediaProcessing` manifest value); Flutter's current default is.
+diff --git a/lib/common/data/services/android_background_keep_alive.dart b/lib/common/data/services/android_background_keep_alive.dart
+new file mode 100644
+index 0000000..e78213d
+--- /dev/null
++++ b/lib/common/data/services/android_background_keep_alive.dart
+@@ -0,0 +1,30 @@
++import 'package:flutter/services.dart';
++import 'package:petit/common/domain/services/background_keep_alive.dart';
++
++/// Talks to `CompressionService` in the Android project, a foreground service
++/// with a progress notification and a wake lock (see MainActivity.kt).
++class AndroidBackgroundKeepAlive implements BackgroundKeepAlive {
++  AndroidBackgroundKeepAlive([MethodChannel? channel])
++      : _channel = channel ?? const MethodChannel(channelName);
++
++  static const channelName = 'com.outsidetheide.petit/keep_alive';
++
++  final MethodChannel _channel;
++
++  @override
++  Future<bool> requestNotificationPermission() async =>
++      await _channel.invokeMethod<bool>('requestNotificationPermission') ??
++      false;
++
++  @override
++  Future<void> start({required String title, required String text}) =>
++      _channel.invokeMethod<void>('start', {'title': title, 'text': text});
++
++  @override
++  Future<void> update({required int percent, required String text}) =>
++      _channel.invokeMethod<void>(
++          'update', {'percent': percent, 'text': text});
++
++  @override
++  Future<void> stop() => _channel.invokeMethod<void>('stop');
++}
+diff --git a/lib/common/data/services/noop_background_keep_alive.dart b/lib/common/data/services/noop_background_keep_alive.dart
+new file mode 100644
+index 0000000..b01496b
+--- /dev/null
++++ b/lib/common/data/services/noop_background_keep_alive.dart
+@@ -0,0 +1,17 @@
++import 'package:petit/common/domain/services/background_keep_alive.dart';
++
++/// For platforms that need no help to keep working (desktop), or cannot do
++/// long background work (iOS).
++class NoopBackgroundKeepAlive implements BackgroundKeepAlive {
++  @override
++  Future<bool> requestNotificationPermission() async => true;
++
++  @override
++  Future<void> start({required String title, required String text}) async {}
++
++  @override
++  Future<void> update({required int percent, required String text}) async {}
++
++  @override
++  Future<void> stop() async {}
++}
+diff --git a/lib/common/domain/job_keep_alive.dart b/lib/common/domain/job_keep_alive.dart
+new file mode 100644
+index 0000000..f54aaa6
+--- /dev/null
++++ b/lib/common/domain/job_keep_alive.dart
+@@ -0,0 +1,84 @@
++import 'package:petit/common/domain/services/background_keep_alive.dart';
++
++/// Wraps a [BackgroundKeepAlive] for one compression job at a time.
++///
++/// It makes the service safe to use from the ViewModels: failures never reach
++/// the job (a notification problem must not stop a compression), progress
++/// updates are thinned out (a notification should not be redrawn dozens of
++/// times a second), and the permission is asked only once.
++class JobKeepAlive {
++  JobKeepAlive(
++    this._service, {
++    DateTime Function()? now,
++    this.minUpdateGap = const Duration(seconds: 1),
++  }) : _now = now ?? DateTime.now;
++
++  final BackgroundKeepAlive _service;
++  final DateTime Function() _now;
++
++  /// Shortest time between two notification updates.
++  final Duration minUpdateGap;
++
++  bool _askedForPermission = false;
++  bool _running = false;
++  int? _lastPercent;
++  DateTime? _lastUpdate;
++
++  bool get isRunning => _running;
++
++  /// Starts keeping the app alive for a job. Waits for the notification
++  /// permission the first time, so the system dialog is not hidden behind the
++  /// job.
++  Future<void> begin({required String title, String text = 'Starting...'}) async {
++    if (_running) return;
++
++    if (!_askedForPermission) {
++      _askedForPermission = true;
++      try {
++        await _service.requestNotificationPermission();
++      } catch (_) {
++        // Not being able to ask only means no notification.
++      }
++    }
++
++    try {
++      await _service.start(title: title, text: text);
++      _running = true;
++      _lastPercent = null;
++      _lastUpdate = null;
++    } catch (_) {
++      // The job still runs; it just may be stopped if the app goes away.
++    }
++  }
++
++  /// Reports progress. Skipped when the percentage has not changed, or when
++  /// the last update was too recent (the final 100% always goes through).
++  void progress({required int percent, required String text}) {
++    if (!_running) return;
++
++    final clamped = percent.clamp(0, 100).toInt();
++    if (clamped == _lastPercent) return;
++
++    final now = _now();
++    final last = _lastUpdate;
++    if (clamped < 100 && last != null && now.difference(last) < minUpdateGap) {
++      return;
++    }
++
++    _lastPercent = clamped;
++    _lastUpdate = now;
++    _service.update(percent: clamped, text: text).catchError((_) {});
++  }
++
++  /// Ends the job's keep-alive. Safe to call when it never started or was
++  /// already ended.
++  Future<void> end() async {
++    if (!_running) return;
++    _running = false;
++    try {
++      await _service.stop();
++    } catch (_) {
++      // Nothing useful to do; the service stops with the app at the latest.
++    }
++  }
++}
+diff --git a/lib/common/domain/services/background_keep_alive.dart b/lib/common/domain/services/background_keep_alive.dart
+new file mode 100644
+index 0000000..9e6d0ce
+--- /dev/null
++++ b/lib/common/domain/services/background_keep_alive.dart
+@@ -0,0 +1,20 @@
++/// Keeps the app running while a compression continues in the background,
++/// and shows the user that it is working (a notification on Android).
++///
++/// Only Android needs this. Elsewhere the implementation does nothing: desktop
++/// apps keep running, and iOS does not allow long background work.
++abstract interface class BackgroundKeepAlive {
++  /// Asks to be allowed to show the notification. Returns true when allowed,
++  /// or when no permission is needed. Working in the background does not
++  /// depend on the answer; only whether the user sees the notification.
++  Future<bool> requestNotificationPermission();
++
++  /// Starts keeping the app alive, with [title] and [text] on the notification.
++  Future<void> start({required String title, required String text});
++
++  /// Updates the notification: progress bar at [percent] (0..100) and [text].
++  Future<void> update({required int percent, required String text});
++
++  /// Stops keeping the app alive and removes the notification.
++  Future<void> stop();
++}
+diff --git a/lib/core/di/providers.dart b/lib/core/di/providers.dart
+index 32e07ac..6b52394 100644
+--- a/lib/core/di/providers.dart
++++ b/lib/core/di/providers.dart
+@@ -8,6 +8,8 @@ import 'package:petit/common/domain/services/workspace.dart';
+ import 'package:petit/features/images/domain/usecases/compress_images.dart';
+ import 'package:petit/features/images/domain/usecases/estimate_image_size.dart';
+ import 'package:petit/features/images/domain/usecases/read_images.dart';
++import 'package:petit/common/domain/job_keep_alive.dart';
++import 'package:petit/common/domain/services/background_keep_alive.dart';
+ import 'package:petit/features/onboarding/domain/services/onboarding_store.dart';
+ import 'package:petit/features/settings/domain/entities/app_settings.dart';
+ import 'package:petit/features/settings/domain/services/settings_repository.dart';
+@@ -39,6 +41,13 @@ final settingsRepositoryProvider =
+ final initialSettingsProvider = Provider<AppSettings>(
+     (ref) => sl.isRegistered<AppSettings>() ? sl<AppSettings>() : const AppSettings());
+ 
++final backgroundKeepAliveProvider = Provider<BackgroundKeepAlive>(
++    (ref) => sl<BackgroundKeepAlive>());
++
++/// Keeps the app alive for the one compression job that runs at a time.
++final jobKeepAliveProvider = Provider<JobKeepAlive>(
++    (ref) => JobKeepAlive(ref.watch(backgroundKeepAliveProvider)));
++
+ final onboardingStoreProvider =
+     Provider<OnboardingStore>((ref) => sl<OnboardingStore>());
+ 
+diff --git a/lib/features/images/presentation/state/images_viewmodel.dart b/lib/features/images/presentation/state/images_viewmodel.dart
+index de1a8d0..d764d98 100644
+--- a/lib/features/images/presentation/state/images_viewmodel.dart
++++ b/lib/features/images/presentation/state/images_viewmodel.dart
+@@ -287,6 +287,10 @@ class ImagesViewModel extends Notifier<ImagesState> {
+ 
+     final eta = ProgressEta()..start();
+ 
++    // Keeps compressing when the user leaves the app (Android).
++    final keepAlive = ref.read(jobKeepAliveProvider);
++    await keepAlive.begin(title: 'Compressing images');
++
+     final ImageBatchResult batch;
+     try {
+       batch = await ref.read(compressImagesUseCaseProvider)(
+@@ -302,6 +306,12 @@ class ImagesViewModel extends Notifier<ImagesState> {
+               totalSteps: progress.totalSteps,
+               progressCounter: progress.percent,
+               eta: eta.remaining));
++          keepAlive.progress(
++            percent: progress.percent,
++            text: progress.totalSteps == 1
++                ? 'Working on your image'
++                : 'Image ${(progress.completedSteps + 1).clamp(1, progress.totalSteps)} of ${progress.totalSteps}',
++          );
+         },
+         onError: showResult,
+       );
+@@ -309,6 +319,8 @@ class ImagesViewModel extends Notifier<ImagesState> {
+       // e.g. the user closed the folder dialog on desktop.
+       showResult(e.message);
+       return null;
++    } finally {
++      await keepAlive.end();
+     }
+ 
+     state = state.copyWith(
+diff --git a/lib/features/videos/presentation/state/videos_viewmodel.dart b/lib/features/videos/presentation/state/videos_viewmodel.dart
+index 0cbfb62..026b612 100644
+--- a/lib/features/videos/presentation/state/videos_viewmodel.dart
++++ b/lib/features/videos/presentation/state/videos_viewmodel.dart
+@@ -210,6 +210,10 @@ class VideosViewModel extends Notifier<VideosState> {
+       final eta = ProgressEta()..start();
+       state = state.copyWith(isCompressing: true, percentComplete: 0, eta: null);
+ 
++      // Keeps compressing when the user leaves the app (Android). Ended in
++      // _awaitOutcome, or below if the job could not even be started.
++      await ref.read(jobKeepAliveProvider).begin(title: 'Compressing video');
++
+       final job = await ref.read(compressVideoUseCaseProvider)(
+         input: originalFile,
+         qualityPercent: state.crfQuality,
+@@ -222,6 +226,10 @@ class VideosViewModel extends Notifier<VideosState> {
+         onProgress: (percent) {
+           eta.update(percent / 100);
+           state = state.copyWith(percentComplete: percent, eta: eta.remaining);
++          ref.read(jobKeepAliveProvider).progress(
++                percent: percent,
++                text: '$percent% done',
++              );
+         },
+         onError: showResult,
+       );
+@@ -229,8 +237,10 @@ class VideosViewModel extends Notifier<VideosState> {
+       state = state.copyWith(currentJob: job);
+       unawaited(_awaitOutcome(job, onComplete));
+     } on MediaException catch (e) {
++      unawaited(ref.read(jobKeepAliveProvider).end());
+       state = state.copyWith(result: e.message, isCompressing: false);
+     } catch (e) {
++      unawaited(ref.read(jobKeepAliveProvider).end());
+       state = state.copyWith(
+         result: 'Error compressing video: $e',
+         isCompressing: false,
+@@ -245,6 +255,7 @@ class VideosViewModel extends Notifier<VideosState> {
+   ) async {
+     try {
+       final outcome = await job.outcome;
++      await ref.read(jobKeepAliveProvider).end();
+ 
+       _forgetJob(job);
+       removeVideo();
+@@ -261,10 +272,12 @@ class VideosViewModel extends Notifier<VideosState> {
+         folderPath: outcome.destinationFolder,
+       ));
+     } on MediaException catch (e) {
++      unawaited(ref.read(jobKeepAliveProvider).end());
+       _forgetJob(job);
+       state = state.copyWith(
+           result: e.message, isCompressing: false, isLoading: false);
+     } catch (e) {
++      unawaited(ref.read(jobKeepAliveProvider).end());
+       _forgetJob(job);
+       state = state.copyWith(
+           result: 'Error compressing video: $e',
+diff --git a/lib/service_locator.dart b/lib/service_locator.dart
+index 137d21b..3926b92 100644
+--- a/lib/service_locator.dart
++++ b/lib/service_locator.dart
+@@ -1,11 +1,14 @@
+ import 'package:get_it/get_it.dart';
++import 'package:petit/common/data/services/android_background_keep_alive.dart';
+ import 'package:petit/common/data/services/file_selector_folder_picker.dart';
+ import 'package:petit/common/data/services/file_selector_media_picker.dart';
+ import 'package:petit/common/data/services/folder_media_saver.dart';
+ import 'package:petit/common/data/services/gallery_media_saver.dart';
+ import 'package:petit/common/data/services/image_picker_media_picker.dart';
++import 'package:petit/common/data/services/noop_background_keep_alive.dart';
+ import 'package:petit/common/data/services/shared_prefs_output_folder_preference.dart';
+ import 'package:petit/common/data/services/temp_workspace.dart';
++import 'package:petit/common/domain/services/background_keep_alive.dart';
+ import 'package:petit/common/domain/services/folder_picker.dart';
+ import 'package:petit/common/domain/services/media_picker.dart';
+ import 'package:petit/common/domain/services/media_saver.dart';
+@@ -44,6 +47,11 @@ Future<void> initializeDependencies() async {
+ 
+   _registerMediaDependencies();
+ 
++  // Android keeps compressing in the background through a foreground service.
++  sl.registerLazySingleton<BackgroundKeepAlive>(() => PlatformInfo.isAndroid
++      ? AndroidBackgroundKeepAlive()
++      : NoopBackgroundKeepAlive());
++
+   // The default settings are read once, here, so the ViewModels can use them
+   // from their first build without waiting.
+   final settingsRepository = SharedPrefsSettingsRepository(
+diff --git a/test/helpers/viewmodel_fakes.dart b/test/helpers/viewmodel_fakes.dart
+index 9f9549d..ca3f02c 100644
+--- a/test/helpers/viewmodel_fakes.dart
++++ b/test/helpers/viewmodel_fakes.dart
+@@ -8,6 +8,7 @@ import 'package:petit/common/domain/services/media_picker.dart';
+ import 'package:petit/common/domain/services/media_saver.dart';
+ import 'package:petit/common/domain/services/workspace.dart';
+ import 'package:petit/core/di/providers.dart';
++import 'package:petit/common/domain/services/background_keep_alive.dart';
+ import 'package:petit/features/images/domain/entities/image_data.dart';
+ import 'package:petit/features/images/domain/entities/image_options.dart';
+ import 'package:petit/features/images/domain/entities/image_size.dart';
+@@ -196,6 +197,35 @@ class FakeVideoPreview implements VideoPreview {
+   }
+ }
+ 
++/// Records what the keep-alive was asked to do. Set [failWith] to make every
++/// call throw.
++class FakeBackgroundKeepAlive implements BackgroundKeepAlive {
++  final calls = <String>[];
++  Object? failWith;
++  bool permission = true;
++
++  Future<T> _record<T>(String call, T value) async {
++    calls.add(call);
++    if (failWith != null) throw failWith!;
++    return value;
++  }
++
++  @override
++  Future<bool> requestNotificationPermission() =>
++      _record('permission', permission);
++
++  @override
++  Future<void> start({required String title, required String text}) =>
++      _record('start:$title', null);
++
++  @override
++  Future<void> update({required int percent, required String text}) =>
++      _record('update:$percent:$text', null);
++
++  @override
++  Future<void> stop() => _record('stop', null);
++}
++
+ /// Keeps settings in memory. Set [failToSave] to make saving throw.
+ class FakeSettingsRepository implements SettingsRepository {
+   AppSettings? saved;
+@@ -225,6 +255,7 @@ class Harness {
+   final videoCompressor = FakeVideoCompressor();
+   final previews = <FakeVideoPreview>[];
+   final settingsRepository = FakeSettingsRepository();
++  final keepAlive = FakeBackgroundKeepAlive();
+ 
+   /// Set to make the next previews fail to initialize.
+   Object? previewInitializeError;
+@@ -241,6 +272,7 @@ class Harness {
+       ProviderContainer.test(overrides: [
+         initialSettingsProvider.overrideWithValue(settings),
+         settingsRepositoryProvider.overrideWithValue(settingsRepository),
++        backgroundKeepAliveProvider.overrideWithValue(keepAlive),
+         mediaPickerProvider.overrideWithValue(picker),
+         workspaceProvider.overrideWithValue(workspace),
+         readImagesUseCaseProvider
+diff --git a/test/images_viewmodel_test.dart b/test/images_viewmodel_test.dart
+index 3098384..95c5347 100644
+--- a/test/images_viewmodel_test.dart
++++ b/test/images_viewmodel_test.dart
+@@ -215,6 +215,60 @@ void main() {
+     });
+   });
+ 
++  group('background', () {
++    test('keeps the app alive while compressing, and lets go afterwards',
++        () async {
++      h.picker.images = [h.file('a.jpg', 100).path, h.file('b.jpg', 100).path];
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++      await vm.pickImages();
++
++      await vm.compressAllSelectedImages();
++
++      final calls = h.keepAlive.calls;
++      expect(calls.first, 'permission');
++      expect(calls[1], 'start:Compressing images');
++      expect(calls.any((call) => call.startsWith('update:')), isTrue);
++      expect(calls.last, 'stop');
++    });
++
++    test('lets go when saving is declined', () async {
++      h.picker.images = [h.file('a.jpg', 100).path];
++      h.saver.declineToPrepare = true;
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++      await vm.pickImages();
++
++      final report = await vm.compressAllSelectedImages();
++
++      expect(report, isNull);
++      expect(h.keepAlive.calls.last, 'stop');
++    });
++
++    test('a broken keep-alive does not stop the compression', () async {
++      h.keepAlive.failWith = StateError('no service');
++      h.picker.images = [h.file('a.jpg', 100).path];
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++      await vm.pickImages();
++
++      final report = await vm.compressAllSelectedImages();
++
++      expect(report, isNotNull);
++    });
++
++    test('names the image being worked on', () async {
++      h.picker.images = [h.file('a.jpg', 100).path, h.file('b.jpg', 100).path];
++      final c = h.container();
++      final vm = c.read(imagesViewModelProvider.notifier);
++      await vm.pickImages();
++
++      await vm.compressAllSelectedImages();
++
++      expect(h.keepAlive.calls, contains('update:0:Image 1 of 2'));
++    });
++  });
++
+   group('clearing', () {
+     test('clearPickedImages empties the selection', () async {
+       h.picker.images = [h.file('a.jpg', 100).path];
+diff --git a/test/job_keep_alive_test.dart b/test/job_keep_alive_test.dart
+new file mode 100644
+index 0000000..21b5238
+--- /dev/null
++++ b/test/job_keep_alive_test.dart
+@@ -0,0 +1,194 @@
++import 'package:flutter/services.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/common/data/services/android_background_keep_alive.dart';
++import 'package:petit/common/domain/job_keep_alive.dart';
++
++import 'helpers/viewmodel_fakes.dart';
++
++void main() {
++  group('JobKeepAlive', () {
++    late FakeBackgroundKeepAlive service;
++    late DateTime clock;
++    late JobKeepAlive keepAlive;
++
++    setUp(() {
++      service = FakeBackgroundKeepAlive();
++      clock = DateTime(2026, 1, 1);
++      keepAlive = JobKeepAlive(service, now: () => clock);
++    });
++
++    void pass(Duration time) => clock = clock.add(time);
++
++    test('asks for permission, then starts', () async {
++      await keepAlive.begin(title: 'Compressing');
++
++      expect(service.calls, ['permission', 'start:Compressing']);
++      expect(keepAlive.isRunning, isTrue);
++    });
++
++    test('asks for permission only once, however many jobs', () async {
++      await keepAlive.begin(title: 'One');
++      await keepAlive.end();
++      await keepAlive.begin(title: 'Two');
++
++      expect(service.calls.where((c) => c == 'permission'), hasLength(1));
++      expect(service.calls, contains('start:Two'));
++    });
++
++    test('begin while running does nothing', () async {
++      await keepAlive.begin(title: 'One');
++      await keepAlive.begin(title: 'Two');
++
++      expect(service.calls.where((c) => c.startsWith('start')), hasLength(1));
++    });
++
++    test('works even if the permission cannot be asked', () async {
++      service.failWith = StateError('no channel');
++      await keepAlive.begin(title: 'Compressing');
++
++      // Both calls threw; nothing escaped, but it is not running either.
++      expect(keepAlive.isRunning, isFalse);
++    });
++
++    test('a refused permission still starts', () async {
++      service.permission = false;
++      await keepAlive.begin(title: 'Compressing');
++
++      expect(keepAlive.isRunning, isTrue);
++    });
++
++    group('progress', () {
++      setUp(() async => keepAlive.begin(title: 'Compressing'));
++
++      test('is ignored before begin', () {
++        final fresh = JobKeepAlive(service, now: () => clock);
++        fresh.progress(percent: 10, text: 'x');
++        expect(service.calls.where((c) => c.startsWith('update')), isEmpty);
++      });
++
++      test('the first one goes through', () {
++        keepAlive.progress(percent: 5, text: 'a');
++        expect(service.calls.last, 'update:5:a');
++      });
++
++      test('the same percent is not sent again', () {
++        keepAlive.progress(percent: 5, text: 'a');
++        pass(const Duration(seconds: 5));
++        keepAlive.progress(percent: 5, text: 'a');
++
++        expect(service.calls.where((c) => c.startsWith('update')), hasLength(1));
++      });
++
++      test('updates closer together than the gap are dropped', () {
++        keepAlive.progress(percent: 5, text: 'a');
++        pass(const Duration(milliseconds: 300));
++        keepAlive.progress(percent: 6, text: 'b');
++
++        expect(service.calls.where((c) => c.startsWith('update')), hasLength(1));
++      });
++
++      test('an update after the gap goes through', () {
++        keepAlive.progress(percent: 5, text: 'a');
++        pass(const Duration(seconds: 2));
++        keepAlive.progress(percent: 6, text: 'b');
++
++        expect(service.calls.last, 'update:6:b');
++      });
++
++      test('100% always goes through', () {
++        keepAlive.progress(percent: 98, text: 'a');
++        pass(const Duration(milliseconds: 10));
++        keepAlive.progress(percent: 100, text: 'done');
++
++        expect(service.calls.last, 'update:100:done');
++      });
++
++      test('the percent is kept within 0 and 100', () {
++        keepAlive.progress(percent: 250, text: 'a');
++        expect(service.calls.last, 'update:100:a');
++      });
++
++      test('a failing update is swallowed', () async {
++        service.failWith = StateError('gone');
++        keepAlive.progress(percent: 5, text: 'a');
++        await Future<void>.delayed(Duration.zero);
++        // Reaching here without an unhandled error is the test.
++        expect(keepAlive.isRunning, isTrue);
++      });
++    });
++
++    group('end', () {
++      test('stops once', () async {
++        await keepAlive.begin(title: 'Compressing');
++        await keepAlive.end();
++        await keepAlive.end();
++
++        expect(service.calls.where((c) => c == 'stop'), hasLength(1));
++        expect(keepAlive.isRunning, isFalse);
++      });
++
++      test('does nothing when never started', () async {
++        await keepAlive.end();
++        expect(service.calls, isEmpty);
++      });
++
++      test('a failing stop is swallowed', () async {
++        await keepAlive.begin(title: 'Compressing');
++        service.failWith = StateError('gone');
++
++        await keepAlive.end();
++
++        expect(keepAlive.isRunning, isFalse);
++      });
++    });
++  });
++
++  group('AndroidBackgroundKeepAlive', () {
++    TestWidgetsFlutterBinding.ensureInitialized();
++
++    const channel = MethodChannel(AndroidBackgroundKeepAlive.channelName);
++    final seen = <MethodCall>[];
++    Object? permissionAnswer = true;
++
++    setUp(() {
++      seen.clear();
++      permissionAnswer = true;
++      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
++          .setMockMethodCallHandler(channel, (call) async {
++        seen.add(call);
++        return call.method == 'requestNotificationPermission'
++            ? permissionAnswer
++            : null;
++      });
++    });
++
++    tearDown(() {
++      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
++          .setMockMethodCallHandler(channel, null);
++    });
++
++    test('sends start, update and stop with their arguments', () async {
++      final keepAlive = AndroidBackgroundKeepAlive();
++
++      await keepAlive.start(title: 'Compressing', text: 'Starting');
++      await keepAlive.update(percent: 40, text: 'Image 2 of 5');
++      await keepAlive.stop();
++
++      expect(seen.map((c) => c.method), ['start', 'update', 'stop']);
++      expect(seen[0].arguments, {'title': 'Compressing', 'text': 'Starting'});
++      expect(seen[1].arguments, {'percent': 40, 'text': 'Image 2 of 5'});
++    });
++
++    test('reports whether the notification permission was given', () async {
++      final keepAlive = AndroidBackgroundKeepAlive();
++
++      expect(await keepAlive.requestNotificationPermission(), isTrue);
++
++      permissionAnswer = false;
++      expect(await keepAlive.requestNotificationPermission(), isFalse);
++
++      permissionAnswer = null;
++      expect(await keepAlive.requestNotificationPermission(), isFalse);
++    });
++  });
++}
+diff --git a/test/videos_viewmodel_test.dart b/test/videos_viewmodel_test.dart
+index c820933..a7d0c8e 100644
+--- a/test/videos_viewmodel_test.dart
++++ b/test/videos_viewmodel_test.dart
+@@ -366,6 +366,59 @@ void main() {
+       expect(h.previews.single.disposed, isTrue);
+     });
+ 
++    test('keeps the app alive while compressing, and lets go afterwards',
++        () async {
++      final (_, vm) = await start();
++      final done = Completer<SummaryReport>();
++
++      await vm.compressVideo(onComplete: done.complete);
++      expect(h.keepAlive.calls, ['permission', 'start:Compressing video']);
++
++      h.videoCompressor.progressCallback!(42);
++      expect(h.keepAlive.calls.last, 'update:42:42% done');
++
++      h.videoCompressor.lastTask!.completer.complete(h.file('out.mp4', 400));
++      await done.future;
++      expect(h.keepAlive.calls.last, 'stop');
++    });
++
++    test('lets go when the compression fails', () async {
++      final (_, vm) = await start();
++
++      await vm.compressVideo(onComplete: (_) {});
++      h.videoCompressor.lastTask!.completer
++          .completeError(const MediaException('Compression failed.'));
++      await pumpEventQueue();
++
++      expect(h.keepAlive.calls.last, 'stop');
++    });
++
++    test('a broken keep-alive does not stop the compression', () async {
++      h.keepAlive.failWith = StateError('no service');
++      final (c, vm) = await start();
++      final done = Completer<SummaryReport>();
++
++      await vm.compressVideo(onComplete: done.complete);
++      h.videoCompressor.lastTask!.completer.complete(h.file('out.mp4', 400));
++
++      await done.future;
++      expect(c.read(videosViewModelProvider).result, isNull);
++    });
++
++    test('does not ask for the keep-alive when compressing is refused',
++        () async {
++      h.picker.video = sparseFile('big.mp4', 60000000).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      await vm.pickVideo();
++      vm.setMode(VideoMode.targetSize);
++      vm.setTargetSizeMb(100);
++
++      await vm.compressVideo(onComplete: (_) {});
++
++      expect(h.keepAlive.calls, isEmpty);
++    });
++
+     test('the summary carries the folder to open, when there is one', () async {
+       h.saver.folder = '/saved/here';
+       final (c, vm) = await start();

@@ -53,6 +53,7 @@ jobs:
           test/progress_eta_test.dart
           test/compression_progress_view_test.dart
           test/onboarding_test.dart
+          test/job_keep_alive_test.dart
 
   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
   # it runs on demand and for pull requests into the production branch.

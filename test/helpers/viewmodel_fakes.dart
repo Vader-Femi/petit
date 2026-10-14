@@ -8,6 +8,7 @@ import 'package:petit/common/domain/services/media_picker.dart';
 import 'package:petit/common/domain/services/media_saver.dart';
 import 'package:petit/common/domain/services/workspace.dart';
 import 'package:petit/core/di/providers.dart';
+import 'package:petit/common/domain/services/background_keep_alive.dart';
 import 'package:petit/features/images/domain/entities/image_data.dart';
 import 'package:petit/features/images/domain/entities/image_options.dart';
 import 'package:petit/features/images/domain/entities/image_size.dart';
@@ -196,6 +197,35 @@ class FakeVideoPreview implements VideoPreview {
   }
 }
 
+/// Records what the keep-alive was asked to do. Set [failWith] to make every
+/// call throw.
+class FakeBackgroundKeepAlive implements BackgroundKeepAlive {
+  final calls = <String>[];
+  Object? failWith;
+  bool permission = true;
+
+  Future<T> _record<T>(String call, T value) async {
+    calls.add(call);
+    if (failWith != null) throw failWith!;
+    return value;
+  }
+
+  @override
+  Future<bool> requestNotificationPermission() =>
+      _record('permission', permission);
+
+  @override
+  Future<void> start({required String title, required String text}) =>
+      _record('start:$title', null);
+
+  @override
+  Future<void> update({required int percent, required String text}) =>
+      _record('update:$percent:$text', null);
+
+  @override
+  Future<void> stop() => _record('stop', null);
+}
+
 /// Keeps settings in memory. Set [failToSave] to make saving throw.
 class FakeSettingsRepository implements SettingsRepository {
   AppSettings? saved;
@@ -225,6 +255,7 @@ class Harness {
   final videoCompressor = FakeVideoCompressor();
   final previews = <FakeVideoPreview>[];
   final settingsRepository = FakeSettingsRepository();
+  final keepAlive = FakeBackgroundKeepAlive();
 
   /// Set to make the next previews fail to initialize.
   Object? previewInitializeError;
@@ -241,6 +272,7 @@ class Harness {
       ProviderContainer.test(overrides: [
         initialSettingsProvider.overrideWithValue(settings),
         settingsRepositoryProvider.overrideWithValue(settingsRepository),
+        backgroundKeepAliveProvider.overrideWithValue(keepAlive),
         mediaPickerProvider.overrideWithValue(picker),
         workspaceProvider.overrideWithValue(workspace),
         readImagesUseCaseProvider

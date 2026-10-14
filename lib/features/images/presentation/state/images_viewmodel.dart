@@ -287,6 +287,10 @@ class ImagesViewModel extends Notifier<ImagesState> {
 
     final eta = ProgressEta()..start();
 
+    // Keeps compressing when the user leaves the app (Android).
+    final keepAlive = ref.read(jobKeepAliveProvider);
+    await keepAlive.begin(title: 'Compressing images');
+
     final ImageBatchResult batch;
     try {
       batch = await ref.read(compressImagesUseCaseProvider)(
@@ -302,6 +306,12 @@ class ImagesViewModel extends Notifier<ImagesState> {
               totalSteps: progress.totalSteps,
               progressCounter: progress.percent,
               eta: eta.remaining));
+          keepAlive.progress(
+            percent: progress.percent,
+            text: progress.totalSteps == 1
+                ? 'Working on your image'
+                : 'Image ${(progress.completedSteps + 1).clamp(1, progress.totalSteps)} of ${progress.totalSteps}',
+          );
         },
         onError: showResult,
       );
@@ -309,6 +319,8 @@ class ImagesViewModel extends Notifier<ImagesState> {
       // e.g. the user closed the folder dialog on desktop.
       showResult(e.message);
       return null;
+    } finally {
+      await keepAlive.end();
     }
 
     state = state.copyWith(

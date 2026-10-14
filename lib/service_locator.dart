@@ -1,11 +1,14 @@
 import 'package:get_it/get_it.dart';
+import 'package:petit/common/data/services/android_background_keep_alive.dart';
 import 'package:petit/common/data/services/file_selector_folder_picker.dart';
 import 'package:petit/common/data/services/file_selector_media_picker.dart';
 import 'package:petit/common/data/services/folder_media_saver.dart';
 import 'package:petit/common/data/services/gallery_media_saver.dart';
 import 'package:petit/common/data/services/image_picker_media_picker.dart';
+import 'package:petit/common/data/services/noop_background_keep_alive.dart';
 import 'package:petit/common/data/services/shared_prefs_output_folder_preference.dart';
 import 'package:petit/common/data/services/temp_workspace.dart';
+import 'package:petit/common/domain/services/background_keep_alive.dart';
 import 'package:petit/common/domain/services/folder_picker.dart';
 import 'package:petit/common/domain/services/media_picker.dart';
 import 'package:petit/common/domain/services/media_saver.dart';
@@ -43,6 +46,11 @@ Future<void> initializeDependencies() async {
   );
 
   _registerMediaDependencies();
+
+  // Android keeps compressing in the background through a foreground service.
+  sl.registerLazySingleton<BackgroundKeepAlive>(() => PlatformInfo.isAndroid
+      ? AndroidBackgroundKeepAlive()
+      : NoopBackgroundKeepAlive());
 
   // The default settings are read once, here, so the ViewModels can use them
   // from their first build without waiting.

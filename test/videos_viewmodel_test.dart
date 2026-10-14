@@ -366,6 +366,59 @@ void main() {
       expect(h.previews.single.disposed, isTrue);
     });
 
+    test('keeps the app alive while compressing, and lets go afterwards',
+        () async {
+      final (_, vm) = await start();
+      final done = Completer<SummaryReport>();
+
+      await vm.compressVideo(onComplete: done.complete);
+      expect(h.keepAlive.calls, ['permission', 'start:Compressing video']);
+
+      h.videoCompressor.progressCallback!(42);
+      expect(h.keepAlive.calls.last, 'update:42:42% done');
+
+      h.videoCompressor.lastTask!.completer.complete(h.file('out.mp4', 400));
+      await done.future;
+      expect(h.keepAlive.calls.last, 'stop');
+    });
+
+    test('lets go when the compression fails', () async {
+      final (_, vm) = await start();
+
+      await vm.compressVideo(onComplete: (_) {});
+      h.videoCompressor.lastTask!.completer
+          .completeError(const MediaException('Compression failed.'));
+      await pumpEventQueue();
+
+      expect(h.keepAlive.calls.last, 'stop');
+    });
+
+    test('a broken keep-alive does not stop the compression', () async {
+      h.keepAlive.failWith = StateError('no service');
+      final (c, vm) = await start();
+      final done = Completer<SummaryReport>();
+
+      await vm.compressVideo(onComplete: done.complete);
+      h.videoCompressor.lastTask!.completer.complete(h.file('out.mp4', 400));
+
+      await done.future;
+      expect(c.read(videosViewModelProvider).result, isNull);
+    });
+
+    test('does not ask for the keep-alive when compressing is refused',
+        () async {
+      h.picker.video = sparseFile('big.mp4', 60000000).path;
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+      await vm.pickVideo();
+      vm.setMode(VideoMode.targetSize);
+      vm.setTargetSizeMb(100);
+
+      await vm.compressVideo(onComplete: (_) {});
+
+      expect(h.keepAlive.calls, isEmpty);
+    });
+
     test('the summary carries the folder to open, when there is one', () async {
       h.saver.folder = '/saved/here';
       final (c, vm) = await start();

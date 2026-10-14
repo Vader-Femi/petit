@@ -210,6 +210,10 @@ class VideosViewModel extends Notifier<VideosState> {
       final eta = ProgressEta()..start();
       state = state.copyWith(isCompressing: true, percentComplete: 0, eta: null);
 
+      // Keeps compressing when the user leaves the app (Android). Ended in
+      // _awaitOutcome, or below if the job could not even be started.
+      await ref.read(jobKeepAliveProvider).begin(title: 'Compressing video');
+
       final job = await ref.read(compressVideoUseCaseProvider)(
         input: originalFile,
         qualityPercent: state.crfQuality,
@@ -222,6 +226,10 @@ class VideosViewModel extends Notifier<VideosState> {
         onProgress: (percent) {
           eta.update(percent / 100);
           state = state.copyWith(percentComplete: percent, eta: eta.remaining);
+          ref.read(jobKeepAliveProvider).progress(
+                percent: percent,
+                text: '$percent% done',
+              );
         },
         onError: showResult,
       );
@@ -229,8 +237,10 @@ class VideosViewModel extends Notifier<VideosState> {
       state = state.copyWith(currentJob: job);
       unawaited(_awaitOutcome(job, onComplete));
     } on MediaException catch (e) {
+      unawaited(ref.read(jobKeepAliveProvider).end());
       state = state.copyWith(result: e.message, isCompressing: false);
     } catch (e) {
+      unawaited(ref.read(jobKeepAliveProvider).end());
       state = state.copyWith(
         result: 'Error compressing video: $e',
         isCompressing: false,
@@ -245,6 +255,7 @@ class VideosViewModel extends Notifier<VideosState> {
   ) async {
     try {
       final outcome = await job.outcome;
+      await ref.read(jobKeepAliveProvider).end();
 
       _forgetJob(job);
       removeVideo();
@@ -261,10 +272,12 @@ class VideosViewModel extends Notifier<VideosState> {
         folderPath: outcome.destinationFolder,
       ));
     } on MediaException catch (e) {
+      unawaited(ref.read(jobKeepAliveProvider).end());
       _forgetJob(job);
       state = state.copyWith(
           result: e.message, isCompressing: false, isLoading: false);
     } catch (e) {
+      unawaited(ref.read(jobKeepAliveProvider).end());
       _forgetJob(job);
       state = state.copyWith(
           result: 'Error compressing video: $e',
