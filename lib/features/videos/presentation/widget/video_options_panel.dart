@@ -5,6 +5,7 @@ import 'package:petit/common/widgets/slider_box.dart';
 import 'package:petit/common/widgets/target_size_field.dart';
 import 'package:petit/core/utils/format_bytes.dart';
 import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+import 'package:petit/features/videos/domain/usecases/estimate_video_size.dart';
 import 'package:petit/features/videos/domain/video_warnings.dart';
 import 'package:petit/features/videos/presentation/state/video_presets.dart';
 import 'package:petit/features/videos/presentation/state/videos_state.dart';
@@ -57,6 +58,7 @@ class VideoOptionsPanel extends ConsumerWidget {
         ],
         // Presets are for the software encoder; the hardware has none.
         if (!state.usesFastEncoding) _speedBox(context, state, viewModel),
+        _EstimateBox(state: state, viewModel: viewModel),
         _WarningBox(warnings: state.warnings),
         const SaveToTile(),
       ],
@@ -203,6 +205,109 @@ class VideoOptionsPanel extends ConsumerWidget {
         onChanged: (value) => viewModel.setPresetIndex(value.toInt()),
       ),
     );
+  }
+}
+
+/// The expected size, worked out on request by compressing a few short samples
+/// of the video. Hidden when the video's length is unknown (nothing to sample).
+class _EstimateBox extends StatelessWidget {
+  const _EstimateBox({required this.state, required this.viewModel});
+
+  final VideosState state;
+  final VideosViewModel viewModel;
+
+  @override
+  Widget build(BuildContext context) {
+    final length = state.videoInfo?.durationMs ?? 0;
+    if (state.videoInfo != null && length <= 0) return const SizedBox.shrink();
+
+    final theme = Theme.of(context);
+    final estimate = state.currentEstimate;
+
+    final Widget child;
+    if (state.isEstimating) {
+      child = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          LinearProgressIndicator(value: state.estimatePercent / 100),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const Expanded(child: Text('Compressing short samples...')),
+              TextButton(
+                onPressed: viewModel.cancelEstimate,
+                child: const Text('Cancel'),
+              ),
+            ],
+          ),
+        ],
+      );
+    } else if (estimate != null) {
+      child = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _headline(estimate),
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: estimate.isLarger
+                  ? theme.colorScheme.error
+                  : theme.colorScheme.primary,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(_detail(estimate), style: theme.textTheme.bodySmall),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              onPressed: viewModel.estimateSize,
+              child: const Text('Estimate again'),
+            ),
+          ),
+        ],
+      );
+    } else {
+      child = Align(
+        alignment: Alignment.centerLeft,
+        child: FilledButton.tonalIcon(
+          onPressed: state.isBusy ? null : viewModel.estimateSize,
+          icon: const Icon(Icons.speed),
+          label: const Text('Estimate the size'),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: _OptionBox(
+        title: 'Size estimate',
+        note: estimate == null && !state.isEstimating
+            ? 'Compresses a few seconds of your video with these settings to '
+                'predict the result. It takes a short while.'
+            : null,
+        child: child,
+      ),
+    );
+  }
+
+  static String _headline(VideoSizeEstimate e) {
+    final before = formatBytes(e.originalBytes);
+    final after = formatBytes(e.estimatedBytes);
+    if (e.isLarger) {
+      return '$before \u2192 about $after (not smaller)';
+    }
+    final percent = (e.savedFraction * 100).round();
+    return '$before \u2192 about $after (-$percent%)';
+  }
+
+  static String _detail(VideoSizeEstimate e) {
+    if (e.isLarger) {
+      return 'At these settings the video would not get smaller, so the '
+          'original is kept. Try a stronger compression level.';
+    }
+    if (e.isExact) return 'The whole video was compressed, so this is exact.';
+    return 'From ${e.sampleCount} short samples. The real size can differ by '
+        'a few percent.';
   }
 }
 

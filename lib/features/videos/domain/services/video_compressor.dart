@@ -32,6 +32,10 @@ abstract interface class VideoCompressor {
   /// video hardware at [hardwareBitrateKbps]. If that fails part way, the
   /// compression is run again with the normal settings above, so asking for
   /// hardware can only make things faster, never break them.
+  ///
+  /// With [startMs] and [limitMs] only that stretch of the video is encoded
+  /// (a sample, to predict the size of the whole); [totalDurationMs] is then
+  /// the length of the stretch, for progress.
   Future<VideoCompressionTask> start({
     required File input,
     required String videoCodec,
@@ -43,5 +47,7 @@ abstract interface class VideoCompressor {
     int? maxShortSide,
     String? hardwareEncoder,
     int? hardwareBitrateKbps,
+    int? startMs,
+    int? limitMs,
   });
 }

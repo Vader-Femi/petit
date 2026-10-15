@@ -16,6 +16,7 @@ import 'package:petit/features/settings/domain/entities/app_settings.dart';
 import 'package:petit/features/settings/domain/services/settings_repository.dart';
 import 'package:petit/features/videos/domain/services/video_compressor.dart';
 import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+import 'package:petit/features/videos/domain/usecases/estimate_video_size.dart';
 import 'package:petit/features/videos/presentation/preview/video_preview.dart';
 import 'package:petit/features/videos/presentation/preview/video_preview_factory.dart';
 import 'package:petit/service_locator.dart';
@@ -73,6 +74,9 @@ final estimateImageSizeUseCaseProvider = Provider<EstimateImageSizeUseCase>(
 
 final videoCompressorProvider =
     Provider<VideoCompressor>((ref) => sl<VideoCompressor>());
+
+final estimateVideoSizeUseCaseProvider = Provider<EstimateVideoSizeUseCase>(
+    (ref) => sl<EstimateVideoSizeUseCase>());
 
 final checkFastEncodingUseCaseProvider = Provider<CheckFastEncodingUseCase>(
     (ref) => sl<CheckFastEncodingUseCase>());

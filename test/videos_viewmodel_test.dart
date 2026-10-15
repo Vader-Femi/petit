@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:petit/common/data/summary_report.dart';
 import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/core/utils/format_bytes.dart';
+import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
 import 'package:petit/features/videos/domain/entities/video_resolution.dart';
 import 'package:petit/features/settings/domain/entities/app_settings.dart';
 import 'package:petit/features/videos/domain/video_bitrate.dart';
@@ -13,6 +14,15 @@ import 'package:petit/features/videos/presentation/state/videos_state.dart';
 import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
 
 import 'helpers/viewmodel_fakes.dart';
+
+/// Polls until [condition] holds, failing the test if it never does.
+Future<void> waitUntil(bool Function() condition) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 5));
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) fail('Timed out waiting.');
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+}
 
 void main() {
   late Directory dir;
@@ -259,6 +269,215 @@ void main() {
       await pumpEventQueue();
 
       expect(c.read(videosViewModelProvider).fastEncodingAvailable, isFalse);
+    });
+  });
+
+  group('size estimate', () {
+    Future<(ProviderContainer, VideosViewModel)> pick({int bytes = 1000}) async {
+      h.picker.video = h.file('in.mp4', bytes).path;
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+      await vm.pickVideo();
+      return (c, vm);
+    }
+
+    Future<void> settled(ProviderContainer c) =>
+        waitUntil(() => !c.read(videosViewModelProvider).isEstimating);
+
+    test('a short video is compressed whole and the size is exact', () async {
+      final (c, vm) = await pick();
+
+      await vm.estimateSize();
+
+      final s = c.read(videosViewModelProvider);
+      expect(s.isEstimating, isFalse);
+      expect(h.videoCompressor.samples, [(0, 5000)]);
+      expect(s.currentEstimate?.originalBytes, 1000);
+      expect(s.currentEstimate?.estimatedBytes, 500); // 100 B/s for 5 s
+      expect(s.currentEstimate?.isExact, isTrue);
+    });
+
+    test('a long video is sampled in three places', () async {
+      h.videoCompressor.probeDurationMs = 60000;
+      final (c, vm) = await pick();
+
+      await vm.estimateSize();
+
+      expect(h.videoCompressor.samples,
+          [(9000, 2000), (29000, 2000), (49000, 2000)]);
+      // 600 bytes over 6 s, for 60 s.
+      expect(c.read(videosViewModelProvider).currentEstimate?.estimatedBytes,
+          6000);
+    });
+
+    test('it is shown only while the choices are the same', () async {
+      final (c, vm) = await pick();
+      await vm.estimateSize();
+      expect(c.read(videosViewModelProvider).currentEstimate, isNotNull);
+
+      vm.updateCfrQualitySlider(0.25);
+
+      final s = c.read(videosViewModelProvider);
+      expect(s.currentEstimate, isNull, reason: 'the choices changed');
+      expect(s.estimate, isNotNull, reason: 'kept, but stale');
+    });
+
+    test('a changed resolution, mode or fast encoding makes it stale', () async {
+      final (c, vm) = await pick();
+      await vm.estimateSize();
+
+      vm.setResolution(VideoResolution.p720);
+      expect(c.read(videosViewModelProvider).currentEstimate, isNull);
+
+      await vm.estimateSize();
+      expect(c.read(videosViewModelProvider).currentEstimate, isNotNull);
+
+      vm.setMode(VideoMode.targetSize);
+      expect(c.read(videosViewModelProvider).currentEstimate, isNull);
+    });
+
+    test('estimating again after a change works', () async {
+      final (c, vm) = await pick();
+      await vm.estimateSize();
+      vm.setResolution(VideoResolution.p720);
+
+      await vm.estimateSize();
+
+      expect(c.read(videosViewModelProvider).currentEstimate, isNotNull);
+      expect(h.videoCompressor.usedMaxShortSide, 720);
+    });
+
+    test('uses the video hardware for the samples when chosen', () async {
+      h.videoCompressor.hardwareEncoder = 'h264_nvenc';
+      final (c, vm) = await pick();
+      await pumpEventQueue();
+      vm.setFastEncoding(true);
+
+      await vm.estimateSize();
+
+      expect(h.videoCompressor.usedHardwareEncoder, 'h264_nvenc');
+      expect(c.read(videosViewModelProvider).currentEstimate, isNotNull);
+    });
+
+    test('is refused with a target that cannot help', () async {
+      h.picker.video = sparseFile('big.mp4', 60000000).path;
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+      await vm.pickVideo();
+      vm.setMode(VideoMode.targetSize);
+      vm.setTargetSizeMb(100);
+
+      await vm.estimateSize();
+
+      expect(c.read(videosViewModelProvider).result, contains('not smaller'));
+      expect(h.videoCompressor.samples, isEmpty);
+    });
+
+    test('is refused while images are being compressed', () async {
+      final (c, vm) = await pick();
+      h.picker.images = [h.file('a.jpg', 100).path];
+      h.picker.gate = Completer<void>();
+      final loading = c.read(imagesViewModelProvider.notifier).pickImages();
+
+      await vm.estimateSize();
+
+      expect(c.read(videosViewModelProvider).result,
+          'Wait for the images to finish first');
+      expect(h.videoCompressor.samples, isEmpty);
+      h.picker.gate!.complete();
+      await loading;
+    });
+
+    test('a video whose length is unknown reports it', () async {
+      h.videoCompressor.probeDurationMs = null;
+      final (c, vm) = await pick();
+
+      await vm.estimateSize();
+
+      final s = c.read(videosViewModelProvider);
+      expect(s.result, contains('cannot be estimated'));
+      expect(s.isEstimating, isFalse);
+      expect(s.estimate, isNull);
+    });
+
+    group('cancelling', () {
+      test('stops the estimate quietly', () async {
+        h.videoCompressor.holdSamples = true;
+        final (c, vm) = await pick();
+
+        final running = vm.estimateSize();
+        await waitUntil(() => h.videoCompressor.samples.isNotEmpty);
+        expect(c.read(videosViewModelProvider).isEstimating, isTrue);
+
+        vm.cancelEstimate();
+        await running;
+
+        final s = c.read(videosViewModelProvider);
+        expect(s.isEstimating, isFalse);
+        expect(s.estimate, isNull);
+        expect(s.result, isNull, reason: 'cancelling is not an error');
+        expect(h.videoCompressor.lastSampleTask?.cancelled, isTrue);
+      });
+
+      test('removing the video cancels it too', () async {
+        h.videoCompressor.holdSamples = true;
+        final (c, vm) = await pick();
+        final running = vm.estimateSize();
+        await waitUntil(() => h.videoCompressor.samples.isNotEmpty);
+
+        vm.removeVideo();
+        await running;
+
+        final s = c.read(videosViewModelProvider);
+        expect(s.isEstimating, isFalse);
+        expect(s.estimate, isNull);
+        expect(s.result, isNull);
+      });
+
+      test('starting to compress cancels it', () async {
+        h.videoCompressor.holdSamples = true;
+        final (c, vm) = await pick();
+        final running = vm.estimateSize();
+        await waitUntil(() => h.videoCompressor.samples.isNotEmpty);
+
+        await vm.compressVideo(onComplete: (_) {});
+        await running;
+
+        expect(c.read(videosViewModelProvider).isEstimating, isFalse);
+        expect(h.videoCompressor.lastSampleTask?.cancelled, isTrue);
+        expect(h.videoCompressor.lastTask, isNotNull,
+            reason: 'the real job still starts');
+      });
+
+      test('an old estimate cannot overwrite a newer one', () async {
+        h.videoCompressor.holdSamples = true;
+        final (c, vm) = await pick();
+        final first = vm.estimateSize();
+        await waitUntil(() => h.videoCompressor.samples.length == 1);
+        vm.cancelEstimate();
+        await first;
+
+        h.videoCompressor.holdSamples = false;
+        await vm.estimateSize();
+
+        expect(c.read(videosViewModelProvider).currentEstimate, isNotNull);
+        expect(c.read(videosViewModelProvider).result, isNull);
+      });
+    });
+
+    test('while it runs, compressing and a second estimate are not started',
+        () async {
+      h.videoCompressor.holdSamples = true;
+      final (c, vm) = await pick();
+      final running = vm.estimateSize();
+      await waitUntil(() => h.videoCompressor.samples.isNotEmpty);
+
+      await vm.estimateSize(); // ignored: one is already running
+
+      expect(h.videoCompressor.samples.length, 1);
+      vm.cancelEstimate();
+      await running;
+      await settled(c);
     });
   });
 

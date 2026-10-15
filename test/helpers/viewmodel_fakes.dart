@@ -21,6 +21,7 @@ import 'package:petit/features/settings/domain/services/settings_repository.dart
 import 'package:petit/features/videos/domain/entities/video_data.dart';
 import 'package:petit/features/videos/domain/services/video_compressor.dart';
 import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+import 'package:petit/features/videos/domain/usecases/estimate_video_size.dart';
 import 'package:petit/features/videos/presentation/preview/video_preview.dart';
 
 /// Picker that returns what the test sets. Set [gate] to hold a pick open.
@@ -120,7 +121,36 @@ class FakeVideoTask implements VideoCompressionTask {
   }
 }
 
+/// A sample compression: cancelling it fails it, as the real one does.
+class FakeSampleTask extends FakeVideoTask {
+  @override
+  Future<void> cancel() async {
+    cancelled = true;
+    if (!completer.isCompleted) {
+      completer.completeError(const MediaException('Compression cancelled.'));
+    }
+  }
+}
+
 class FakeVideoCompressor implements VideoCompressor {
+  FakeVideoCompressor([this.sampleDir]);
+
+  /// Where sample outputs are written (the test's temp folder).
+  final Directory? sampleDir;
+
+  /// Length the probe reports; null means "could not read it".
+  int? probeDurationMs = 5000;
+
+  /// Size of a sample, per second of video it covers.
+  int sampleBytesPerSecond = 100;
+
+  /// Keep samples running until the test finishes them (to cancel them).
+  bool holdSamples = false;
+
+  /// (startMs, limitMs) of every sample started.
+  final samples = <(int, int)>[];
+  FakeSampleTask? lastSampleTask;
+
   FakeVideoTask? lastTask;
   void Function(int percent)? progressCallback;
   int? usedBitrateKbps;
@@ -145,7 +175,7 @@ class FakeVideoCompressor implements VideoCompressor {
         pixelHeight: 1080,
         videoCodec: 'h264',
         frameRate: 30,
-        durationMs: 5000,
+        durationMs: probeDurationMs,
       );
 
   @override
@@ -160,7 +190,25 @@ class FakeVideoCompressor implements VideoCompressor {
     int? maxShortSide,
     String? hardwareEncoder,
     int? hardwareBitrateKbps,
+    int? startMs,
+    int? limitMs,
   }) async {
+    usedHardwareEncoder = hardwareEncoder;
+    usedHardwareBitrateKbps = hardwareBitrateKbps;
+    usedBitrateKbps = videoBitrateKbps;
+    usedMaxShortSide = maxShortSide;
+    if (limitMs != null) {
+      // A sample, to estimate a size: not the real job.
+      samples.add((startMs ?? 0, limitMs));
+      final task = lastSampleTask = FakeSampleTask();
+      if (!holdSamples) {
+        final bytes = limitMs * sampleBytesPerSecond ~/ 1000;
+        task.completer.complete(
+            File('${sampleDir!.path}/sample_${samples.length}.bin')
+              ..writeAsBytesSync(List.filled(bytes, 1)));
+      }
+      return task;
+    }
     progressCallback = onProgress;
     usedBitrateKbps = videoBitrateKbps;
     usedMaxShortSide = maxShortSide;
@@ -268,7 +316,7 @@ class Harness {
   final picker = FakePicker();
   final workspace = FakeWorkspace();
   final saver = FakeSaver();
-  final videoCompressor = FakeVideoCompressor();
+  late final videoCompressor = FakeVideoCompressor(dir);
   final previews = <FakeVideoPreview>[];
   final settingsRepository = FakeSettingsRepository();
   final keepAlive = FakeBackgroundKeepAlive();
@@ -299,6 +347,12 @@ class Harness {
             CompressImagesUseCase(imageCompressor, saver)),
         estimateImageSizeUseCaseProvider
             .overrideWithValue(EstimateImageSizeUseCase(imageCompressor)),
+        // What the Videos tab probes a picked video with.
+        videoCompressorProvider.overrideWithValue(videoCompressor),
+        estimateVideoSizeUseCaseProvider
+            .overrideWithValue(EstimateVideoSizeUseCase(videoCompressor)),
+        checkFastEncodingUseCaseProvider
+            .overrideWithValue(CheckFastEncodingUseCase(videoCompressor)),
         compressVideoUseCaseProvider.overrideWithValue(
             CompressVideoUseCase(videoCompressor, saver)),
         videoPreviewFactoryProvider.overrideWithValue((file) {

@@ -30,6 +30,7 @@ import 'package:petit/features/videos/data/services/ffmpeg_video_thumbnailer.dar
 import 'package:petit/features/videos/domain/services/video_compressor.dart';
 import 'package:petit/features/videos/domain/services/video_thumbnailer.dart';
 import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+import 'package:petit/features/videos/domain/usecases/estimate_video_size.dart';
 import 'package:petit/features/onboarding/data/services/shared_prefs_onboarding_store.dart';
 import 'package:petit/features/onboarding/domain/services/onboarding_store.dart';
 import 'package:petit/features/settings/data/services/shared_prefs_settings_repository.dart';
@@ -118,6 +119,8 @@ void _registerMediaDependencies() {
       () => EstimateImageSizeUseCase(sl<ImageCompressor>()));
   sl.registerLazySingleton<CompressImagesUseCase>(
       () => CompressImagesUseCase(sl<ImageCompressor>(), sl<MediaSaver>()));
+  sl.registerLazySingleton<EstimateVideoSizeUseCase>(
+      () => EstimateVideoSizeUseCase(sl<VideoCompressor>()));
   sl.registerLazySingleton<CheckFastEncodingUseCase>(
       () => CheckFastEncodingUseCase(sl<VideoCompressor>()));
   sl.registerLazySingleton<CompressVideoUseCase>(

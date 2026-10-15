@@ -132,4 +132,64 @@ void main() {
       '-',
     ]);
   });
+
+  group('a stretch of the video (for estimates)', () {
+    test('seeking and limiting come before the input, so the rest is not read',
+        () {
+      final args = buildVideoArguments(
+        inputPath: 'in.mp4',
+        outputPath: 'out.mp4',
+        videoCodec: 'libx264',
+        crf: 26,
+        preset: 'medium',
+        startMs: 29000,
+        limitMs: 2000,
+      );
+
+      expect(args.sublist(0, 6), ['-ss', '29.000', '-t', '2.000', '-i', 'in.mp4']);
+    });
+
+    test('only a length starts at the beginning', () {
+      final args = buildVideoArguments(
+        inputPath: 'in.mp4',
+        outputPath: 'out.mp4',
+        videoCodec: 'libx264',
+        crf: 26,
+        preset: 'medium',
+        limitMs: 5000,
+      );
+
+      expect(args.sublist(0, 4), ['-t', '5.000', '-i', 'in.mp4']);
+      expect(args, isNot(contains('-ss')));
+    });
+
+    test('hardware commands take the same stretch', () {
+      final args = buildVideoArguments(
+        inputPath: 'in.mp4',
+        outputPath: 'out.mp4',
+        videoCodec: 'libx264',
+        crf: 26,
+        preset: 'medium',
+        videoBitrateKbps: 2000,
+        hardwareEncoder: 'h264_nvenc',
+        startMs: 1500,
+        limitMs: 2000,
+      );
+
+      expect(args.sublist(0, 6), ['-ss', '1.500', '-t', '2.000', '-i', 'in.mp4']);
+    });
+
+    test('a normal command has neither', () {
+      final args = buildVideoArguments(
+        inputPath: 'in.mp4',
+        outputPath: 'out.mp4',
+        videoCodec: 'libx264',
+        crf: 26,
+        preset: 'medium',
+      );
+
+      expect(args.first, '-i');
+      expect(args, isNot(contains('-t')));
+    });
+  });
 }

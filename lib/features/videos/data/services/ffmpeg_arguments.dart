@@ -25,13 +25,23 @@ List<String> buildVideoArguments({
   int? videoBitrateKbps,
   int? maxShortSide,
   String? hardwareEncoder,
+  int? startMs,
+  int? limitMs,
 }) {
+  // Only a stretch of the video (a sample): where it starts and how long it
+  // lasts, as input options so FFmpeg does not read the rest.
+  final stretch = [
+    if (startMs != null) ...['-ss', _seconds(startMs)],
+    if (limitMs != null) ...['-t', _seconds(limitMs)],
+  ];
+
   if (hardwareEncoder != null) {
     if (videoBitrateKbps == null) {
       throw ArgumentError.value(
           videoBitrateKbps, 'videoBitrateKbps', 'hardware encoding needs a bitrate');
     }
     return [
+      ...stretch,
       '-i',
       inputPath,
       '-vcodec',
@@ -50,6 +60,7 @@ List<String> buildVideoArguments({
   }
 
   return [
+    ...stretch,
     '-i',
     inputPath,
     '-vcodec',
@@ -71,6 +82,8 @@ List<String> buildVideoArguments({
     outputPath,
   ];
 }
+
+String _seconds(int ms) => (ms / 1000).toStringAsFixed(3);
 
 /// The FFmpeg command line that tries [encoder] on one second of test video
 /// and throws the result away. Success means this machine can really use it

@@ -257,3 +257,29 @@ quality. "Fast encoding" lets the user pick that trade; it is off by default (Se
   smaller.
 - Presets belong to the software encoder, so the "Encoding speed" box is hidden while Fast encoding is
   on.
+
+## Video size estimate
+
+A "Size estimate" box on the Videos tab predicts the result by really compressing a few short samples
+of the video with the chosen settings (hardware or not) and scaling their size up. It runs when asked,
+because it takes seconds, and can be cancelled; starting the real compression cancels it too.
+
+- **Samples.** `sampleWindows` (pure): a video of 8 seconds or less is compressed whole, so the answer is
+  exact; a longer one gets three 2-second samples at a sixth, half and five sixths of the way in, so
+  both calm and busy parts count. `extrapolateBytes` turns the samples' bytes per second into a size for
+  the whole length (audio and container are in the samples, so nothing is added).
+- **Same plan as the real job.** `planVideoEncoding` (domain) decides codec, CRF, bitrate for a target
+  size, scale and hardware encoder. `CompressVideoUseCase` and `EstimateVideoSizeUseCase` both use it,
+  so they cannot disagree. `VideoCompressor.start` takes `startMs` / `limitMs` to encode only a stretch
+  (FFmpeg `-ss` / `-t` before the input, so the rest of the file is not read), which also gives samples
+  the hardware-to-software fallback and cancelling for free.
+- **Validity.** An estimate is stored with `VideosState.settingsKey` (mode, quality, target size,
+  resolution, fast encoding, speed). `currentEstimate` is only returned while the choices still match,
+  so a stale number is never shown. A generation counter in the ViewModel makes sure a cancelled or
+  replaced estimate cannot overwrite a newer one.
+- **Accuracy.** Checked here with real FFmpeg (x264) on a 24 s test video made of three different
+  scenes: three 2-second samples came within 0.1% (CRF 23, medium) and 2.6% (CRF 28, veryfast) of the
+  full encode. Real videos with very uneven scenes can be further off, which the box says ("can differ
+  by a few percent"). If the estimate says the video would not get smaller, the original is kept, which
+  is what the real job does too.
+- It refuses while the images are busy (shared work folder), and when the video's length is unknown.

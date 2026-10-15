@@ -99,6 +99,8 @@ class FfmpegVideoCompressor implements VideoCompressor {
     int? maxShortSide,
     String? hardwareEncoder,
     int? hardwareBitrateKbps,
+    int? startMs,
+    int? limitMs,
   }) async {
     final jobDir = await createJobDir();
     // The job folder is unique, so the name can simply follow the original's.
@@ -113,6 +115,8 @@ class FfmpegVideoCompressor implements VideoCompressor {
       preset: preset,
       videoBitrateKbps: videoBitrateKbps,
       maxShortSide: maxShortSide,
+      startMs: startMs,
+      limitMs: limitMs,
     );
 
     final useHardware = hardwareEncoder != null && hardwareBitrateKbps != null;
@@ -126,6 +130,8 @@ class FfmpegVideoCompressor implements VideoCompressor {
             videoBitrateKbps: hardwareBitrateKbps,
             maxShortSide: maxShortSide,
             hardwareEncoder: hardwareEncoder,
+            startMs: startMs,
+            limitMs: limitMs,
           )
         : softwareArguments;
 

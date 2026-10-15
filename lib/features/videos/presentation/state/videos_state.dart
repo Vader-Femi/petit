@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:petit/features/videos/domain/entities/video_data.dart';
 import 'package:petit/features/videos/domain/entities/video_resolution.dart';
 import 'package:petit/features/videos/domain/usecases/compress_video.dart';
+import 'package:petit/features/videos/domain/usecases/estimate_video_size.dart';
 import 'package:petit/features/videos/domain/video_warnings.dart';
 import 'package:petit/features/videos/presentation/preview/video_preview.dart';
 
@@ -33,6 +34,11 @@ class VideosState {
     this.eta,
     this.fastEncoding = false,
     this.fastEncodingAvailable = false,
+    this.estimate,
+    this.estimateKey,
+    this.estimateJob,
+    this.isEstimating = false,
+    this.estimatePercent = 0,
     this.presetIndex = 1,
     this.isFabOpen = true,
     this.currentJob,
@@ -65,6 +71,31 @@ class VideosState {
 
   /// Fast encoding will really be used.
   bool get usesFastEncoding => fastEncoding && fastEncodingAvailable;
+
+  /// The size worked out by compressing a few samples, and the choices
+  /// ([estimateKey]) it was worked out for.
+  final VideoSizeEstimate? estimate;
+  final String? estimateKey;
+  final VideoEstimateJob? estimateJob;
+  final bool isEstimating;
+
+  /// 0..100 while [isEstimating].
+  final int estimatePercent;
+
+  /// Everything that changes the result of compressing; an [estimate] is only
+  /// valid for the same key.
+  String get settingsKey => [
+        mode.name,
+        crfQuality,
+        targetSizeMb,
+        resolution.name,
+        usesFastEncoding,
+        presetIndex,
+      ].join('|');
+
+  /// The estimate, if it still matches the current choices.
+  VideoSizeEstimate? get currentEstimate =>
+      estimateKey == settingsKey ? estimate : null;
 
   /// Index into the FFmpeg presets ("Desired File Size" slider).
   final int presetIndex;
@@ -135,6 +166,11 @@ class VideosState {
     Object? eta = _unset,
     bool? fastEncoding,
     bool? fastEncodingAvailable,
+    Object? estimate = _unset,
+    Object? estimateKey = _unset,
+    Object? estimateJob = _unset,
+    bool? isEstimating,
+    int? estimatePercent,
     int? presetIndex,
     bool? isFabOpen,
     Object? currentJob = _unset,
@@ -157,6 +193,16 @@ class VideosState {
       eta: identical(eta, _unset) ? this.eta : eta as Duration?,
       fastEncoding: fastEncoding ?? this.fastEncoding,
       fastEncodingAvailable: fastEncodingAvailable ?? this.fastEncodingAvailable,
+      estimate: identical(estimate, _unset)
+          ? this.estimate
+          : estimate as VideoSizeEstimate?,
+      estimateKey:
+          identical(estimateKey, _unset) ? this.estimateKey : estimateKey as String?,
+      estimateJob: identical(estimateJob, _unset)
+          ? this.estimateJob
+          : estimateJob as VideoEstimateJob?,
+      isEstimating: isEstimating ?? this.isEstimating,
+      estimatePercent: estimatePercent ?? this.estimatePercent,
       presetIndex: presetIndex ?? this.presetIndex,
       isFabOpen: isFabOpen ?? this.isFabOpen,
       currentJob: identical(currentJob, _unset)

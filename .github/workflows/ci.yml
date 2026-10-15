@@ -56,6 +56,8 @@ jobs:
           test/job_keep_alive_test.dart
           test/heif_arguments_test.dart
           test/fast_encoding_test.dart
+          test/video_sampling_test.dart
+          test/estimate_video_size_test.dart
 
   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
   # it runs on demand and for pull requests into the production branch.

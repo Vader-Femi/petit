@@ -1,0 +1,1823 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index e10785f..7bec324 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -56,6 +56,8 @@ jobs:
+           test/job_keep_alive_test.dart
+           test/heif_arguments_test.dart
+           test/fast_encoding_test.dart
++          test/video_sampling_test.dart
++          test/estimate_video_size_test.dart
+ 
+   # Compile-only check of the desktop apps. Slow and, on macOS, expensive, so
+   # it runs on demand and for pull requests into the production branch.
+diff --git a/docs/architecture.md b/docs/architecture.md
+index 159d0ee..dd0457d 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -257,3 +257,29 @@ quality. "Fast encoding" lets the user pick that trade; it is off by default (Se
+   smaller.
+ - Presets belong to the software encoder, so the "Encoding speed" box is hidden while Fast encoding is
+   on.
++
++## Video size estimate
++
++A "Size estimate" box on the Videos tab predicts the result by really compressing a few short samples
++of the video with the chosen settings (hardware or not) and scaling their size up. It runs when asked,
++because it takes seconds, and can be cancelled; starting the real compression cancels it too.
++
++- **Samples.** `sampleWindows` (pure): a video of 8 seconds or less is compressed whole, so the answer is
++  exact; a longer one gets three 2-second samples at a sixth, half and five sixths of the way in, so
++  both calm and busy parts count. `extrapolateBytes` turns the samples' bytes per second into a size for
++  the whole length (audio and container are in the samples, so nothing is added).
++- **Same plan as the real job.** `planVideoEncoding` (domain) decides codec, CRF, bitrate for a target
++  size, scale and hardware encoder. `CompressVideoUseCase` and `EstimateVideoSizeUseCase` both use it,
++  so they cannot disagree. `VideoCompressor.start` takes `startMs` / `limitMs` to encode only a stretch
++  (FFmpeg `-ss` / `-t` before the input, so the rest of the file is not read), which also gives samples
++  the hardware-to-software fallback and cancelling for free.
++- **Validity.** An estimate is stored with `VideosState.settingsKey` (mode, quality, target size,
++  resolution, fast encoding, speed). `currentEstimate` is only returned while the choices still match,
++  so a stale number is never shown. A generation counter in the ViewModel makes sure a cancelled or
++  replaced estimate cannot overwrite a newer one.
++- **Accuracy.** Checked here with real FFmpeg (x264) on a 24 s test video made of three different
++  scenes: three 2-second samples came within 0.1% (CRF 23, medium) and 2.6% (CRF 28, veryfast) of the
++  full encode. Real videos with very uneven scenes can be further off, which the box says ("can differ
++  by a few percent"). If the estimate says the video would not get smaller, the original is kept, which
++  is what the real job does too.
++- It refuses while the images are busy (shared work folder), and when the video's length is unknown.
+diff --git a/lib/core/di/providers.dart b/lib/core/di/providers.dart
+index 5b5e972..1c77d9e 100644
+--- a/lib/core/di/providers.dart
++++ b/lib/core/di/providers.dart
+@@ -16,6 +16,7 @@ import 'package:petit/features/settings/domain/entities/app_settings.dart';
+ import 'package:petit/features/settings/domain/services/settings_repository.dart';
+ import 'package:petit/features/videos/domain/services/video_compressor.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
++import 'package:petit/features/videos/domain/usecases/estimate_video_size.dart';
+ import 'package:petit/features/videos/presentation/preview/video_preview.dart';
+ import 'package:petit/features/videos/presentation/preview/video_preview_factory.dart';
+ import 'package:petit/service_locator.dart';
+@@ -74,6 +75,9 @@ final estimateImageSizeUseCaseProvider = Provider<EstimateImageSizeUseCase>(
+ final videoCompressorProvider =
+     Provider<VideoCompressor>((ref) => sl<VideoCompressor>());
+ 
++final estimateVideoSizeUseCaseProvider = Provider<EstimateVideoSizeUseCase>(
++    (ref) => sl<EstimateVideoSizeUseCase>());
++
+ final checkFastEncodingUseCaseProvider = Provider<CheckFastEncodingUseCase>(
+     (ref) => sl<CheckFastEncodingUseCase>());
+ 
+diff --git a/lib/features/videos/data/services/ffmpeg_arguments.dart b/lib/features/videos/data/services/ffmpeg_arguments.dart
+index b4de0b0..0d748fb 100644
+--- a/lib/features/videos/data/services/ffmpeg_arguments.dart
++++ b/lib/features/videos/data/services/ffmpeg_arguments.dart
+@@ -25,13 +25,23 @@ List<String> buildVideoArguments({
+   int? videoBitrateKbps,
+   int? maxShortSide,
+   String? hardwareEncoder,
++  int? startMs,
++  int? limitMs,
+ }) {
++  // Only a stretch of the video (a sample): where it starts and how long it
++  // lasts, as input options so FFmpeg does not read the rest.
++  final stretch = [
++    if (startMs != null) ...['-ss', _seconds(startMs)],
++    if (limitMs != null) ...['-t', _seconds(limitMs)],
++  ];
++
+   if (hardwareEncoder != null) {
+     if (videoBitrateKbps == null) {
+       throw ArgumentError.value(
+           videoBitrateKbps, 'videoBitrateKbps', 'hardware encoding needs a bitrate');
+     }
+     return [
++      ...stretch,
+       '-i',
+       inputPath,
+       '-vcodec',
+@@ -50,6 +60,7 @@ List<String> buildVideoArguments({
+   }
+ 
+   return [
++    ...stretch,
+     '-i',
+     inputPath,
+     '-vcodec',
+@@ -72,6 +83,8 @@ List<String> buildVideoArguments({
+   ];
+ }
+ 
++String _seconds(int ms) => (ms / 1000).toStringAsFixed(3);
++
+ /// The FFmpeg command line that tries [encoder] on one second of test video
+ /// and throws the result away. Success means this machine can really use it
+ /// (an encoder can be built in without the hardware being there).
+diff --git a/lib/features/videos/data/services/ffmpeg_video_compressor.dart b/lib/features/videos/data/services/ffmpeg_video_compressor.dart
+index 9d13b8a..ad127aa 100644
+--- a/lib/features/videos/data/services/ffmpeg_video_compressor.dart
++++ b/lib/features/videos/data/services/ffmpeg_video_compressor.dart
+@@ -99,6 +99,8 @@ class FfmpegVideoCompressor implements VideoCompressor {
+     int? maxShortSide,
+     String? hardwareEncoder,
+     int? hardwareBitrateKbps,
++    int? startMs,
++    int? limitMs,
+   }) async {
+     final jobDir = await createJobDir();
+     // The job folder is unique, so the name can simply follow the original's.
+@@ -113,6 +115,8 @@ class FfmpegVideoCompressor implements VideoCompressor {
+       preset: preset,
+       videoBitrateKbps: videoBitrateKbps,
+       maxShortSide: maxShortSide,
++      startMs: startMs,
++      limitMs: limitMs,
+     );
+ 
+     final useHardware = hardwareEncoder != null && hardwareBitrateKbps != null;
+@@ -126,6 +130,8 @@ class FfmpegVideoCompressor implements VideoCompressor {
+             videoBitrateKbps: hardwareBitrateKbps,
+             maxShortSide: maxShortSide,
+             hardwareEncoder: hardwareEncoder,
++            startMs: startMs,
++            limitMs: limitMs,
+           )
+         : softwareArguments;
+ 
+diff --git a/lib/features/videos/domain/services/video_compressor.dart b/lib/features/videos/domain/services/video_compressor.dart
+index 75309d7..3e4c32d 100644
+--- a/lib/features/videos/domain/services/video_compressor.dart
++++ b/lib/features/videos/domain/services/video_compressor.dart
+@@ -32,6 +32,10 @@ abstract interface class VideoCompressor {
+   /// video hardware at [hardwareBitrateKbps]. If that fails part way, the
+   /// compression is run again with the normal settings above, so asking for
+   /// hardware can only make things faster, never break them.
++  ///
++  /// With [startMs] and [limitMs] only that stretch of the video is encoded
++  /// (a sample, to predict the size of the whole); [totalDurationMs] is then
++  /// the length of the stretch, for progress.
+   Future<VideoCompressionTask> start({
+     required File input,
+     required String videoCodec,
+@@ -43,5 +47,7 @@ abstract interface class VideoCompressor {
+     int? maxShortSide,
+     String? hardwareEncoder,
+     int? hardwareBitrateKbps,
++    int? startMs,
++    int? limitMs,
+   });
+ }
+diff --git a/lib/features/videos/domain/usecases/compress_video.dart b/lib/features/videos/domain/usecases/compress_video.dart
+index 13ccd9f..174517f 100644
+--- a/lib/features/videos/domain/usecases/compress_video.dart
++++ b/lib/features/videos/domain/usecases/compress_video.dart
+@@ -1,12 +1,11 @@
+ import 'dart:io';
+-import 'dart:math' as math;
+ 
+ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/common/domain/services/media_saver.dart';
+ import 'package:petit/features/videos/domain/entities/codec_config.dart';
+ import 'package:petit/features/videos/domain/entities/video_data.dart';
+ import 'package:petit/features/videos/domain/services/video_compressor.dart';
+-import 'package:petit/features/videos/domain/video_bitrate.dart';
++import 'package:petit/features/videos/domain/video_plan.dart';
+ 
+ class VideoCompressionOutcome {
+   final int originalBytes;
+@@ -85,60 +84,25 @@ class CompressVideoUseCase {
+       throw const MediaException('Error retrieving video properties');
+     }
+ 
+-    if (data.frameRate == null ||
+-        data.pixelHeight == null ||
+-        data.pixelWidth == null ||
+-        data.videoCodec == null) {
+-      throw const MediaException('Error retrieving video properties');
+-    }
+-
+-    final config = getVcodecConfigFromCodec(data.videoCodec!);
+-    final crf = (config.minCrf +
+-            ((qualityPercent / 100) * (config.maxCrf - config.minCrf)))
+-        .round();
+-
+-    int? videoBitrateKbps;
+-    if (targetBytes != null) {
+-      final durationMs = data.durationMs;
+-      if (durationMs == null || durationMs <= 0) {
+-        throw const MediaException(
+-            "Could not work out the video's length, so a target size is not possible. Use quality instead.");
+-      }
+-      videoBitrateKbps =
+-          bitrateForTargetSize(targetBytes: targetBytes, durationMs: durationMs);
+-    }
+-
+-    final shortSide = math.min(data.pixelWidth!, data.pixelHeight!);
+-    final scaleTo =
+-        (maxShortSide != null && shortSide > maxShortSide) ? maxShortSide : null;
+-
+-    String? hardwareEncoder;
+-    int? hardwareBitrateKbps;
+-    if (fastEncoding) {
+-      hardwareEncoder = await _compressor.hardwareEncoderFor(config.vcodec);
+-      if (hardwareEncoder != null) {
+-        hardwareBitrateKbps = videoBitrateKbps ??
+-            fastEncodingBitrateKbps(
+-              width: data.pixelWidth!,
+-              height: data.pixelHeight!,
+-              frameRate: data.frameRate,
+-              crf: crf,
+-              hevc: config.vcodec == 'libx265',
+-              maxShortSide: scaleTo,
+-              sourceKbps: await _sourceKbps(input, data.durationMs),
+-            );
+-      }
+-    }
++    final plan = await planVideoEncoding(
++      compressor: _compressor,
++      input: input,
++      data: data,
++      qualityPercent: qualityPercent,
++      maxShortSide: maxShortSide,
++      targetBytes: targetBytes,
++      fastEncoding: fastEncoding,
++    );
+ 
+     final task = await _compressor.start(
+       input: input,
+-      videoCodec: config.vcodec,
+-      crf: crf,
++      videoCodec: plan.videoCodec,
++      crf: plan.crf,
+       preset: preset,
+-      videoBitrateKbps: videoBitrateKbps,
+-      maxShortSide: scaleTo,
+-      hardwareEncoder: hardwareEncoder,
+-      hardwareBitrateKbps: hardwareBitrateKbps,
++      videoBitrateKbps: plan.videoBitrateKbps,
++      maxShortSide: plan.maxShortSide,
++      hardwareEncoder: plan.hardwareEncoder,
++      hardwareBitrateKbps: plan.hardwareBitrateKbps,
+       totalDurationMs: _usableDuration(totalDurationMs) ??
+           _usableDuration(data.durationMs) ??
+           1,
+@@ -148,12 +112,6 @@ class CompressVideoUseCase {
+     return VideoCompressionJob(task, _finish(task, input, onError));
+   }
+ 
+-  /// The video's own average bitrate, or null when its length is unknown.
+-  Future<int?> _sourceKbps(File input, int? durationMs) async {
+-    if (durationMs == null || durationMs <= 0) return null;
+-    return ((await input.length()) * 8 / durationMs).round();
+-  }
+-
+   /// Durations of zero (or unknown) would make progress meaningless.
+   int? _usableDuration(int? ms) => (ms != null && ms > 0) ? ms : null;
+ 
+diff --git a/lib/features/videos/domain/usecases/estimate_video_size.dart b/lib/features/videos/domain/usecases/estimate_video_size.dart
+new file mode 100644
+index 0000000..6d9b265
+--- /dev/null
++++ b/lib/features/videos/domain/usecases/estimate_video_size.dart
+@@ -0,0 +1,170 @@
++import 'dart:async';
++import 'dart:io';
++
++import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/features/videos/domain/entities/video_data.dart';
++import 'package:petit/features/videos/domain/services/video_compressor.dart';
++import 'package:petit/features/videos/domain/video_plan.dart';
++import 'package:petit/features/videos/domain/video_sampling.dart';
++
++/// What compressing a video with the chosen settings is expected to produce.
++class VideoSizeEstimate {
++  const VideoSizeEstimate({
++    required this.originalBytes,
++    required this.estimatedBytes,
++    required this.sampledMs,
++    required this.sampleCount,
++    required this.totalMs,
++  });
++
++  final int originalBytes;
++  final int estimatedBytes;
++
++  /// How much of the video was really compressed to work this out.
++  final int sampledMs;
++  final int sampleCount;
++  final int totalMs;
++
++  /// The whole video was compressed, so the size is exact (not extrapolated).
++  bool get isExact => sampledMs >= totalMs;
++
++  /// Compressing is not expected to make the video smaller; the original
++  /// would be kept.
++  bool get isLarger => estimatedBytes >= originalBytes;
++
++  /// Fraction (0..1) of the original size expected to be saved.
++  double get savedFraction => originalBytes <= 0 || isLarger
++      ? 0.0
++      : ((originalBytes - estimatedBytes) / originalBytes)
++          .clamp(0.0, 1.0)
++          .toDouble();
++}
++
++/// An estimate in progress: cancel it, or await [result].
++class VideoEstimateJob {
++  VideoEstimateJob(this.result, this._cancel);
++
++  /// Completes with the estimate, or with a [MediaException] if it failed or
++  /// was cancelled.
++  final Future<VideoSizeEstimate> result;
++  final Future<void> Function() _cancel;
++
++  Future<void> cancel() => _cancel();
++}
++
++/// Predicts how big a video will be by really compressing a few short
++/// stretches of it with the chosen settings, and scaling up their size. Much
++/// more telling than a rule of thumb, because it sees this video's own mix of
++/// calm and busy scenes, and uses the same encoder (hardware or not) as the
++/// real job. Short videos are compressed whole, so the answer is exact.
++class EstimateVideoSizeUseCase {
++  EstimateVideoSizeUseCase(this._compressor);
++
++  final VideoCompressor _compressor;
++
++  /// Takes the same choices as `CompressVideoUseCase`. [onProgress] receives
++  /// 0..100 across all the stretches.
++  Future<VideoEstimateJob> call({
++    required File input,
++    required int qualityPercent,
++    required String preset,
++    int? maxShortSide,
++    int? targetBytes,
++    bool fastEncoding = false,
++    void Function(int percent)? onProgress,
++  }) async {
++    final VideoData data;
++    try {
++      data = await _compressor.probe(input);
++    } on MediaException {
++      throw const MediaException('Error retrieving video properties');
++    }
++
++    final durationMs = data.durationMs;
++    if (durationMs == null || durationMs <= 0) {
++      throw const MediaException(
++          "Could not work out the video's length, so its size cannot be estimated.");
++    }
++
++    final plan = await planVideoEncoding(
++      compressor: _compressor,
++      input: input,
++      data: data,
++      qualityPercent: qualityPercent,
++      maxShortSide: maxShortSide,
++      targetBytes: targetBytes,
++      fastEncoding: fastEncoding,
++    );
++
++    final windows = sampleWindows(durationMs);
++    final run = _Run();
++
++    Future<VideoSizeEstimate> work() async {
++      final sizes = <int>[];
++
++      for (var i = 0; i < windows.length; i++) {
++        if (run.cancelled) {
++          throw const MediaException('Estimate cancelled.');
++        }
++        final window = windows[i];
++
++        final task = await _compressor.start(
++          input: input,
++          videoCodec: plan.videoCodec,
++          crf: plan.crf,
++          preset: preset,
++          videoBitrateKbps: plan.videoBitrateKbps,
++          maxShortSide: plan.maxShortSide,
++          hardwareEncoder: plan.hardwareEncoder,
++          hardwareBitrateKbps: plan.hardwareBitrateKbps,
++          startMs: window.startMs,
++          limitMs: window.lengthMs,
++          totalDurationMs: window.lengthMs,
++          onProgress: (percent) =>
++              onProgress?.call(((i + percent / 100) / windows.length * 100).round()),
++        );
++        run.current = task;
++
++        final File sample;
++        try {
++          sample = await task.result;
++        } on MediaException {
++          if (run.cancelled) throw const MediaException('Estimate cancelled.');
++          rethrow;
++        }
++
++        sizes.add(await sample.length());
++        try {
++          await sample.delete();
++        } on FileSystemException {
++          // Left in the work folder, which is emptied after the next job.
++        }
++      }
++
++      onProgress?.call(100);
++      return VideoSizeEstimate(
++        originalBytes: await input.length(),
++        estimatedBytes: extrapolateBytes(
++          sampleBytes: sizes,
++          windows: windows,
++          durationMs: durationMs,
++        ),
++        sampledMs: windows.fold<int>(0, (sum, w) => sum + w.lengthMs),
++        sampleCount: windows.length,
++        totalMs: durationMs,
++      );
++    }
++
++    return VideoEstimateJob(work(), run.cancel);
++  }
++}
++
++class _Run {
++  bool cancelled = false;
++  VideoCompressionTask? current;
++
++  Future<void> cancel() async {
++    cancelled = true;
++    await current?.cancel();
++  }
++}
+diff --git a/lib/features/videos/domain/video_plan.dart b/lib/features/videos/domain/video_plan.dart
+new file mode 100644
+index 0000000..efabdf0
+--- /dev/null
++++ b/lib/features/videos/domain/video_plan.dart
+@@ -0,0 +1,112 @@
++import 'dart:io';
++import 'dart:math' as math;
++
++import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/features/videos/domain/entities/codec_config.dart';
++import 'package:petit/features/videos/domain/entities/video_data.dart';
++import 'package:petit/features/videos/domain/services/video_compressor.dart';
++import 'package:petit/features/videos/domain/video_bitrate.dart';
++
++/// Everything the encoder is told for one video: what compressing it and
++/// estimating its size both need, so they cannot disagree.
++class VideoEncodingPlan {
++  const VideoEncodingPlan({
++    required this.videoCodec,
++    required this.crf,
++    this.videoBitrateKbps,
++    this.maxShortSide,
++    this.hardwareEncoder,
++    this.hardwareBitrateKbps,
++  });
++
++  /// Software encoder, e.g. `libx264`. Also the one used if hardware fails.
++  final String videoCodec;
++  final int crf;
++
++  /// Set for a target size; null means "use [crf]".
++  final int? videoBitrateKbps;
++
++  /// Null when the video is not larger than the chosen resolution.
++  final int? maxShortSide;
++
++  final String? hardwareEncoder;
++  final int? hardwareBitrateKbps;
++}
++
++/// Works out the [VideoEncodingPlan] for [input] (already probed as [data]).
++///
++/// Throws a [MediaException] when the video's properties are missing, or a
++/// target size is asked for but the video's length is unknown.
++///
++/// [qualityPercent] is the 0..100 slider; [targetBytes] aims for a size
++/// instead; [maxShortSide] scales down (never up); [fastEncoding] asks for
++/// the video hardware, used only if this machine has some that works.
++Future<VideoEncodingPlan> planVideoEncoding({
++  required VideoCompressor compressor,
++  required File input,
++  required VideoData data,
++  required int qualityPercent,
++  int? maxShortSide,
++  int? targetBytes,
++  bool fastEncoding = false,
++}) async {
++  if (data.frameRate == null ||
++      data.pixelHeight == null ||
++      data.pixelWidth == null ||
++      data.videoCodec == null) {
++    throw const MediaException('Error retrieving video properties');
++  }
++
++  final config = getVcodecConfigFromCodec(data.videoCodec!);
++  final crf = (config.minCrf +
++          ((qualityPercent / 100) * (config.maxCrf - config.minCrf)))
++      .round();
++
++  int? videoBitrateKbps;
++  if (targetBytes != null) {
++    final durationMs = data.durationMs;
++    if (durationMs == null || durationMs <= 0) {
++      throw const MediaException(
++          "Could not work out the video's length, so a target size is not possible. Use quality instead.");
++    }
++    videoBitrateKbps =
++        bitrateForTargetSize(targetBytes: targetBytes, durationMs: durationMs);
++  }
++
++  final shortSide = math.min(data.pixelWidth!, data.pixelHeight!);
++  final scaleTo =
++      (maxShortSide != null && shortSide > maxShortSide) ? maxShortSide : null;
++
++  String? hardwareEncoder;
++  int? hardwareBitrateKbps;
++  if (fastEncoding) {
++    hardwareEncoder = await compressor.hardwareEncoderFor(config.vcodec);
++    if (hardwareEncoder != null) {
++      hardwareBitrateKbps = videoBitrateKbps ??
++          fastEncodingBitrateKbps(
++            width: data.pixelWidth!,
++            height: data.pixelHeight!,
++            frameRate: data.frameRate,
++            crf: crf,
++            hevc: config.vcodec == 'libx265',
++            maxShortSide: scaleTo,
++            sourceKbps: await _sourceKbps(input, data.durationMs),
++          );
++    }
++  }
++
++  return VideoEncodingPlan(
++    videoCodec: config.vcodec,
++    crf: crf,
++    videoBitrateKbps: videoBitrateKbps,
++    maxShortSide: scaleTo,
++    hardwareEncoder: hardwareEncoder,
++    hardwareBitrateKbps: hardwareBitrateKbps,
++  );
++}
++
++/// The video's own average bitrate, or null when its length is unknown.
++Future<int?> _sourceKbps(File input, int? durationMs) async {
++  if (durationMs == null || durationMs <= 0) return null;
++  return ((await input.length()) * 8 / durationMs).round();
++}
+diff --git a/lib/features/videos/domain/video_sampling.dart b/lib/features/videos/domain/video_sampling.dart
+new file mode 100644
+index 0000000..fa4e4af
+--- /dev/null
++++ b/lib/features/videos/domain/video_sampling.dart
+@@ -0,0 +1,70 @@
++/// A short stretch of a video, in milliseconds from its start.
++class SampleWindow {
++  const SampleWindow(this.startMs, this.lengthMs);
++
++  final int startMs;
++  final int lengthMs;
++
++  @override
++  bool operator ==(Object other) =>
++      other is SampleWindow &&
++      other.startMs == startMs &&
++      other.lengthMs == lengthMs;
++
++  @override
++  int get hashCode => Object.hash(startMs, lengthMs);
++
++  @override
++  String toString() => 'SampleWindow($startMs, $lengthMs)';
++}
++
++/// Videos this short (or shorter) are not sampled: the "sample" is the whole
++/// video, so the estimate is exact.
++const int kWholeVideoMaxMs = 8000;
++
++/// How many places in a longer video are tried.
++const int kSampleCount = 3;
++
++/// How long each try is.
++const int kSampleMs = 2000;
++
++/// Where to try a video of [durationMs] to predict how big it will get.
++///
++/// A few short stretches spread over the video (a sixth, half and five sixths
++/// of the way in) catch more of its variety than one long one: most videos
++/// have calm and busy parts, and busy parts cost more bytes.
++List<SampleWindow> sampleWindows(
++  int durationMs, {
++  int count = kSampleCount,
++  int sampleMs = kSampleMs,
++}) {
++  if (durationMs <= kWholeVideoMaxMs || count < 1) {
++    return [SampleWindow(0, durationMs)];
++  }
++
++  return [
++    for (var i = 0; i < count; i++)
++      SampleWindow(
++        ((durationMs * (i + 0.5) / count) - sampleMs / 2)
++            .round()
++            .clamp(0, durationMs - sampleMs)
++            .toInt(),
++        sampleMs,
++      ),
++  ];
++}
++
++/// The size of the whole video, from the sizes the [windows] came out at: the
++/// bytes per second of the samples, over the whole length. Audio and the file
++/// container are in the samples too, so nothing is added.
++int extrapolateBytes({
++  required List<int> sampleBytes,
++  required List<SampleWindow> windows,
++  required int durationMs,
++}) {
++  assert(sampleBytes.length == windows.length);
++  final sampledMs = windows.fold<int>(0, (sum, w) => sum + w.lengthMs);
++  if (sampledMs <= 0) return 0;
++  final bytes = sampleBytes.fold<int>(0, (sum, b) => sum + b);
++  return (bytes / sampledMs * durationMs).round();
++}
+diff --git a/lib/features/videos/presentation/state/videos_state.dart b/lib/features/videos/presentation/state/videos_state.dart
+index 6661272..fed51d2 100644
+--- a/lib/features/videos/presentation/state/videos_state.dart
++++ b/lib/features/videos/presentation/state/videos_state.dart
+@@ -3,6 +3,7 @@ import 'dart:io';
+ import 'package:petit/features/videos/domain/entities/video_data.dart';
+ import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
++import 'package:petit/features/videos/domain/usecases/estimate_video_size.dart';
+ import 'package:petit/features/videos/domain/video_warnings.dart';
+ import 'package:petit/features/videos/presentation/preview/video_preview.dart';
+ 
+@@ -33,6 +34,11 @@ class VideosState {
+     this.eta,
+     this.fastEncoding = false,
+     this.fastEncodingAvailable = false,
++    this.estimate,
++    this.estimateKey,
++    this.estimateJob,
++    this.isEstimating = false,
++    this.estimatePercent = 0,
+     this.presetIndex = 1,
+     this.isFabOpen = true,
+     this.currentJob,
+@@ -66,6 +72,31 @@ class VideosState {
+   /// Fast encoding will really be used.
+   bool get usesFastEncoding => fastEncoding && fastEncodingAvailable;
+ 
++  /// The size worked out by compressing a few samples, and the choices
++  /// ([estimateKey]) it was worked out for.
++  final VideoSizeEstimate? estimate;
++  final String? estimateKey;
++  final VideoEstimateJob? estimateJob;
++  final bool isEstimating;
++
++  /// 0..100 while [isEstimating].
++  final int estimatePercent;
++
++  /// Everything that changes the result of compressing; an [estimate] is only
++  /// valid for the same key.
++  String get settingsKey => [
++        mode.name,
++        crfQuality,
++        targetSizeMb,
++        resolution.name,
++        usesFastEncoding,
++        presetIndex,
++      ].join('|');
++
++  /// The estimate, if it still matches the current choices.
++  VideoSizeEstimate? get currentEstimate =>
++      estimateKey == settingsKey ? estimate : null;
++
+   /// Index into the FFmpeg presets ("Desired File Size" slider).
+   final int presetIndex;
+   final bool isFabOpen;
+@@ -135,6 +166,11 @@ class VideosState {
+     Object? eta = _unset,
+     bool? fastEncoding,
+     bool? fastEncodingAvailable,
++    Object? estimate = _unset,
++    Object? estimateKey = _unset,
++    Object? estimateJob = _unset,
++    bool? isEstimating,
++    int? estimatePercent,
+     int? presetIndex,
+     bool? isFabOpen,
+     Object? currentJob = _unset,
+@@ -157,6 +193,16 @@ class VideosState {
+       eta: identical(eta, _unset) ? this.eta : eta as Duration?,
+       fastEncoding: fastEncoding ?? this.fastEncoding,
+       fastEncodingAvailable: fastEncodingAvailable ?? this.fastEncodingAvailable,
++      estimate: identical(estimate, _unset)
++          ? this.estimate
++          : estimate as VideoSizeEstimate?,
++      estimateKey:
++          identical(estimateKey, _unset) ? this.estimateKey : estimateKey as String?,
++      estimateJob: identical(estimateJob, _unset)
++          ? this.estimateJob
++          : estimateJob as VideoEstimateJob?,
++      isEstimating: isEstimating ?? this.isEstimating,
++      estimatePercent: estimatePercent ?? this.estimatePercent,
+       presetIndex: presetIndex ?? this.presetIndex,
+       isFabOpen: isFabOpen ?? this.isFabOpen,
+       currentJob: identical(currentJob, _unset)
+diff --git a/lib/features/videos/presentation/state/videos_viewmodel.dart b/lib/features/videos/presentation/state/videos_viewmodel.dart
+index f1dc2ba..e34724c 100644
+--- a/lib/features/videos/presentation/state/videos_viewmodel.dart
++++ b/lib/features/videos/presentation/state/videos_viewmodel.dart
+@@ -172,6 +172,86 @@ class VideosViewModel extends Notifier<VideosState> {
+     state = state.copyWith(fastEncodingAvailable: available);
+   }
+ 
++  /// Works out how big the video would get with the current choices, by
++  /// compressing a few short samples of it. Takes seconds, so the user asks for
++  /// it (and can cancel); the answer holds until a choice changes.
++  /// Bumped when an estimate is started or cancelled, so a late answer from
++  /// an older one is ignored.
++  int _estimateGeneration = 0;
++
++  Future<void> estimateSize() async {
++    final file = state.videoFile;
++    if (file == null || state.isBusy || state.isEstimating) return;
++
++    // The estimate writes into the same work folder as every other job.
++    if (ref.read(imagesViewModelProvider).isBusy) {
++      showResult('Wait for the images to finish first');
++      return;
++    }
++    final blocking = state.warnings.where((w) => w.blocksStart);
++    if (blocking.isNotEmpty) {
++      showResult(blocking.first.message);
++      return;
++    }
++
++    final key = state.settingsKey;
++    final run = ++_estimateGeneration;
++    state = state.copyWith(
++      isEstimating: true,
++      estimatePercent: 0,
++      estimate: null,
++      estimateKey: null,
++    );
++
++    try {
++      final job = await ref.read(estimateVideoSizeUseCaseProvider)(
++        input: file,
++        qualityPercent: state.crfQuality,
++        preset: kFfmpegPresets[state.presetIndex].value,
++        maxShortSide: state.resolution.shortSide,
++        fastEncoding: state.usesFastEncoding,
++        targetBytes: state.mode == VideoMode.targetSize
++            ? state.targetSizeMb * 1000000
++            : null,
++        onProgress: (percent) {
++          if (run == _estimateGeneration) {
++            state = state.copyWith(estimatePercent: percent);
++          }
++        },
++      );
++      state = state.copyWith(estimateJob: job);
++
++      final result = await job.result;
++
++      // Cancelled, or the video was removed, while it ran.
++      if (run != _estimateGeneration) return;
++      state = state.copyWith(
++        estimate: result,
++        estimateKey: key,
++        estimateJob: null,
++        isEstimating: false,
++      );
++    } on MediaException catch (e) {
++      // A cancelled or replaced estimate is not an error.
++      if (run != _estimateGeneration) return;
++      state = state.copyWith(estimateJob: null, isEstimating: false);
++      showResult(e.message);
++    } catch (e) {
++      if (run != _estimateGeneration) return;
++      state = state.copyWith(estimateJob: null, isEstimating: false);
++      showResult('Could not estimate the size: $e');
++    }
++  }
++
++  /// Stops an estimate in progress.
++  void cancelEstimate() {
++    final job = state.estimateJob;
++    if (!state.isEstimating) return;
++    _estimateGeneration++;
++    state = state.copyWith(isEstimating: false, estimateJob: null);
++    if (job != null) unawaited(job.cancel());
++  }
++
+   /// Fast encoding on or off for this video.
+   void setFastEncoding(bool enabled) {
+     state = state.copyWith(fastEncoding: enabled);
+@@ -218,6 +298,9 @@ class VideosViewModel extends Notifier<VideosState> {
+         return;
+       }
+ 
++      // A running estimate would compete with the real job.
++      cancelEstimate();
++
+       // Settings that cannot help are explained in the panel; do not start.
+       final blocking = state.warnings.where((w) => w.blocksStart);
+       if (blocking.isNotEmpty) {
+@@ -313,6 +396,7 @@ class VideosViewModel extends Notifier<VideosState> {
+ 
+   /// Drops the selected video and resets the compression state.
+   void removeVideo() {
++    cancelEstimate();
+     state.preview?.dispose();
+     state = state.copyWith(
+       preview: null,
+@@ -324,6 +408,9 @@ class VideosViewModel extends Notifier<VideosState> {
+       percentComplete: 0,
+       eta: null,
+       fastEncodingAvailable: false,
++      estimate: null,
++      estimateKey: null,
++      isEstimating: false,
+     );
+   }
+ 
+diff --git a/lib/features/videos/presentation/widget/video_options_panel.dart b/lib/features/videos/presentation/widget/video_options_panel.dart
+index 9580ef6..ae0052a 100644
+--- a/lib/features/videos/presentation/widget/video_options_panel.dart
++++ b/lib/features/videos/presentation/widget/video_options_panel.dart
+@@ -5,6 +5,7 @@ import 'package:petit/common/widgets/slider_box.dart';
+ import 'package:petit/common/widgets/target_size_field.dart';
+ import 'package:petit/core/utils/format_bytes.dart';
+ import 'package:petit/features/videos/domain/entities/video_resolution.dart';
++import 'package:petit/features/videos/domain/usecases/estimate_video_size.dart';
+ import 'package:petit/features/videos/domain/video_warnings.dart';
+ import 'package:petit/features/videos/presentation/state/video_presets.dart';
+ import 'package:petit/features/videos/presentation/state/videos_state.dart';
+@@ -57,6 +58,7 @@ class VideoOptionsPanel extends ConsumerWidget {
+         ],
+         // Presets are for the software encoder; the hardware has none.
+         if (!state.usesFastEncoding) _speedBox(context, state, viewModel),
++        _EstimateBox(state: state, viewModel: viewModel),
+         _WarningBox(warnings: state.warnings),
+         const SaveToTile(),
+       ],
+@@ -206,6 +208,109 @@ class VideoOptionsPanel extends ConsumerWidget {
+   }
+ }
+ 
++/// The expected size, worked out on request by compressing a few short samples
++/// of the video. Hidden when the video's length is unknown (nothing to sample).
++class _EstimateBox extends StatelessWidget {
++  const _EstimateBox({required this.state, required this.viewModel});
++
++  final VideosState state;
++  final VideosViewModel viewModel;
++
++  @override
++  Widget build(BuildContext context) {
++    final length = state.videoInfo?.durationMs ?? 0;
++    if (state.videoInfo != null && length <= 0) return const SizedBox.shrink();
++
++    final theme = Theme.of(context);
++    final estimate = state.currentEstimate;
++
++    final Widget child;
++    if (state.isEstimating) {
++      child = Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          LinearProgressIndicator(value: state.estimatePercent / 100),
++          const SizedBox(height: 8),
++          Row(
++            children: [
++              const Expanded(child: Text('Compressing short samples...')),
++              TextButton(
++                onPressed: viewModel.cancelEstimate,
++                child: const Text('Cancel'),
++              ),
++            ],
++          ),
++        ],
++      );
++    } else if (estimate != null) {
++      child = Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Text(
++            _headline(estimate),
++            style: TextStyle(
++              fontWeight: FontWeight.w600,
++              color: estimate.isLarger
++                  ? theme.colorScheme.error
++                  : theme.colorScheme.primary,
++            ),
++          ),
++          const SizedBox(height: 2),
++          Text(_detail(estimate), style: theme.textTheme.bodySmall),
++          Align(
++            alignment: Alignment.centerLeft,
++            child: TextButton(
++              onPressed: viewModel.estimateSize,
++              child: const Text('Estimate again'),
++            ),
++          ),
++        ],
++      );
++    } else {
++      child = Align(
++        alignment: Alignment.centerLeft,
++        child: FilledButton.tonalIcon(
++          onPressed: state.isBusy ? null : viewModel.estimateSize,
++          icon: const Icon(Icons.speed),
++          label: const Text('Estimate the size'),
++        ),
++      );
++    }
++
++    return Padding(
++      padding: const EdgeInsets.only(top: 12),
++      child: _OptionBox(
++        title: 'Size estimate',
++        note: estimate == null && !state.isEstimating
++            ? 'Compresses a few seconds of your video with these settings to '
++                'predict the result. It takes a short while.'
++            : null,
++        child: child,
++      ),
++    );
++  }
++
++  static String _headline(VideoSizeEstimate e) {
++    final before = formatBytes(e.originalBytes);
++    final after = formatBytes(e.estimatedBytes);
++    if (e.isLarger) {
++      return '$before \u2192 about $after (not smaller)';
++    }
++    final percent = (e.savedFraction * 100).round();
++    return '$before \u2192 about $after (-$percent%)';
++  }
++
++  static String _detail(VideoSizeEstimate e) {
++    if (e.isLarger) {
++      return 'At these settings the video would not get smaller, so the '
++          'original is kept. Try a stronger compression level.';
++    }
++    if (e.isExact) return 'The whole video was compressed, so this is exact.';
++    return 'From ${e.sampleCount} short samples. The real size can differ by '
++        'a few percent.';
++  }
++}
++
+ /// Warnings about choices that are unlikely to make the video smaller. Shown
+ /// only when there is something to say.
+ class _WarningBox extends StatelessWidget {
+diff --git a/lib/service_locator.dart b/lib/service_locator.dart
+index 07b0b73..25023d7 100644
+--- a/lib/service_locator.dart
++++ b/lib/service_locator.dart
+@@ -30,6 +30,7 @@ import 'package:petit/features/videos/data/services/ffmpeg_video_thumbnailer.dar
+ import 'package:petit/features/videos/domain/services/video_compressor.dart';
+ import 'package:petit/features/videos/domain/services/video_thumbnailer.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
++import 'package:petit/features/videos/domain/usecases/estimate_video_size.dart';
+ import 'package:petit/features/onboarding/data/services/shared_prefs_onboarding_store.dart';
+ import 'package:petit/features/onboarding/domain/services/onboarding_store.dart';
+ import 'package:petit/features/settings/data/services/shared_prefs_settings_repository.dart';
+@@ -118,6 +119,8 @@ void _registerMediaDependencies() {
+       () => EstimateImageSizeUseCase(sl<ImageCompressor>()));
+   sl.registerLazySingleton<CompressImagesUseCase>(
+       () => CompressImagesUseCase(sl<ImageCompressor>(), sl<MediaSaver>()));
++  sl.registerLazySingleton<EstimateVideoSizeUseCase>(
++      () => EstimateVideoSizeUseCase(sl<VideoCompressor>()));
+   sl.registerLazySingleton<CheckFastEncodingUseCase>(
+       () => CheckFastEncodingUseCase(sl<VideoCompressor>()));
+   sl.registerLazySingleton<CompressVideoUseCase>(
+diff --git a/test/estimate_video_size_test.dart b/test/estimate_video_size_test.dart
+new file mode 100644
+index 0000000..41d87c3
+--- /dev/null
++++ b/test/estimate_video_size_test.dart
+@@ -0,0 +1,302 @@
++import 'dart:async';
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/common/domain/media_exception.dart';
++import 'package:petit/features/videos/domain/entities/video_data.dart';
++import 'package:petit/features/videos/domain/services/video_compressor.dart';
++import 'package:petit/features/videos/domain/usecases/estimate_video_size.dart';
++
++class _Task implements VideoCompressionTask {
++  _Task(this.file);
++
++  final Completer<File> _completer = Completer<File>();
++  final File? file;
++  bool cancelled = false;
++
++  @override
++  Future<File> get result => _completer.future;
++
++  @override
++  Future<void> cancel() async {
++    cancelled = true;
++    if (!_completer.isCompleted) {
++      _completer.completeError(const MediaException('cancelled'));
++    }
++  }
++}
++
++/// Writes a sample of [bytesPerSecond] for each second it is asked to cover.
++class _SamplingCompressor implements VideoCompressor {
++  _SamplingCompressor(this.dir, {this.durationMs = 60000, this.hold = false});
++
++  final Directory dir;
++  final int? durationMs;
++  final bool hold;
++  int bytesPerSecond = 1000;
++  String? hardware;
++  final calls = <Map<String, Object?>>[];
++  final tasks = <_Task>[];
++
++  @override
++  Future<String?> hardwareEncoderFor(String videoCodec) async => hardware;
++
++  @override
++  Future<VideoData> probe(File video) async => VideoData(
++        videoFile: video,
++        pixelWidth: 1920,
++        pixelHeight: 1080,
++        videoCodec: 'h264',
++        frameRate: 30,
++        durationMs: durationMs,
++      );
++
++  @override
++  Future<VideoCompressionTask> start({
++    required File input,
++    required String videoCodec,
++    required int crf,
++    required String preset,
++    required int totalDurationMs,
++    required void Function(int percent) onProgress,
++    int? videoBitrateKbps,
++    int? maxShortSide,
++    String? hardwareEncoder,
++    int? hardwareBitrateKbps,
++    int? startMs,
++    int? limitMs,
++  }) async {
++    calls.add({
++      'codec': videoCodec,
++      'crf': crf,
++      'bitrate': videoBitrateKbps,
++      'scale': maxShortSide,
++      'hardware': hardwareEncoder,
++      'hardwareBitrate': hardwareBitrateKbps,
++      'start': startMs,
++      'limit': limitMs,
++      'total': totalDurationMs,
++    });
++    final bytes = (limitMs ?? 0) * bytesPerSecond ~/ 1000;
++    final out = File('${dir.path}/sample_${calls.length}.bin');
++    out.writeAsBytesSync(List.filled(bytes, 1));
++    final task = _Task(out);
++    tasks.add(task);
++    if (!hold) {
++      onProgress(50);
++      task._completer.complete(out);
++    }
++    return task;
++  }
++}
++
++void main() {
++  late Directory dir;
++  late File input;
++
++  setUp(() {
++    dir = Directory.systemTemp.createTempSync('petit_estimate_video_');
++    input = File('${dir.path}/in.mp4')..writeAsBytesSync(List.filled(100000, 0));
++  });
++  tearDown(() => dir.deleteSync(recursive: true));
++
++  Future<VideoSizeEstimate> estimate(
++    _SamplingCompressor compressor, {
++    int quality = 80,
++    int? target,
++    int? scale,
++    bool fast = false,
++    void Function(int)? onProgress,
++  }) async {
++    final job = await EstimateVideoSizeUseCase(compressor)(
++      input: input,
++      qualityPercent: quality,
++      preset: 'medium',
++      maxShortSide: scale,
++      targetBytes: target,
++      fastEncoding: fast,
++      onProgress: onProgress,
++    );
++    return job.result;
++  }
++
++  test('compresses three short samples of a long video and scales them up',
++      () async {
++    final compressor = _SamplingCompressor(dir)..bytesPerSecond = 1000;
++
++    final result = await estimate(compressor);
++
++    expect(compressor.calls.map((c) => (c['start'], c['limit'])),
++        [(9000, 2000), (29000, 2000), (49000, 2000)]);
++    // 2000 bytes per sample, 6 s sampled, 60 s in all.
++    expect(result.estimatedBytes, 60000);
++    expect(result.originalBytes, 100000);
++    expect(result.sampleCount, 3);
++    expect(result.sampledMs, 6000);
++    expect(result.totalMs, 60000);
++    expect(result.isExact, isFalse);
++    expect(result.isLarger, isFalse);
++    expect(result.savedFraction, closeTo(0.4, 1e-9));
++  });
++
++  test('a short video is compressed whole, so the answer is exact', () async {
++    final compressor = _SamplingCompressor(dir, durationMs: 5000)
++      ..bytesPerSecond = 2000;
++
++    final result = await estimate(compressor);
++
++    expect(compressor.calls.length, 1);
++    expect(compressor.calls.single['start'], 0);
++    expect(compressor.calls.single['limit'], 5000);
++    expect(result.estimatedBytes, 10000);
++    expect(result.isExact, isTrue);
++  });
++
++  test('says when compressing would not make the video smaller', () async {
++    final compressor = _SamplingCompressor(dir)..bytesPerSecond = 5000;
++
++    final result = await estimate(compressor); // 300,000 bytes for 100,000
++
++    expect(result.isLarger, isTrue);
++    expect(result.savedFraction, 0.0);
++  });
++
++  test('the samples are deleted afterwards, the original is not', () async {
++    final compressor = _SamplingCompressor(dir);
++
++    await estimate(compressor);
++
++    for (var i = 1; i <= 3; i++) {
++      expect(File('${dir.path}/sample_$i.bin').existsSync(), isFalse);
++    }
++    expect(input.existsSync(), isTrue);
++  });
++
++  test('uses the same settings as compressing would', () async {
++    final compressor = _SamplingCompressor(dir);
++
++    await estimate(compressor, quality: 80, scale: 720);
++
++    final call = compressor.calls.first;
++    expect(call['codec'], 'libx264');
++    expect(call['crf'], 26); // 18 + 0.8 x 10
++    expect(call['scale'], 720);
++    expect(call['bitrate'], isNull);
++    expect(call['hardware'], isNull);
++  });
++
++  test('a target size makes every sample aim for its bitrate', () async {
++    final compressor = _SamplingCompressor(dir);
++
++    await estimate(compressor, target: 5000000);
++
++    final bitrates = compressor.calls.map((c) => c['bitrate']).toSet();
++    expect(bitrates.length, 1);
++    expect(bitrates.single, isNotNull);
++  });
++
++  test('uses the video hardware when asked and available', () async {
++    final compressor = _SamplingCompressor(dir)..hardware = 'h264_nvenc';
++
++    await estimate(compressor, fast: true);
++
++    expect(compressor.calls.first['hardware'], 'h264_nvenc');
++    expect(compressor.calls.first['hardwareBitrate'], isNotNull);
++  });
++
++  test('each sample is told its own length, for progress', () async {
++    final compressor = _SamplingCompressor(dir);
++
++    await estimate(compressor);
++
++    expect(compressor.calls.map((c) => c['total']), [2000, 2000, 2000]);
++  });
++
++  test('progress runs across all the samples and ends at 100', () async {
++    final compressor = _SamplingCompressor(dir);
++    final seen = <int>[];
++
++    await estimate(compressor, onProgress: seen.add);
++
++    expect(seen.last, 100);
++    final sorted = [...seen]..sort();
++    expect(seen, sorted, reason: 'never goes backwards');
++    expect(seen.first, greaterThan(0));
++  });
++
++  test('a video of unknown length cannot be estimated', () async {
++    final compressor = _SamplingCompressor(dir, durationMs: null);
++
++    await expectLater(
++      estimate(compressor),
++      throwsA(isA<MediaException>().having(
++          (e) => e.message, 'message', contains('cannot be estimated'))),
++    );
++    expect(compressor.calls, isEmpty);
++  });
++
++  test('a video that cannot be read gives the usual message', () async {
++    final failing = _FailingProbe();
++
++    await expectLater(
++      EstimateVideoSizeUseCase(failing)(
++          input: input, qualityPercent: 80, preset: 'medium'),
++      throwsA(isA<MediaException>().having((e) => e.message, 'message',
++          'Error retrieving video properties')),
++    );
++  });
++
++  test('a sample that fails fails the estimate', () async {
++    final compressor = _SamplingCompressor(dir, hold: true);
++    final job = await EstimateVideoSizeUseCase(compressor)(
++        input: input, qualityPercent: 80, preset: 'medium');
++    await pumpEventQueue();
++
++    compressor.tasks.first._completer
++        .completeError(const MediaException('Compression failed.'));
++
++    await expectLater(job.result, throwsA(isA<MediaException>()));
++  });
++
++  test('cancelling stops the sample in progress and starts no more', () async {
++    final compressor = _SamplingCompressor(dir, hold: true);
++    final job = await EstimateVideoSizeUseCase(compressor)(
++        input: input, qualityPercent: 80, preset: 'medium');
++    await pumpEventQueue();
++    expect(compressor.calls.length, 1);
++
++    // Listen first: the failure arrives while cancelling.
++    final failure = expectLater(job.result, throwsA(isA<MediaException>()));
++    await job.cancel();
++
++    await failure;
++    expect(compressor.tasks.first.cancelled, isTrue);
++    expect(compressor.calls.length, 1, reason: 'no second sample');
++  });
++}
++
++class _FailingProbe implements VideoCompressor {
++  @override
++  Future<VideoData> probe(File video) async =>
++      throw const MediaException('nope');
++
++  @override
++  Future<String?> hardwareEncoderFor(String videoCodec) async => null;
++
++  @override
++  Future<VideoCompressionTask> start({
++    required File input,
++    required String videoCodec,
++    required int crf,
++    required String preset,
++    required int totalDurationMs,
++    required void Function(int percent) onProgress,
++    int? videoBitrateKbps,
++    int? maxShortSide,
++    String? hardwareEncoder,
++    int? hardwareBitrateKbps,
++    int? startMs,
++    int? limitMs,
++  }) =>
++      throw UnimplementedError();
++}
+diff --git a/test/ffmpeg_arguments_test.dart b/test/ffmpeg_arguments_test.dart
+index e68df8c..84a7337 100644
+--- a/test/ffmpeg_arguments_test.dart
++++ b/test/ffmpeg_arguments_test.dart
+@@ -132,4 +132,64 @@ void main() {
+       '-',
+     ]);
+   });
++
++  group('a stretch of the video (for estimates)', () {
++    test('seeking and limiting come before the input, so the rest is not read',
++        () {
++      final args = buildVideoArguments(
++        inputPath: 'in.mp4',
++        outputPath: 'out.mp4',
++        videoCodec: 'libx264',
++        crf: 26,
++        preset: 'medium',
++        startMs: 29000,
++        limitMs: 2000,
++      );
++
++      expect(args.sublist(0, 6), ['-ss', '29.000', '-t', '2.000', '-i', 'in.mp4']);
++    });
++
++    test('only a length starts at the beginning', () {
++      final args = buildVideoArguments(
++        inputPath: 'in.mp4',
++        outputPath: 'out.mp4',
++        videoCodec: 'libx264',
++        crf: 26,
++        preset: 'medium',
++        limitMs: 5000,
++      );
++
++      expect(args.sublist(0, 4), ['-t', '5.000', '-i', 'in.mp4']);
++      expect(args, isNot(contains('-ss')));
++    });
++
++    test('hardware commands take the same stretch', () {
++      final args = buildVideoArguments(
++        inputPath: 'in.mp4',
++        outputPath: 'out.mp4',
++        videoCodec: 'libx264',
++        crf: 26,
++        preset: 'medium',
++        videoBitrateKbps: 2000,
++        hardwareEncoder: 'h264_nvenc',
++        startMs: 1500,
++        limitMs: 2000,
++      );
++
++      expect(args.sublist(0, 6), ['-ss', '1.500', '-t', '2.000', '-i', 'in.mp4']);
++    });
++
++    test('a normal command has neither', () {
++      final args = buildVideoArguments(
++        inputPath: 'in.mp4',
++        outputPath: 'out.mp4',
++        videoCodec: 'libx264',
++        crf: 26,
++        preset: 'medium',
++      );
++
++      expect(args.first, '-i');
++      expect(args, isNot(contains('-t')));
++    });
++  });
+ }
+diff --git a/test/helpers/viewmodel_fakes.dart b/test/helpers/viewmodel_fakes.dart
+index 8c45899..cc6f170 100644
+--- a/test/helpers/viewmodel_fakes.dart
++++ b/test/helpers/viewmodel_fakes.dart
+@@ -21,6 +21,7 @@ import 'package:petit/features/settings/domain/services/settings_repository.dart
+ import 'package:petit/features/videos/domain/entities/video_data.dart';
+ import 'package:petit/features/videos/domain/services/video_compressor.dart';
+ import 'package:petit/features/videos/domain/usecases/compress_video.dart';
++import 'package:petit/features/videos/domain/usecases/estimate_video_size.dart';
+ import 'package:petit/features/videos/presentation/preview/video_preview.dart';
+ 
+ /// Picker that returns what the test sets. Set [gate] to hold a pick open.
+@@ -120,7 +121,36 @@ class FakeVideoTask implements VideoCompressionTask {
+   }
+ }
+ 
++/// A sample compression: cancelling it fails it, as the real one does.
++class FakeSampleTask extends FakeVideoTask {
++  @override
++  Future<void> cancel() async {
++    cancelled = true;
++    if (!completer.isCompleted) {
++      completer.completeError(const MediaException('Compression cancelled.'));
++    }
++  }
++}
++
+ class FakeVideoCompressor implements VideoCompressor {
++  FakeVideoCompressor([this.sampleDir]);
++
++  /// Where sample outputs are written (the test's temp folder).
++  final Directory? sampleDir;
++
++  /// Length the probe reports; null means "could not read it".
++  int? probeDurationMs = 5000;
++
++  /// Size of a sample, per second of video it covers.
++  int sampleBytesPerSecond = 100;
++
++  /// Keep samples running until the test finishes them (to cancel them).
++  bool holdSamples = false;
++
++  /// (startMs, limitMs) of every sample started.
++  final samples = <(int, int)>[];
++  FakeSampleTask? lastSampleTask;
++
+   FakeVideoTask? lastTask;
+   void Function(int percent)? progressCallback;
+   int? usedBitrateKbps;
+@@ -145,7 +175,7 @@ class FakeVideoCompressor implements VideoCompressor {
+         pixelHeight: 1080,
+         videoCodec: 'h264',
+         frameRate: 30,
+-        durationMs: 5000,
++        durationMs: probeDurationMs,
+       );
+ 
+   @override
+@@ -160,7 +190,25 @@ class FakeVideoCompressor implements VideoCompressor {
+     int? maxShortSide,
+     String? hardwareEncoder,
+     int? hardwareBitrateKbps,
++    int? startMs,
++    int? limitMs,
+   }) async {
++    usedHardwareEncoder = hardwareEncoder;
++    usedHardwareBitrateKbps = hardwareBitrateKbps;
++    usedBitrateKbps = videoBitrateKbps;
++    usedMaxShortSide = maxShortSide;
++    if (limitMs != null) {
++      // A sample, to estimate a size: not the real job.
++      samples.add((startMs ?? 0, limitMs));
++      final task = lastSampleTask = FakeSampleTask();
++      if (!holdSamples) {
++        final bytes = limitMs * sampleBytesPerSecond ~/ 1000;
++        task.completer.complete(
++            File('${sampleDir!.path}/sample_${samples.length}.bin')
++              ..writeAsBytesSync(List.filled(bytes, 1)));
++      }
++      return task;
++    }
+     progressCallback = onProgress;
+     usedBitrateKbps = videoBitrateKbps;
+     usedMaxShortSide = maxShortSide;
+@@ -268,7 +316,7 @@ class Harness {
+   final picker = FakePicker();
+   final workspace = FakeWorkspace();
+   final saver = FakeSaver();
+-  final videoCompressor = FakeVideoCompressor();
++  late final videoCompressor = FakeVideoCompressor(dir);
+   final previews = <FakeVideoPreview>[];
+   final settingsRepository = FakeSettingsRepository();
+   final keepAlive = FakeBackgroundKeepAlive();
+@@ -299,6 +347,12 @@ class Harness {
+             CompressImagesUseCase(imageCompressor, saver)),
+         estimateImageSizeUseCaseProvider
+             .overrideWithValue(EstimateImageSizeUseCase(imageCompressor)),
++        // What the Videos tab probes a picked video with.
++        videoCompressorProvider.overrideWithValue(videoCompressor),
++        estimateVideoSizeUseCaseProvider
++            .overrideWithValue(EstimateVideoSizeUseCase(videoCompressor)),
++        checkFastEncodingUseCaseProvider
++            .overrideWithValue(CheckFastEncodingUseCase(videoCompressor)),
+         compressVideoUseCaseProvider.overrideWithValue(
+             CompressVideoUseCase(videoCompressor, saver)),
+         videoPreviewFactoryProvider.overrideWithValue((file) {
+diff --git a/test/video_sampling_test.dart b/test/video_sampling_test.dart
+new file mode 100644
+index 0000000..a48dfef
+--- /dev/null
++++ b/test/video_sampling_test.dart
+@@ -0,0 +1,77 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:petit/features/videos/domain/video_sampling.dart';
++
++void main() {
++  group('sampleWindows', () {
++    test('a short video is its own sample', () {
++      expect(sampleWindows(5000), [const SampleWindow(0, 5000)]);
++      expect(sampleWindows(kWholeVideoMaxMs),
++          [const SampleWindow(0, kWholeVideoMaxMs)]);
++    });
++
++    test('a longer one gets three samples spread over it', () {
++      // Centres at a sixth, half and five sixths of 60 s, 2 s each.
++      expect(sampleWindows(60000), const [
++        SampleWindow(9000, 2000),
++        SampleWindow(29000, 2000),
++        SampleWindow(49000, 2000),
++      ]);
++    });
++
++    test('samples never run past the end or before the start', () {
++      for (final duration in [8001, 9000, 12000, 600000, 7200000]) {
++        for (final w in sampleWindows(duration)) {
++          expect(w.startMs, greaterThanOrEqualTo(0), reason: '$duration');
++          expect(w.startMs + w.lengthMs, lessThanOrEqualTo(duration),
++              reason: '$duration');
++        }
++      }
++    });
++
++    test('samples do not overlap', () {
++      final windows = sampleWindows(8001);
++      for (var i = 1; i < windows.length; i++) {
++        expect(windows[i].startMs,
++            greaterThanOrEqualTo(windows[i - 1].startMs + windows[i - 1].lengthMs));
++      }
++    });
++
++    test('the number and length can be changed', () {
++      expect(sampleWindows(100000, count: 1, sampleMs: 4000),
++          [const SampleWindow(48000, 4000)]);
++      expect(sampleWindows(100000, count: 4).length, 4);
++    });
++
++    test('no samples asked for means the whole video', () {
++      expect(sampleWindows(60000, count: 0), [const SampleWindow(0, 60000)]);
++    });
++  });
++
++  group('extrapolateBytes', () {
++    test('scales the sample rate up to the whole video', () {
++      final windows = sampleWindows(60000); // 6 s sampled
++      expect(
++        extrapolateBytes(
++            sampleBytes: [100, 200, 300], windows: windows, durationMs: 60000),
++        6000, // 600 bytes in 6 s = 100 B/s, for 60 s
++      );
++    });
++
++    test('a whole-video sample gives its own size back', () {
++      expect(
++        extrapolateBytes(
++            sampleBytes: [4321],
++            windows: sampleWindows(5000),
++            durationMs: 5000),
++        4321,
++      );
++    });
++
++    test('nothing sampled gives zero', () {
++      expect(
++          extrapolateBytes(
++              sampleBytes: [], windows: const [], durationMs: 60000),
++          0);
++    });
++  });
++}
+diff --git a/test/video_use_case_test.dart b/test/video_use_case_test.dart
+index 0670ddd..7bfa70d 100644
+--- a/test/video_use_case_test.dart
++++ b/test/video_use_case_test.dart
+@@ -65,6 +65,8 @@ class FakeVideoCompressor implements VideoCompressor {
+     int? maxShortSide,
+     String? hardwareEncoder,
+     int? hardwareBitrateKbps,
++    int? startMs,
++    int? limitMs,
+   }) async {
+     usedHardwareEncoder = hardwareEncoder;
+     usedHardwareBitrateKbps = hardwareBitrateKbps;
+diff --git a/test/videos_viewmodel_test.dart b/test/videos_viewmodel_test.dart
+index 255ad5b..18b6427 100644
+--- a/test/videos_viewmodel_test.dart
++++ b/test/videos_viewmodel_test.dart
+@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
+ import 'package:petit/common/data/summary_report.dart';
+ import 'package:petit/common/domain/media_exception.dart';
+ import 'package:petit/core/utils/format_bytes.dart';
++import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
+ import 'package:petit/features/videos/domain/entities/video_resolution.dart';
+ import 'package:petit/features/settings/domain/entities/app_settings.dart';
+ import 'package:petit/features/videos/domain/video_bitrate.dart';
+@@ -14,6 +15,15 @@ import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
+ 
+ import 'helpers/viewmodel_fakes.dart';
+ 
++/// Polls until [condition] holds, failing the test if it never does.
++Future<void> waitUntil(bool Function() condition) async {
++  final deadline = DateTime.now().add(const Duration(seconds: 5));
++  while (!condition()) {
++    if (DateTime.now().isAfter(deadline)) fail('Timed out waiting.');
++    await Future<void>.delayed(const Duration(milliseconds: 5));
++  }
++}
++
+ void main() {
+   late Directory dir;
+   late Harness h;
+@@ -262,6 +272,215 @@ void main() {
+     });
+   });
+ 
++  group('size estimate', () {
++    Future<(ProviderContainer, VideosViewModel)> pick({int bytes = 1000}) async {
++      h.picker.video = h.file('in.mp4', bytes).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      await vm.pickVideo();
++      return (c, vm);
++    }
++
++    Future<void> settled(ProviderContainer c) =>
++        waitUntil(() => !c.read(videosViewModelProvider).isEstimating);
++
++    test('a short video is compressed whole and the size is exact', () async {
++      final (c, vm) = await pick();
++
++      await vm.estimateSize();
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.isEstimating, isFalse);
++      expect(h.videoCompressor.samples, [(0, 5000)]);
++      expect(s.currentEstimate?.originalBytes, 1000);
++      expect(s.currentEstimate?.estimatedBytes, 500); // 100 B/s for 5 s
++      expect(s.currentEstimate?.isExact, isTrue);
++    });
++
++    test('a long video is sampled in three places', () async {
++      h.videoCompressor.probeDurationMs = 60000;
++      final (c, vm) = await pick();
++
++      await vm.estimateSize();
++
++      expect(h.videoCompressor.samples,
++          [(9000, 2000), (29000, 2000), (49000, 2000)]);
++      // 600 bytes over 6 s, for 60 s.
++      expect(c.read(videosViewModelProvider).currentEstimate?.estimatedBytes,
++          6000);
++    });
++
++    test('it is shown only while the choices are the same', () async {
++      final (c, vm) = await pick();
++      await vm.estimateSize();
++      expect(c.read(videosViewModelProvider).currentEstimate, isNotNull);
++
++      vm.updateCfrQualitySlider(0.25);
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.currentEstimate, isNull, reason: 'the choices changed');
++      expect(s.estimate, isNotNull, reason: 'kept, but stale');
++    });
++
++    test('a changed resolution, mode or fast encoding makes it stale', () async {
++      final (c, vm) = await pick();
++      await vm.estimateSize();
++
++      vm.setResolution(VideoResolution.p720);
++      expect(c.read(videosViewModelProvider).currentEstimate, isNull);
++
++      await vm.estimateSize();
++      expect(c.read(videosViewModelProvider).currentEstimate, isNotNull);
++
++      vm.setMode(VideoMode.targetSize);
++      expect(c.read(videosViewModelProvider).currentEstimate, isNull);
++    });
++
++    test('estimating again after a change works', () async {
++      final (c, vm) = await pick();
++      await vm.estimateSize();
++      vm.setResolution(VideoResolution.p720);
++
++      await vm.estimateSize();
++
++      expect(c.read(videosViewModelProvider).currentEstimate, isNotNull);
++      expect(h.videoCompressor.usedMaxShortSide, 720);
++    });
++
++    test('uses the video hardware for the samples when chosen', () async {
++      h.videoCompressor.hardwareEncoder = 'h264_nvenc';
++      final (c, vm) = await pick();
++      await pumpEventQueue();
++      vm.setFastEncoding(true);
++
++      await vm.estimateSize();
++
++      expect(h.videoCompressor.usedHardwareEncoder, 'h264_nvenc');
++      expect(c.read(videosViewModelProvider).currentEstimate, isNotNull);
++    });
++
++    test('is refused with a target that cannot help', () async {
++      h.picker.video = sparseFile('big.mp4', 60000000).path;
++      final c = h.container();
++      final vm = c.read(videosViewModelProvider.notifier);
++      await vm.pickVideo();
++      vm.setMode(VideoMode.targetSize);
++      vm.setTargetSizeMb(100);
++
++      await vm.estimateSize();
++
++      expect(c.read(videosViewModelProvider).result, contains('not smaller'));
++      expect(h.videoCompressor.samples, isEmpty);
++    });
++
++    test('is refused while images are being compressed', () async {
++      final (c, vm) = await pick();
++      h.picker.images = [h.file('a.jpg', 100).path];
++      h.picker.gate = Completer<void>();
++      final loading = c.read(imagesViewModelProvider.notifier).pickImages();
++
++      await vm.estimateSize();
++
++      expect(c.read(videosViewModelProvider).result,
++          'Wait for the images to finish first');
++      expect(h.videoCompressor.samples, isEmpty);
++      h.picker.gate!.complete();
++      await loading;
++    });
++
++    test('a video whose length is unknown reports it', () async {
++      h.videoCompressor.probeDurationMs = null;
++      final (c, vm) = await pick();
++
++      await vm.estimateSize();
++
++      final s = c.read(videosViewModelProvider);
++      expect(s.result, contains('cannot be estimated'));
++      expect(s.isEstimating, isFalse);
++      expect(s.estimate, isNull);
++    });
++
++    group('cancelling', () {
++      test('stops the estimate quietly', () async {
++        h.videoCompressor.holdSamples = true;
++        final (c, vm) = await pick();
++
++        final running = vm.estimateSize();
++        await waitUntil(() => h.videoCompressor.samples.isNotEmpty);
++        expect(c.read(videosViewModelProvider).isEstimating, isTrue);
++
++        vm.cancelEstimate();
++        await running;
++
++        final s = c.read(videosViewModelProvider);
++        expect(s.isEstimating, isFalse);
++        expect(s.estimate, isNull);
++        expect(s.result, isNull, reason: 'cancelling is not an error');
++        expect(h.videoCompressor.lastSampleTask?.cancelled, isTrue);
++      });
++
++      test('removing the video cancels it too', () async {
++        h.videoCompressor.holdSamples = true;
++        final (c, vm) = await pick();
++        final running = vm.estimateSize();
++        await waitUntil(() => h.videoCompressor.samples.isNotEmpty);
++
++        vm.removeVideo();
++        await running;
++
++        final s = c.read(videosViewModelProvider);
++        expect(s.isEstimating, isFalse);
++        expect(s.estimate, isNull);
++        expect(s.result, isNull);
++      });
++
++      test('starting to compress cancels it', () async {
++        h.videoCompressor.holdSamples = true;
++        final (c, vm) = await pick();
++        final running = vm.estimateSize();
++        await waitUntil(() => h.videoCompressor.samples.isNotEmpty);
++
++        await vm.compressVideo(onComplete: (_) {});
++        await running;
++
++        expect(c.read(videosViewModelProvider).isEstimating, isFalse);
++        expect(h.videoCompressor.lastSampleTask?.cancelled, isTrue);
++        expect(h.videoCompressor.lastTask, isNotNull,
++            reason: 'the real job still starts');
++      });
++
++      test('an old estimate cannot overwrite a newer one', () async {
++        h.videoCompressor.holdSamples = true;
++        final (c, vm) = await pick();
++        final first = vm.estimateSize();
++        await waitUntil(() => h.videoCompressor.samples.length == 1);
++        vm.cancelEstimate();
++        await first;
++
++        h.videoCompressor.holdSamples = false;
++        await vm.estimateSize();
++
++        expect(c.read(videosViewModelProvider).currentEstimate, isNotNull);
++        expect(c.read(videosViewModelProvider).result, isNull);
++      });
++    });
++
++    test('while it runs, compressing and a second estimate are not started',
++        () async {
++      h.videoCompressor.holdSamples = true;
++      final (c, vm) = await pick();
++      final running = vm.estimateSize();
++      await waitUntil(() => h.videoCompressor.samples.isNotEmpty);
++
++      await vm.estimateSize(); // ignored: one is already running
++
++      expect(h.videoCompressor.samples.length, 1);
++      vm.cancelEstimate();
++      await running;
++      await settled(c);
++    });
++  });
++
+   group('progress', () {
+     test('reports percent, and has no time left this early', () async {
+       h.picker.video = h.file('in.mp4', 1000).path;

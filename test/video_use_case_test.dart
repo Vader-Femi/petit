@@ -65,6 +65,8 @@ class FakeVideoCompressor implements VideoCompressor {
     int? maxShortSide,
     String? hardwareEncoder,
     int? hardwareBitrateKbps,
+    int? startMs,
+    int? limitMs,
   }) async {
     usedHardwareEncoder = hardwareEncoder;
     usedHardwareBitrateKbps = hardwareBitrateKbps;

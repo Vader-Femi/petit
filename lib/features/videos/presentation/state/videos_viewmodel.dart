@@ -172,6 +172,86 @@ class VideosViewModel extends Notifier<VideosState> {
     state = state.copyWith(fastEncodingAvailable: available);
   }
 
+  /// Works out how big the video would get with the current choices, by
+  /// compressing a few short samples of it. Takes seconds, so the user asks for
+  /// it (and can cancel); the answer holds until a choice changes.
+  /// Bumped when an estimate is started or cancelled, so a late answer from
+  /// an older one is ignored.
+  int _estimateGeneration = 0;
+
+  Future<void> estimateSize() async {
+    final file = state.videoFile;
+    if (file == null || state.isBusy || state.isEstimating) return;
+
+    // The estimate writes into the same work folder as every other job.
+    if (ref.read(imagesViewModelProvider).isBusy) {
+      showResult('Wait for the images to finish first');
+      return;
+    }
+    final blocking = state.warnings.where((w) => w.blocksStart);
+    if (blocking.isNotEmpty) {
+      showResult(blocking.first.message);
+      return;
+    }
+
+    final key = state.settingsKey;
+    final run = ++_estimateGeneration;
+    state = state.copyWith(
+      isEstimating: true,
+      estimatePercent: 0,
+      estimate: null,
+      estimateKey: null,
+    );
+
+    try {
+      final job = await ref.read(estimateVideoSizeUseCaseProvider)(
+        input: file,
+        qualityPercent: state.crfQuality,
+        preset: kFfmpegPresets[state.presetIndex].value,
+        maxShortSide: state.resolution.shortSide,
+        fastEncoding: state.usesFastEncoding,
+        targetBytes: state.mode == VideoMode.targetSize
+            ? state.targetSizeMb * 1000000
+            : null,
+        onProgress: (percent) {
+          if (run == _estimateGeneration) {
+            state = state.copyWith(estimatePercent: percent);
+          }
+        },
+      );
+      state = state.copyWith(estimateJob: job);
+
+      final result = await job.result;
+
+      // Cancelled, or the video was removed, while it ran.
+      if (run != _estimateGeneration) return;
+      state = state.copyWith(
+        estimate: result,
+        estimateKey: key,
+        estimateJob: null,
+        isEstimating: false,
+      );
+    } on MediaException catch (e) {
+      // A cancelled or replaced estimate is not an error.
+      if (run != _estimateGeneration) return;
+      state = state.copyWith(estimateJob: null, isEstimating: false);
+      showResult(e.message);
+    } catch (e) {
+      if (run != _estimateGeneration) return;
+      state = state.copyWith(estimateJob: null, isEstimating: false);
+      showResult('Could not estimate the size: $e');
+    }
+  }
+
+  /// Stops an estimate in progress.
+  void cancelEstimate() {
+    final job = state.estimateJob;
+    if (!state.isEstimating) return;
+    _estimateGeneration++;
+    state = state.copyWith(isEstimating: false, estimateJob: null);
+    if (job != null) unawaited(job.cancel());
+  }
+
   /// Fast encoding on or off for this video.
   void setFastEncoding(bool enabled) {
     state = state.copyWith(fastEncoding: enabled);
@@ -217,6 +297,9 @@ class VideosViewModel extends Notifier<VideosState> {
         showResult('Wait for the images to finish first');
         return;
       }
+
+      // A running estimate would compete with the real job.
+      cancelEstimate();
 
       // Settings that cannot help are explained in the panel; do not start.
       final blocking = state.warnings.where((w) => w.blocksStart);
@@ -313,6 +396,7 @@ class VideosViewModel extends Notifier<VideosState> {
 
   /// Drops the selected video and resets the compression state.
   void removeVideo() {
+    cancelEstimate();
     state.preview?.dispose();
     state = state.copyWith(
       preview: null,
@@ -324,6 +408,9 @@ class VideosViewModel extends Notifier<VideosState> {
       percentComplete: 0,
       eta: null,
       fastEncodingAvailable: false,
+      estimate: null,
+      estimateKey: null,
+      isEstimating: false,
     );
   }
 
