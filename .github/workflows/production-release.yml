@@ -33,11 +33,16 @@ jobs:
           echo "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
       - run: flutter build apk --release
 
+      - name: Prepare versioned APK
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed -E 's/^version:[[:space:]]*//' | cut -d'+' -f1 | tr -d '[:space:]')
+          cp build/app/outputs/flutter-apk/app-release.apk "app-release-${VERSION}.apk"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: petit-android-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: app-release-*.apk
 
   build-windows:
     name: Build Windows App
@@ -55,7 +60,11 @@ jobs:
       - run: flutter build windows --release
 
       - name: Compress to ZIP
-        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath petit-windows.zip
+        shell: pwsh
+        run: |
+          $version = ((Select-String -Path pubspec.yaml -Pattern '^version:').Line -replace '^version:\s*', '').Trim()
+          $name = $version.Split('+')[0]
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath "petit-windows-$name.zip"
 
       # Installer. Best effort: the zip is published either way, so a problem
       # here never blocks a release.
@@ -85,15 +94,18 @@ jobs:
           $name = $parts[0]
           $build = if ($parts.Length -gt 1) { $parts[1] } else { '0' }
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          & $iscc "/DAppVersion=$name" "/DAppBuild=$build" "/DSourceDir=$PWD\build\windows\x64\runner\Release" "/O$PWD\dist" packaging\windows\petit.iss
+          & $iscc "/DAppVersion=$name" "/DAppBuild=$build" "/DSourceDir=$PWD\build\windows\x64\runner\Release" "/O$PWD\dist" "/Fpetit-windows-setup-$name" packaging\windows\petit.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path "dist\petit-windows-setup.exe") {
+            Move-Item "dist\petit-windows-setup.exe" "dist\petit-windows-setup-$name.exe" -Force
+          }
 
       - name: Upload Windows installer
         if: steps.installer.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: petit-windows-installer
-          path: dist/petit-windows-setup.exe
+          path: dist/petit-windows-setup-*.exe
 
       - name: Warn if the installer failed
         if: steps.installer.outcome == 'failure'
@@ -103,7 +115,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: petit-windows-zip
-          path: petit-windows.zip
+          path: petit-windows-*.zip
 
   build-linux:
     name: Build Linux App
@@ -129,21 +141,23 @@ jobs:
 
       - name: Package tar.gz
         run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed -E 's/^version:[[:space:]]*//' | cut -d'+' -f1 | tr -d '[:space:]')
           cp -r build/linux/x64/release/bundle petit-linux
-          tar -czf petit-linux-x64.tar.gz petit-linux
+          tar -czf "petit-linux-${VERSION}-x64.tar.gz" petit-linux
 
       - name: Package .deb
         run: |
-          VERSION="$(grep '^version:' pubspec.yaml | awk '{print $2}')"
-          bash packaging/linux/build-deb.sh build/linux/x64/release/bundle "$VERSION" petit-linux-amd64.deb
+          FULL_VERSION="$(grep '^version:' pubspec.yaml | awk '{print $2}')"
+          VERSION=$(grep '^version:' pubspec.yaml | sed -E 's/^version:[[:space:]]*//' | cut -d'+' -f1 | tr -d '[:space:]')
+          bash packaging/linux/build-deb.sh build/linux/x64/release/bundle "$FULL_VERSION" "petit-linux-${VERSION}-amd64.deb"
 
       - name: Upload Linux assets
         uses: actions/upload-artifact@v4
         with:
           name: petit-linux-assets
           path: |
-            petit-linux-x64.tar.gz
-            petit-linux-amd64.deb
+            petit-linux-*-x64.tar.gz
+            petit-linux-*-amd64.deb
 
   build-macos-ios:
     name: Build macOS & iOS Apps
@@ -162,9 +176,12 @@ jobs:
       # macOS Build
       - run: flutter build macos --release
       - name: Create macOS ZIP
-        run: ditto -c -k --keepParent build/macos/Build/Products/Release/petit.app petit-macos.zip
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed -E 's/^version:[[:space:]]*//' | cut -d'+' -f1 | tr -d '[:space:]')
+          ditto -c -k --keepParent build/macos/Build/Products/Release/petit.app "petit-macos-${VERSION}.zip"
       - name: Create macOS DMG
         run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed -E 's/^version:[[:space:]]*//' | cut -d'+' -f1 | tr -d '[:space:]')
           brew install create-dmg
           create-dmg \
             --volname "Petit" \
@@ -172,22 +189,24 @@ jobs:
             --window-size 600 400 \
             --icon-size 100 \
             --app-drop-link 400 185 \
-            "petit-macos.dmg" \
+            "petit-macos-${VERSION}.dmg" \
             "build/macos/Build/Products/Release/petit.app"
 
       # iOS Build (Unsigned)
       - run: flutter build ios --release --no-codesign
       - name: Create iOS ZIP
-        run: ditto -c -k --keepParent build/ios/iphoneos/Runner.app petit-ios.zip || echo "No app found"
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed -E 's/^version:[[:space:]]*//' | cut -d'+' -f1 | tr -d '[:space:]')
+          ditto -c -k --keepParent build/ios/iphoneos/Runner.app "petit-ios-${VERSION}.zip" || echo "No app found"
 
       - name: Upload macOS & iOS Assets
         uses: actions/upload-artifact@v4
         with:
           name: petit-apple-assets
           path: |
-            petit-macos.zip
-            petit-macos.dmg
-            petit-ios.zip
+            petit-macos-*.zip
+            petit-macos-*.dmg
+            petit-ios-*.zip
 
   create-release:
     name: Create GitHub Release
@@ -199,25 +218,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Extract Version
+        id: version
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed -E 's/^version:[[:space:]]*//' | cut -d'+' -f1 | tr -d '[:space:]')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
 
+      - name: List Release Assets
+        run: ls -la release-assets
+
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "release-${{ github.sha }}"
-          name: "Petit Production Release"
+          tag_name: "v${{ steps.version.outputs.version }}"
+          name: "Petit Production Release V${{ steps.version.outputs.version }}"
           draft: false
           prerelease: false
           generate_release_notes: true
-          files: |
-            release-assets/app-release.apk
-            release-assets/petit-windows.zip
-            release-assets/petit-windows-setup.exe
-            release-assets/petit-macos.zip
-            release-assets/petit-macos.dmg
-            release-assets/petit-ios.zip
-            release-assets/petit-linux-x64.tar.gz
-            release-assets/petit-linux-amd64.deb
+          files: release-assets/*
