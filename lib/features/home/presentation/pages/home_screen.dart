@@ -15,10 +15,7 @@ import 'package:petit/features/settings/presentation/pages/settings_page.dart';
 import 'package:petit/features/images/presentation/state/images_viewmodel.dart';
 import 'package:petit/features/videos/presentation/pages/videos_page.dart';
 import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../../../../common/data/shared_media_details.dart';
-import '../../../../core/constants/consts.dart';
-import '../../../../service_locator.dart';
 import '../../../images/presentation/pages/images_page.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -176,12 +173,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void _previousImage() {
     if (_tab == 0 && !_images.isBusy) {
       _images.previousImage();
+    } else if (_tab == 1 && !_videos.isBusy) {
+      _videos.previousVideo();
     }
   }
 
   void _nextImage() {
     if (_tab == 0 && !_images.isBusy) {
       _images.nextImage();
+    } else if (_tab == 1 && !_videos.isBusy) {
+      _videos.nextVideo();
     }
   }
 
@@ -212,7 +213,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final media = classifyDroppedFiles(expandDroppedFolders(droppedPaths));
 
     if (media.isEmpty) {
-      _snack('Drop images (JPG, PNG, WebP, HEIC) or a video file.');
+      _snack('Drop images (JPG, PNG, WebP, HEIC) or video files.');
       return;
     }
 
@@ -224,10 +225,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       }
     } else {
       await _home.updateCurrentTabIndex(1);
-      await _videos.addVideoPath(media.videos.first);
-      if (media.videos.length > 1) {
-        _snack('Only one video can be compressed at a time.');
-      }
+      await _videos.addVideoPaths(media.videos);
     }
   }
 

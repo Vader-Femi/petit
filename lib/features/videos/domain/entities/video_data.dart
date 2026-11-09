@@ -7,6 +7,8 @@ class VideoData {
   final String? videoCodec;
   final int? frameRate;
   final int? durationMs;
+  final int? fileBytes;
+  final File? thumbnailFile;
 
   const VideoData({
     required this.videoFile,
@@ -15,10 +17,25 @@ class VideoData {
     required this.videoCodec,
     required this.frameRate,
     this.durationMs,
+    this.fileBytes,
+    this.thumbnailFile,
   });
 
-  VideoData copyWith(
-      {File? videoFile, int? pixelWidth, int? pixelHeight, String? videoCodec, int? frameRate, int? durationMs}) {
+  int? get sourceShortSide {
+    if (pixelWidth == null || pixelHeight == null) return null;
+    return pixelWidth! < pixelHeight! ? pixelWidth : pixelHeight;
+  }
+
+  VideoData copyWith({
+    File? videoFile,
+    int? pixelWidth,
+    int? pixelHeight,
+    String? videoCodec,
+    int? frameRate,
+    int? durationMs,
+    int? fileBytes,
+    File? thumbnailFile,
+  }) {
     return VideoData(
       videoFile: videoFile ?? this.videoFile,
       pixelWidth: pixelWidth ?? this.pixelWidth,
@@ -26,9 +43,18 @@ class VideoData {
       videoCodec: videoCodec ?? this.videoCodec,
       frameRate: frameRate ?? this.frameRate,
       durationMs: durationMs ?? this.durationMs,
+      fileBytes: fileBytes ?? this.fileBytes,
+      thumbnailFile: thumbnailFile ?? this.thumbnailFile,
     );
   }
 
-  List<Object?> get props =>
-      [videoFile, pixelHeight, pixelWidth, frameRate, durationMs];
+  List<Object?> get props => [
+        videoFile,
+        pixelHeight,
+        pixelWidth,
+        frameRate,
+        durationMs,
+        fileBytes,
+        thumbnailFile,
+      ];
 }

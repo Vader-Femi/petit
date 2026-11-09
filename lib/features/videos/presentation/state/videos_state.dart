@@ -26,11 +26,16 @@ class VideosState {
   const VideosState({
     this.result,
     this.isLoading = false,
-    this.videoFile,
+    this.pickedVideos = const [],
+    this.currentVideoIndex = 0,
+    File? videoFile,
     this.preview,
     this.isCompressing = false,
     this.crfQuality = 80,
     this.percentComplete = 0,
+    this.completedVideos = 0,
+    this.totalVideos = 0,
+    this.currentVideoPercent = 0,
     this.eta,
     this.fastEncoding = false,
     this.fastEncodingAvailable = false,
@@ -45,20 +50,62 @@ class VideosState {
     this.mode = VideoMode.quality,
     this.resolution = VideoResolution.original,
     this.targetSizeMb = 25,
-    this.videoInfo,
-    this.videoBytes,
-  });
+    VideoData? videoInfo,
+    int? videoBytes,
+  })  : _explicitVideoFile = videoFile,
+        _explicitVideoInfo = videoInfo,
+        _explicitVideoBytes = videoBytes;
 
   /// One-shot message for a snackbar; the page clears it once shown.
   final String? result;
   final bool isLoading;
-  final File? videoFile;
+
+  /// All videos chosen for batch compression.
+  final List<VideoData> pickedVideos;
+
+  /// Index of the currently viewed video in [pickedVideos].
+  final int currentVideoIndex;
+
+  final File? _explicitVideoFile;
+  final VideoData? _explicitVideoInfo;
+  final int? _explicitVideoBytes;
+
+  /// Active video file (either the one at [currentVideoIndex] in [pickedVideos],
+  /// or an explicitly set one).
+  File? get videoFile => currentVideo?.videoFile ?? _explicitVideoFile;
+
+  /// Active video info.
+  VideoData? get videoInfo => currentVideo ?? _explicitVideoInfo;
+
+  /// Active video size in bytes.
+  int? get videoBytes => videoInfo?.fileBytes ?? _explicitVideoBytes;
+
+  /// Currently active video in the carousel.
+  VideoData? get currentVideo =>
+      pickedVideos.isNotEmpty && currentVideoIndex < pickedVideos.length
+          ? pickedVideos[currentVideoIndex]
+          : (pickedVideos.isNotEmpty ? pickedVideos.first : null);
+
+  /// Whether more than one video is chosen.
+  bool get isBatch => pickedVideos.length > 1;
+
   final VideoPreview? preview;
   final bool isCompressing;
 
   /// "Compression Level" slider, 0..100.
   final int crfQuality;
+
+  /// Overall percent complete across the whole batch (0..100).
   final int percentComplete;
+
+  /// How many videos in the batch have completed compression.
+  final int completedVideos;
+
+  /// Total number of videos in the current compression batch.
+  final int totalVideos;
+
+  /// Progress percent of the video currently being compressed (0..100).
+  final int currentVideoPercent;
 
   /// Time left for the running compression, once it can be told.
   final Duration? eta;
@@ -110,31 +157,33 @@ class VideosState {
   /// Size to aim for in [VideoMode.targetSize], in megabytes.
   final int targetSizeMb;
 
-  /// Properties of the selected video (null if they could not be read).
-  final VideoData? videoInfo;
-
-  /// Size of the selected video file.
-  final int? videoBytes;
-
   /// The shorter side of the selected video in pixels, if known.
-  int? get sourceShortSide {
-    final width = videoInfo?.pixelWidth;
-    final height = videoInfo?.pixelHeight;
-    if (width == null || height == null) return null;
-    return width < height ? width : height;
-  }
+  int? get sourceShortSide => videoInfo?.sourceShortSide;
 
-  /// Whether [resolution] would make the video smaller. Original always can.
+  /// Whether [resolution] would make any video in the batch smaller. Original always can.
   bool canUseResolution(VideoResolution resolution) {
     final side = resolution.shortSide;
-    final source = sourceShortSide;
-    return side == null || source == null || side < source;
+    if (side == null) return true;
+    if (pickedVideos.isEmpty) {
+      final source = sourceShortSide;
+      return source == null || side < source;
+    }
+    return pickedVideos.any((v) {
+      final source = v.sourceShortSide;
+      return source == null || side < source;
+    });
   }
 
   /// Whether a target of [mb] megabytes is smaller than the video itself.
   bool canTargetMb(int mb) {
-    final bytes = videoBytes;
-    return bytes == null || mb * 1000000 < bytes;
+    if (pickedVideos.isEmpty) {
+      final bytes = videoBytes;
+      return bytes == null || mb * 1000000 < bytes;
+    }
+    return pickedVideos.any((v) {
+      final bytes = v.fileBytes;
+      return bytes == null || mb * 1000000 < bytes;
+    });
   }
 
   /// What is wrong with, or risky about, the current choices for this video.
@@ -158,11 +207,16 @@ class VideosState {
   VideosState copyWith({
     Object? result = _unset,
     bool? isLoading,
+    List<VideoData>? pickedVideos,
+    int? currentVideoIndex,
     Object? videoFile = _unset,
     Object? preview = _unset,
     bool? isCompressing,
     int? crfQuality,
     int? percentComplete,
+    int? completedVideos,
+    int? totalVideos,
+    int? currentVideoPercent,
     Object? eta = _unset,
     bool? fastEncoding,
     bool? fastEncodingAvailable,
@@ -183,13 +237,18 @@ class VideosState {
     return VideosState(
       result: identical(result, _unset) ? this.result : result as String?,
       isLoading: isLoading ?? this.isLoading,
+      pickedVideos: pickedVideos ?? this.pickedVideos,
+      currentVideoIndex: currentVideoIndex ?? this.currentVideoIndex,
       videoFile:
-          identical(videoFile, _unset) ? this.videoFile : videoFile as File?,
+          identical(videoFile, _unset) ? _explicitVideoFile : videoFile as File?,
       preview:
           identical(preview, _unset) ? this.preview : preview as VideoPreview?,
       isCompressing: isCompressing ?? this.isCompressing,
       crfQuality: crfQuality ?? this.crfQuality,
       percentComplete: percentComplete ?? this.percentComplete,
+      completedVideos: completedVideos ?? this.completedVideos,
+      totalVideos: totalVideos ?? this.totalVideos,
+      currentVideoPercent: currentVideoPercent ?? this.currentVideoPercent,
       eta: identical(eta, _unset) ? this.eta : eta as Duration?,
       fastEncoding: fastEncoding ?? this.fastEncoding,
       fastEncodingAvailable: fastEncodingAvailable ?? this.fastEncodingAvailable,
@@ -212,9 +271,9 @@ class VideosState {
       resolution: resolution ?? this.resolution,
       targetSizeMb: targetSizeMb ?? this.targetSizeMb,
       videoInfo:
-          identical(videoInfo, _unset) ? this.videoInfo : videoInfo as VideoData?,
+          identical(videoInfo, _unset) ? _explicitVideoInfo : videoInfo as VideoData?,
       videoBytes:
-          identical(videoBytes, _unset) ? this.videoBytes : videoBytes as int?,
+          identical(videoBytes, _unset) ? _explicitVideoBytes : videoBytes as int?,
     );
   }
 }

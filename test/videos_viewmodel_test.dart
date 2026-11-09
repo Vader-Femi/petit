@@ -795,4 +795,95 @@ void main() {
       expect(c.read(videosViewModelProvider).isCompressing, isFalse);
     });
   });
+
+  group('batch video compression', () {
+    test('loads multiple videos, sets isBatch = true, and previews the first',
+        () async {
+      final v1 = h.file('v1.mp4', 1000);
+      final v2 = h.file('v2.mp4', 2000);
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+
+      await vm.addVideoPaths([v1.path, v2.path]);
+
+      final s = c.read(videosViewModelProvider);
+      expect(s.pickedVideos.length, 2);
+      expect(s.isBatch, isTrue);
+      expect(s.currentVideoIndex, 0);
+      expect(s.videoFile?.path, v1.path);
+      expect(s.preview, isNotNull);
+      expect(s.preview!.isInitialized, isTrue);
+    });
+
+    test('navigating next and previous switches active preview and disposes old one',
+        () async {
+      final v1 = h.file('v1.mp4', 1000);
+      final v2 = h.file('v2.mp4', 2000);
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+
+      await vm.addVideoPaths([v1.path, v2.path]);
+      expect(c.read(videosViewModelProvider).currentVideoIndex, 0);
+      final firstPreview = h.previews.first;
+
+      await vm.nextVideo();
+      expect(c.read(videosViewModelProvider).currentVideoIndex, 1);
+      expect(c.read(videosViewModelProvider).videoFile?.path, v2.path);
+      expect(firstPreview.disposed, isTrue);
+
+      await vm.previousVideo();
+      expect(c.read(videosViewModelProvider).currentVideoIndex, 0);
+      expect(c.read(videosViewModelProvider).videoFile?.path, v1.path);
+    });
+
+    test('compresses a batch of videos sequentially and aggregates savings',
+        () async {
+      final v1 = h.file('v1.mp4', 1000);
+      final v2 = h.file('v2.mp4', 2000);
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+      final done = Completer<SummaryReport>();
+
+      await vm.addVideoPaths([v1.path, v2.path]);
+      await vm.compressVideo(onComplete: done.complete);
+
+      var s = c.read(videosViewModelProvider);
+      expect(s.isCompressing, isTrue);
+      expect(s.totalVideos, 2);
+
+      // Finish video 1 (compressed to 400 bytes)
+      h.videoCompressor.lastTask!.completer.complete(h.file('out1.mp4', 400));
+      await pumpEventQueue();
+
+      // Finish video 2 (compressed to 800 bytes)
+      h.videoCompressor.lastTask!.completer.complete(h.file('out2.mp4', 800));
+
+      final report = await done.future;
+      expect(report.originalSizeBytes, formatBytes(3000));
+      expect(report.compressedSizeBytes, formatBytes(1200));
+      expect(report.savedBytes, formatBytes(1800));
+
+      s = c.read(videosViewModelProvider);
+      expect(s.isCompressing, isFalse);
+      expect(s.pickedVideos, isEmpty);
+      expect(h.workspace.clears, 1);
+    });
+
+    test('cancelling mid-batch stops the active task and resets', () async {
+      final v1 = h.file('v1.mp4', 1000);
+      final v2 = h.file('v2.mp4', 2000);
+      final c = h.container();
+      final vm = c.read(videosViewModelProvider.notifier);
+
+      await vm.addVideoPaths([v1.path, v2.path]);
+      await vm.compressVideo(onComplete: (_) => fail('should not complete'));
+
+      vm.cancelCompressingVideo();
+
+      expect(h.videoCompressor.lastTask!.cancelled, isTrue);
+      final s = c.read(videosViewModelProvider);
+      expect(s.currentJob, isNull);
+      expect(s.isCompressing, isFalse);
+    });
+  });
 }

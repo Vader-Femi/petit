@@ -1,9 +1,13 @@
+import 'dart:io';
+
+import 'package:carousel_slider/carousel_slider.dart';
 import 'package:flutter/material.dart';
 import 'package:petit/common/widgets/compression_progress_view.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:petit/core/utils/adaptive.dart';
 import 'package:petit/core/utils/platform_utils.dart';
 import 'package:petit/core/utils/shortcut_labels.dart';
+import 'package:petit/features/videos/presentation/preview/video_preview.dart';
 import 'package:petit/features/videos/presentation/state/videos_state.dart';
 import 'package:petit/features/videos/presentation/state/videos_viewmodel.dart';
 import 'package:petit/features/videos/presentation/widget/video_options_panel.dart';
@@ -19,6 +23,118 @@ class VideosPage extends ConsumerStatefulWidget {
 class _VideosPageState extends ConsumerState<VideosPage> {
   // Adjust to actual height of your FAB + margin
   static const fabHeight = 72.0;
+  final CarouselSliderController _carouselController =
+      CarouselSliderController();
+
+  Widget _buildCarousel(
+    BuildContext context,
+    VideosState state,
+    VideosViewModel viewModel,
+    VideoPreview? preview,
+  ) {
+    final count = state.pickedVideos.length;
+    final currentIndex = state.currentVideoIndex;
+    final showArrows = PlatformInfo.isDesktop && count > 1;
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        CarouselSlider(
+          items: state.pickedVideos.asMap().entries.map((entry) {
+            final index = entry.key;
+            final video = entry.value;
+            final isCurrent = index == currentIndex;
+
+            return ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: isCurrent && preview != null && preview.isInitialized
+                  ? AspectRatio(
+                      aspectRatio: preview.aspectRatio,
+                      child: preview.build(context),
+                    )
+                  : (video.thumbnailFile != null
+                      ? Image.file(
+                          video.thumbnailFile!,
+                          fit: BoxFit.contain,
+                        )
+                      : Container(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHighest,
+                          child: Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(16.0),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.movie_outlined, size: 48),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    video.videoFile.path
+                                        .split(Platform.pathSeparator)
+                                        .last,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        )),
+            );
+          }).toList(),
+          carouselController: _carouselController,
+          options: CarouselOptions(
+            autoPlay: false,
+            enlargeStrategy: CenterPageEnlargeStrategy.zoom,
+            enlargeCenterPage: true,
+            pageSnapping: true,
+            scrollDirection: Axis.horizontal,
+            enableInfiniteScroll: false,
+            onPageChanged: (index, _) =>
+                viewModel.updateCurrentVideoIndex(index),
+          ),
+        ),
+        if (showArrows)
+          Positioned(
+            left: 4,
+            top: 0,
+            bottom: 0,
+            child: Center(
+              child: IconButton.filledTonal(
+                tooltip: 'Previous video (\u2190)',
+                onPressed: currentIndex > 0
+                    ? () {
+                        _carouselController.previousPage();
+                        viewModel.previousVideo();
+                      }
+                    : null,
+                icon: const Icon(Icons.chevron_left),
+              ),
+            ),
+          ),
+        if (showArrows)
+          Positioned(
+            right: 4,
+            top: 0,
+            bottom: 0,
+            child: Center(
+              child: IconButton.filledTonal(
+                tooltip: 'Next video (\u2192)',
+                onPressed: currentIndex < count - 1
+                    ? () {
+                        _carouselController.nextPage();
+                        viewModel.nextVideo();
+                      }
+                    : null,
+                icon: const Icon(Icons.chevron_right),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
 
   Widget _buildBody(
     BuildContext context,
@@ -26,23 +142,34 @@ class _VideosPageState extends ConsumerState<VideosPage> {
     VideosViewModel viewModel,
   ) {
     final preview = state.preview;
+    final hasContent = state.pickedVideos.isNotEmpty ||
+        (preview != null && preview.isInitialized);
 
     return Stack(
       fit: StackFit.expand,
       alignment: Alignment.center,
       children: [
-        if (preview != null && preview.isInitialized)
+        if (hasContent)
           Padding(
             padding: const EdgeInsets.fromLTRB(10, 10, 10, 15),
             child: LayoutBuilder(
               builder: (context, constraints) {
-                final previewBox = ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: AspectRatio(
-                    aspectRatio: preview.aspectRatio,
-                    child: preview.build(context),
-                  ),
-                );
+                final Widget previewBox;
+                if (state.pickedVideos.length > 1) {
+                  previewBox = _buildCarousel(context, state, viewModel, preview);
+                } else if (preview != null && preview.isInitialized) {
+                  previewBox = ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: AspectRatio(
+                      aspectRatio: preview.aspectRatio,
+                      child: preview.build(context),
+                    ),
+                  );
+                } else {
+                  previewBox = const Center(
+                    child: CircularProgressIndicator(),
+                  );
+                }
 
                 // Wide: preview on the left, sliders on the right.
                 if (constraints.maxWidth >= kTwoPaneMinWidth) {
@@ -57,6 +184,14 @@ class _VideosPageState extends ConsumerState<VideosPage> {
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
+                                if (state.pickedVideos.length > 1) ...[
+                                  Text(
+                                    "${state.currentVideoIndex + 1} of ${state.pickedVideos.length}",
+                                    style:
+                                        Theme.of(context).textTheme.titleMedium,
+                                  ),
+                                  const SizedBox(height: 8),
+                                ],
                                 const VideoOptionsPanel(),
                                 // Space for FABs
                                 const SizedBox(height: fabHeight),
@@ -80,6 +215,13 @@ class _VideosPageState extends ConsumerState<VideosPage> {
                         child: previewBox,
                       ),
                       const SizedBox(height: 12),
+                      if (state.pickedVideos.length > 1) ...[
+                        Text(
+                          "${state.currentVideoIndex + 1} of ${state.pickedVideos.length}",
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 8),
+                      ],
                       const VideoOptionsPanel(),
                       // Space for FABs
                       const SizedBox(height: fabHeight),
@@ -93,8 +235,8 @@ class _VideosPageState extends ConsumerState<VideosPage> {
           Center(
             child: Text(
               PlatformInfo.isDesktop
-                  ? "Add a video and start compressing\nor drop it anywhere in this window"
-                  : "Add a video and start compressing",
+                  ? "Add videos and start compressing\nor drop them anywhere in this window"
+                  : "Add videos and start compressing",
               textAlign: TextAlign.center,
               style: const TextStyle(
                 fontSize: 18,
@@ -103,14 +245,19 @@ class _VideosPageState extends ConsumerState<VideosPage> {
           ),
         if (state.isCompressing)
           CompressionProgressView(
-            title: 'Compressing video',
+            title: state.isBatch ? 'Compressing videos' : 'Compressing video',
+            detail: state.isBatch
+                ? 'Video ${state.completedVideos + 1} of ${state.totalVideos}'
+                : null,
             percent: state.percentComplete,
             eta: state.eta,
             showEta: true,
             keepOpenHint: true,
           )
         else if (state.isLoading)
-          const CompressionProgressView(title: 'Loading video'),
+          CompressionProgressView(
+            title: state.isBatch ? 'Loading videos' : 'Loading video',
+          ),
       ],
     );
   }
@@ -120,12 +267,12 @@ class _VideosPageState extends ConsumerState<VideosPage> {
     VideosState state,
     VideosViewModel viewModel,
   ) {
-    if (state.videoFile == null) {
+    if (state.videoFile == null && state.pickedVideos.isEmpty) {
       return FloatingActionButton(
         onPressed: () async {
           await viewModel.pickVideo();
         },
-        tooltip: withShortcut("Pick video", "O"),
+        tooltip: withShortcut("Pick videos", "O"),
         child: const Icon(Icons.video_library),
       );
     }
@@ -161,7 +308,7 @@ class _VideosPageState extends ConsumerState<VideosPage> {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             if (state.isFabOpen) ...[
-              SizedBox(width: 30),
+              const SizedBox(width: 30),
               canPlay
                   ? FloatingActionButton(
                       onPressed: () {
@@ -175,20 +322,24 @@ class _VideosPageState extends ConsumerState<VideosPage> {
                       ),
                     )
                   : Container(),
-              SizedBox(width: 10),
+              const SizedBox(width: 10),
               FloatingActionButton.extended(
                 icon: const Icon(Icons.delete_outline),
-                tooltip:
-                    withShortcut("Remove video", "Del", withModifier: false),
+                tooltip: withShortcut(
+                    state.isBatch ? "Remove videos" : "Remove video",
+                    "Del",
+                    withModifier: false),
                 onPressed: () async {
                   viewModel.removeVideo();
                 },
-                label: const Text('Remove video'),
+                label: Text(state.isBatch ? 'Remove videos' : 'Remove video'),
               ),
-              SizedBox(width: 10),
+              const SizedBox(width: 10),
               FloatingActionButton.extended(
                 icon: const Icon(Icons.compress_outlined),
-                tooltip: withShortcut("Compress Video", "Enter"),
+                tooltip: withShortcut(
+                    state.isBatch ? "Compress Videos" : "Compress Video",
+                    "Enter"),
                 onPressed: () async {
                   await viewModel.compressVideo(onComplete: (summaryReport) {
                     if (mounted) {

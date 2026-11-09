@@ -6,4 +6,7 @@ abstract interface class MediaPicker {
 
   /// Path of the chosen video, or null if nothing was picked.
   Future<String?> pickVideo();
+
+  /// Paths of the chosen videos; empty if nothing was picked.
+  Future<List<String>> pickVideos();
 }

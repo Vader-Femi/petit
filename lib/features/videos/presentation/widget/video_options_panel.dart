@@ -120,8 +120,10 @@ class VideoOptionsPanel extends ConsumerWidget {
       note = "This video's length could not be read, so a target size is not "
           "possible. Use Quality instead.";
     } else if (bytes != null) {
-      note = "The video is ${formatBytes(bytes)}. The result will be about "
-          "the chosen size, usually a little smaller.";
+      note = state.isBatch
+          ? "Target size applies to each video. The current video is ${formatBytes(bytes)}."
+          : "The video is ${formatBytes(bytes)}. The result will be about "
+              "the chosen size, usually a little smaller.";
     } else {
       note = "The result will be about the chosen size, usually a little smaller.";
     }
@@ -166,8 +168,10 @@ class VideoOptionsPanel extends ConsumerWidget {
       title: 'Resolution',
       note: source == null
           ? 'Videos are only made smaller, never enlarged.'
-          : "Only smaller sizes are offered; this video's shorter side is "
-              "$source px.",
+          : (state.isBatch
+              ? "Videos are only made smaller, never enlarged (current: $source px)."
+              : "Only smaller sizes are offered; this video's shorter side is "
+                  "$source px."),
       child: Wrap(
         spacing: 8,
         runSpacing: 4,

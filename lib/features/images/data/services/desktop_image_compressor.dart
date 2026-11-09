@@ -10,7 +10,6 @@ import 'package:path/path.dart' as p;
 import 'package:petit/common/domain/media_exception.dart';
 import 'package:petit/core/utils/image_processing.dart';
 import 'package:petit/core/utils/media_formats.dart';
-import 'package:petit/core/utils/platform_utils.dart';
 import 'package:petit/core/utils/work_dir.dart';
 import 'package:petit/features/images/domain/entities/image_data.dart';
 import 'package:petit/features/images/domain/entities/image_options.dart';

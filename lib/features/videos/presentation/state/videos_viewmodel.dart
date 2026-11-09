@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -101,10 +100,10 @@ class VideosViewModel extends Notifier<VideosState> {
     try {
       state = state.copyWith(isLoading: true);
 
-      final path = await ref.read(mediaPickerProvider).pickVideo();
+      final paths = await ref.read(mediaPickerProvider).pickVideos();
 
-      if (path != null) {
-        await _loadVideo(path);
+      if (paths.isNotEmpty) {
+        await addVideoPaths(paths);
       } else {
         state = state.copyWith(result: "No file picked!", isLoading: false);
       }
@@ -116,60 +115,129 @@ class VideosViewModel extends Notifier<VideosState> {
 
   Future<void> addSharedVideo(List<SharedAttachment>? sharedFiles) async {
     if (sharedFiles != null && sharedFiles.isNotEmpty) {
-      await addVideoPath(sharedFiles.elementAt(0).path);
+      await addVideoPaths(sharedFiles.map((f) => f.path).toList());
     }
   }
 
   /// Loads the video at [path] (shared into the app, or dropped onto the
-  /// window), replacing the current one.
+  /// window), replacing the current selection.
   Future<void> addVideoPath(String path) async {
-    if (state.isCompressing) return;
+    await addVideoPaths([path]);
+  }
+
+  /// Replaces the current selection with the videos at [paths].
+  Future<void> addVideoPaths(List<String> paths) async {
+    if (paths.isEmpty || state.isCompressing) return;
     try {
       state = state.copyWith(isLoading: true);
-      await _loadVideo(path);
+      cancelEstimate();
+      state.preview?.dispose();
+
+      final videos = await ref.read(readVideosUseCaseProvider)(paths);
+      if (videos.isEmpty) {
+        state = state.copyWith(result: "No file picked!", isLoading: false);
+        return;
+      }
+
+      final preview =
+          ref.read(videoPreviewFactoryProvider)(videos.first.videoFile);
+      state = state.copyWith(preview: preview);
+      await preview.initialize();
+
+      state = state.copyWith(
+        pickedVideos: videos,
+        currentVideoIndex: 0,
+        isLoading: false,
+        fastEncodingAvailable: false,
+        preview: preview,
+      );
+
+      _fitOptionsToVideo();
+      unawaited(_checkFastEncodingForBatch(videos));
+    } catch (e) {
+      state.preview?.dispose();
+      state = state.copyWith(
+        pickedVideos: const [],
+        preview: null,
+        videoFile: null,
+        videoInfo: null,
+        videoBytes: null,
+        result: "An error occurred - ${e.toString()}",
+        isLoading: false,
+      );
+    }
+  }
+
+  /// Changes the currently viewed video in the carousel.
+  Future<void> updateCurrentVideoIndex(int index) async {
+    if (state.pickedVideos.isEmpty) return;
+    final clamped = index.clamp(0, state.pickedVideos.length - 1);
+    if (clamped == state.currentVideoIndex && state.preview != null) return;
+
+    await _activatePreviewForIndex(clamped);
+  }
+
+  Future<void> nextVideo() async {
+    if (state.currentVideoIndex < state.pickedVideos.length - 1) {
+      await updateCurrentVideoIndex(state.currentVideoIndex + 1);
+    }
+  }
+
+  Future<void> previousVideo() async {
+    if (state.currentVideoIndex > 0) {
+      await updateCurrentVideoIndex(state.currentVideoIndex - 1);
+    }
+  }
+
+  Future<void> _activatePreviewForIndex(int index) async {
+    cancelEstimate();
+    final previousPreview = state.preview;
+    state = state.copyWith(preview: null, currentVideoIndex: index);
+    previousPreview?.dispose();
+
+    final activeVideo = state.currentVideo;
+    if (activeVideo == null) return;
+
+    final preview =
+        ref.read(videoPreviewFactoryProvider)(activeVideo.videoFile);
+    state = state.copyWith(preview: preview);
+    try {
+      await preview.initialize();
+      if (state.currentVideoIndex == index) {
+        state = state.copyWith(preview: preview);
+      } else {
+        preview.dispose();
+      }
     } catch (e) {
       state = state.copyWith(
-          result: "An error occurred - ${e.toString()}", isLoading: false);
+        preview: null,
+        result: "An error occurred - ${e.toString()}",
+      );
     }
   }
 
-  Future<void> _loadVideo(String path) async {
-    final file = File(path);
-    final preview = ref.read(videoPreviewFactoryProvider)(file);
-
-    // The preview is shown only once it reports isInitialized.
-    state = state.copyWith(preview: preview);
-    await preview.initialize();
-
-    // What the options offer depends on the video, so read its properties now.
-    // Failing to read them only means the options cannot be narrowed down.
-    VideoData? info;
-    try {
-      info = await ref.read(videoCompressorProvider).probe(file);
-    } catch (_) {
-      info = null;
+  Future<void> _checkFastEncodingForBatch(List<VideoData> videos) async {
+    var anyAvailable = false;
+    for (final v in videos) {
+      if (!ref.mounted) return;
+      final codec = v.videoCodec;
+      if (codec != null) {
+        final available =
+            await ref.read(checkFastEncodingUseCaseProvider)(codec);
+        if (available) {
+          anyAvailable = true;
+          break;
+        }
+      }
     }
-    final bytes = await file.length();
-
-    state = state.copyWith(
-      videoFile: file,
-      videoInfo: info,
-      videoBytes: bytes,
-      isLoading: false,
-      fastEncodingAvailable: false,
-    );
-    _fitOptionsToVideo();
-    unawaited(_checkFastEncoding(info?.videoCodec, file));
-  }
-
-  /// Finds out, in the background (the first time it tries the hardware), whether
-  /// Fast encoding can be offered for this video.
-  Future<void> _checkFastEncoding(String? codec, File file) async {
-    if (codec == null) return;
-    final available = await ref.read(checkFastEncodingUseCaseProvider)(codec);
-    // The user may have picked another video, or none, in the meantime.
-    if (state.videoFile?.path != file.path) return;
-    state = state.copyWith(fastEncodingAvailable: available);
+    if (!ref.mounted) return;
+    // The user may have picked other videos, or none, in the meantime.
+    if (state.pickedVideos.isEmpty) return;
+    if (state.pickedVideos.first.videoFile.path !=
+        videos.first.videoFile.path) {
+      return;
+    }
+    state = state.copyWith(fastEncodingAvailable: anyAvailable);
   }
 
   /// Works out how big the video would get with the current choices, by
@@ -280,7 +348,7 @@ class VideosViewModel extends Notifier<VideosState> {
     state = state.copyWith(resolution: resolution, targetSizeMb: targetMb);
   }
 
-  /// Starts compressing the selected video. Returns once the job has started;
+  /// Starts compressing the selected video(s). Returns once the job has started;
   /// the summary is delivered through [onComplete] when it finishes.
   Future<void> compressVideo({
     required void Function(SummaryReport summaryReport) onComplete,
@@ -289,8 +357,24 @@ class VideosViewModel extends Notifier<VideosState> {
       state.currentJob?.cancel();
       state = state.copyWith(currentJob: null);
 
-      final originalFile = state.videoFile;
-      if (originalFile == null) return;
+      final videos = state.pickedVideos.isNotEmpty
+          ? state.pickedVideos
+          : (state.videoFile != null
+              ? [
+                  VideoData(
+                    videoFile: state.videoFile!,
+                    pixelWidth: state.videoInfo?.pixelWidth,
+                    pixelHeight: state.videoInfo?.pixelHeight,
+                    videoCodec: state.videoInfo?.videoCodec,
+                    frameRate: state.videoInfo?.frameRate,
+                    durationMs: state.videoInfo?.durationMs ??
+                        state.preview?.duration.inMilliseconds,
+                    fileBytes: state.videoBytes,
+                  )
+                ]
+              : <VideoData>[]);
+
+      if (videos.isEmpty) return;
 
       // Both tabs share one work folder, which a finishing job empties.
       if (ref.read(imagesViewModelProvider).isBusy) {
@@ -309,28 +393,46 @@ class VideosViewModel extends Notifier<VideosState> {
       }
 
       final eta = ProgressEta()..start();
-      state = state.copyWith(isCompressing: true, percentComplete: 0, eta: null);
+      state = state.copyWith(
+        isCompressing: true,
+        percentComplete: 0,
+        completedVideos: 0,
+        totalVideos: videos.length,
+        currentVideoPercent: 0,
+        eta: null,
+      );
 
-      // Keeps compressing when the user leaves the app (Android). Ended in
-      // _awaitOutcome, or below if the job could not even be started.
-      await ref.read(jobKeepAliveProvider).begin(title: 'Compressing video');
+      final isBatch = videos.length > 1;
+      final keepAliveTitle =
+          isBatch ? 'Compressing videos' : 'Compressing video';
+      await ref.read(jobKeepAliveProvider).begin(title: keepAliveTitle);
 
-      final job = await ref.read(compressVideoUseCaseProvider)(
-        input: originalFile,
+      final job = await ref.read(compressVideoUseCaseProvider).compressBatch(
+        videos: videos,
         qualityPercent: state.crfQuality,
         preset: kFfmpegPresets[state.presetIndex].value,
-        totalDurationMs: state.preview?.duration.inMilliseconds,
         maxShortSide: state.resolution.shortSide,
         fastEncoding: state.usesFastEncoding,
         targetBytes: state.mode == VideoMode.targetSize
             ? state.targetSizeMb * 1000000
             : null,
-        onProgress: (percent) {
-          eta.update(percent / 100);
-          state = state.copyWith(percentComplete: percent, eta: eta.remaining);
+        onProgress: (batchProgress) {
+          eta.update(batchProgress.overallPercent / 100);
+          state = state.copyWith(
+            percentComplete: batchProgress.overallPercent,
+            completedVideos: batchProgress.completedSteps,
+            totalVideos: batchProgress.totalSteps,
+            currentVideoPercent: batchProgress.currentVideoPercent,
+            eta: eta.remaining,
+          );
+
+          final text = isBatch
+              ? 'Video ${batchProgress.completedSteps + 1} of ${batchProgress.totalSteps} (${batchProgress.currentVideoPercent}%)'
+              : '${batchProgress.overallPercent}% done';
+
           ref.read(jobKeepAliveProvider).progress(
-                percent: percent,
-                text: '$percent% done',
+                percent: batchProgress.overallPercent,
+                text: text,
               );
         },
         onError: showResult,
@@ -357,13 +459,16 @@ class VideosViewModel extends Notifier<VideosState> {
   ) async {
     try {
       final outcome = await job.outcome;
-      await ref.read(jobKeepAliveProvider).end();
+      if (ref.mounted) {
+        await ref.read(jobKeepAliveProvider).end();
+      }
 
       _forgetJob(job);
       removeVideo();
-      await ref.read(workspaceProvider).clear();
-
-      state = state.copyWith(isCompressing: false, isLoading: false);
+      if (ref.mounted) {
+        await ref.read(workspaceProvider).clear();
+        state = state.copyWith(isCompressing: false, isLoading: false);
+      }
 
       onComplete(SummaryReport(
         originalSizeBytes: formatBytes(outcome.originalBytes),
@@ -374,17 +479,21 @@ class VideosViewModel extends Notifier<VideosState> {
         folderPath: outcome.destinationFolder,
       ));
     } on MediaException catch (e) {
-      unawaited(ref.read(jobKeepAliveProvider).end());
-      _forgetJob(job);
-      state = state.copyWith(
-          result: e.message, isCompressing: false, isLoading: false);
+      if (ref.mounted) {
+        unawaited(ref.read(jobKeepAliveProvider).end());
+        _forgetJob(job);
+        state = state.copyWith(
+            result: e.message, isCompressing: false, isLoading: false);
+      }
     } catch (e) {
-      unawaited(ref.read(jobKeepAliveProvider).end());
-      _forgetJob(job);
-      state = state.copyWith(
-          result: 'Error compressing video: $e',
-          isCompressing: false,
-          isLoading: false);
+      if (ref.mounted) {
+        unawaited(ref.read(jobKeepAliveProvider).end());
+        _forgetJob(job);
+        state = state.copyWith(
+            result: 'Error compressing video: $e',
+            isCompressing: false,
+            isLoading: false);
+      }
     }
   }
 
@@ -394,11 +503,13 @@ class VideosViewModel extends Notifier<VideosState> {
     }
   }
 
-  /// Drops the selected video and resets the compression state.
+  /// Drops the selected video(s) and resets the compression state.
   void removeVideo() {
     cancelEstimate();
     state.preview?.dispose();
     state = state.copyWith(
+      pickedVideos: const [],
+      currentVideoIndex: 0,
       preview: null,
       videoFile: null,
       videoInfo: null,
@@ -406,6 +517,9 @@ class VideosViewModel extends Notifier<VideosState> {
       isCompressing: false,
       isLoading: false,
       percentComplete: 0,
+      completedVideos: 0,
+      totalVideos: 0,
+      currentVideoPercent: 0,
       eta: null,
       fastEncodingAvailable: false,
       estimate: null,

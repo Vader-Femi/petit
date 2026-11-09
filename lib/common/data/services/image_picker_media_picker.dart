@@ -1,5 +1,6 @@
 import 'package:image_picker/image_picker.dart';
 import 'package:petit/common/domain/services/media_picker.dart';
+import 'package:petit/core/utils/media_formats.dart';
 
 class ImagePickerMediaPicker implements MediaPicker {
   final ImagePicker _picker = ImagePicker();
@@ -14,5 +15,14 @@ class ImagePickerMediaPicker implements MediaPicker {
   Future<String?> pickVideo() async {
     final file = await _picker.pickVideo(source: ImageSource.gallery);
     return file?.path;
+  }
+
+  @override
+  Future<List<String>> pickVideos() async {
+    final files = await _picker.pickMultipleMedia();
+    return files
+        .where((file) => isVideoFile(file.path))
+        .map((file) => file.path)
+        .toList();
   }
 }

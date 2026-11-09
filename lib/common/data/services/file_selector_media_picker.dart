@@ -29,4 +29,10 @@ class FileSelectorMediaPicker implements MediaPicker {
     final file = await openFile(acceptedTypeGroups: [_videoTypes]);
     return file?.path;
   }
+
+  @override
+  Future<List<String>> pickVideos() async {
+    final files = await openFiles(acceptedTypeGroups: [_videoTypes]);
+    return files.map((file) => file.path).toList();
+  }
 }

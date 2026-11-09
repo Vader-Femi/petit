@@ -22,12 +22,14 @@ import 'package:petit/features/videos/domain/entities/video_data.dart';
 import 'package:petit/features/videos/domain/services/video_compressor.dart';
 import 'package:petit/features/videos/domain/usecases/compress_video.dart';
 import 'package:petit/features/videos/domain/usecases/estimate_video_size.dart';
+import 'package:petit/features/videos/domain/usecases/read_videos.dart';
 import 'package:petit/features/videos/presentation/preview/video_preview.dart';
 
 /// Picker that returns what the test sets. Set [gate] to hold a pick open.
 class FakePicker implements MediaPicker {
   List<String> images = [];
   String? video;
+  List<String> videos = [];
   Completer<void>? gate;
   int imageCalls = 0;
 
@@ -42,6 +44,14 @@ class FakePicker implements MediaPicker {
   Future<String?> pickVideo() async {
     if (gate != null) await gate!.future;
     return video;
+  }
+
+  @override
+  Future<List<String>> pickVideos() async {
+    if (gate != null) await gate!.future;
+    if (videos.isNotEmpty) return videos;
+    if (video != null) return [video!];
+    return [];
   }
 }
 
@@ -349,6 +359,8 @@ class Harness {
             .overrideWithValue(EstimateImageSizeUseCase(imageCompressor)),
         // What the Videos tab probes a picked video with.
         videoCompressorProvider.overrideWithValue(videoCompressor),
+        readVideosUseCaseProvider
+            .overrideWithValue(ReadVideosUseCase(videoCompressor)),
         estimateVideoSizeUseCaseProvider
             .overrideWithValue(EstimateVideoSizeUseCase(videoCompressor)),
         checkFastEncodingUseCaseProvider
